@@ -1,0 +1,485 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model calendar {
+  id                Int                   @id @default(autoincrement()) @db.UnsignedInt
+  code              String                @db.VarChar(30)
+  learn_number      Int
+  subject           String?               @db.VarChar(100)
+  start_time        DateTime              @db.Timestamp(0)
+  end_time          DateTime              @db.Timestamp(0)
+  teacher           String?               @db.VarChar(150)
+  lesson_name       String?               @db.VarChar(400)
+  lesson_document   String?               @db.VarChar(500)
+  evg_banner        String?               @db.VarChar(500)
+  evg_stream        String?               @db.VarChar(500)
+  lesson_link       String?               @db.VarChar(500)
+  lesson_count      Int?
+  lesson_baitap     String?               @db.VarChar(500)
+  lesson_tomtat     String?               @db.VarChar(500)
+  lesson_phuongphap String?               @db.VarChar(500)
+  lesson_luuy       String?               @db.VarChar(500)
+  lesson_ketqua     String?               @db.VarChar(500)
+  channel_name      String?               @db.VarChar(500)
+  lesson_status     Int?                  @default(0) @db.TinyInt
+  lesson_noti       String?               @db.VarChar(500)
+  key               String?               @db.VarChar(100)
+  system_type       calendar_system_type? @default(topclass)
+  created_at        DateTime?             @default(now()) @db.Timestamp(0)
+  updated_at        DateTime?             @default(now()) @db.Timestamp(0)
+
+  @@index([code, learn_number], map: "idx_calendar_code_learn")
+  @@index([code, learn_number, start_time, end_time], map: "idx_calendar_code_time")
+  @@index([system_type], map: "idx_calendar_system")
+  @@index([start_time, end_time], map: "idx_calendar_time")
+}
+
+model evg_callbacks {
+  id              BigInt    @id @default(autoincrement())
+  live_session_id String?   @db.VarChar(100)
+  action          String?   @db.VarChar(100)
+  event_type      String?   @db.VarChar(100)
+  webhook_kind    String    @default("livestream") @db.VarChar(20)
+  channel_id      String?   @db.VarChar(100)
+  channel_name    String?   @db.VarChar(255)
+  start_on        DateTime? @db.DateTime(0)
+  end_on          DateTime? @db.DateTime(0)
+  created_time    DateTime  @default(now()) @db.Timestamp(0)
+  raw_data        String?   @db.LongText
+
+  @@index([webhook_kind, created_time], map: "idx_evg_kind_created")
+}
+
+model hocmai_sync_queue {
+  id         Int       @id @default(autoincrement())
+  c_key      String    @db.VarChar(50)
+  action     String    @db.VarChar(20)
+  payload    String    @db.LongText
+  status     Int?      @default(0) @db.TinyInt
+  synced_at  DateTime? @db.Timestamp(0)
+  last_error String?   @db.Text
+  created_at DateTime  @default(now()) @db.Timestamp(0)
+}
+
+model learning_count_daily_cache {
+  package_id        String   @db.VarChar(50)
+  username          String   @db.VarChar(100)
+  learn_date        DateTime @db.Date
+  code              String   @db.VarChar(50)
+  learn_number      Int
+  total_minutes_raw Decimal? @default(0) @db.Decimal(24, 0)
+  actual_minutes    Int?     @default(0)
+  total_minutes     Decimal? @default(0.00) @db.Decimal(10, 2)
+
+  @@id([package_id, username, learn_date, code, learn_number])
+  @@index([package_id, learn_date, total_minutes, username], map: "idx_query")
+  @@index([username], map: "idx_user")
+}
+
+/// This table is a partition table and requires additional setup for migrations. Visit https://pris.ly/d/partition-tables for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model logs_chat_new {
+  id                BigInt                       @default(autoincrement()) @db.UnsignedBigInt
+  mess_id           String                       @db.VarChar(50)
+  user_hmid         BigInt
+  user_display_name String                       @db.VarChar(50)
+  mess_content      String?                      @db.VarChar(500)
+  user_role         String                       @db.VarChar(20)
+  code              String                       @db.VarChar(50)
+  learn_number      Int
+  classroom_id      String                       @db.VarChar(50)
+  mess_status       String                       @default("active") @db.VarChar(20)
+  mess_type         Int                          @default(1) @db.TinyInt
+  mess_time         DateTime                     @default(now()) @db.Timestamp(0)
+  reply_id          BigInt?
+  is_highlight      Int?                         @default(0) @db.TinyInt
+  source_system     logs_chat_new_source_system? @default(topclass)
+
+  @@id([id, mess_time])
+  @@unique([mess_id, mess_time], map: "uq_mess_id")
+  @@index([code, learn_number, mess_time], map: "idx_chat_lookup")
+  @@index([user_hmid, mess_time], map: "idx_chat_user")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model package_lesson_mapping {
+  id           Int     @id @default(autoincrement())
+  package_id   String  @db.VarChar(50)
+  lesson_id    String  @db.VarChar(50)
+  code         String  @db.VarChar(30)
+  learn_number Int
+  key          String? @db.VarChar(100)
+
+  @@index([package_id, code, learn_number], map: "idx_plm_package_code_learn")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model quiz_content {
+  id           BigInt                    @id @default(autoincrement()) @db.UnsignedBigInt
+  quiz_id      String                    @unique(map: "uq_quiz_id") @db.VarChar(100)
+  code         String                    @db.VarChar(50)
+  learn_number Int
+  quiz_type    Int                       @db.TinyInt
+  quiz_name    String                    @db.VarChar(500)
+  ans          Json?
+  score_type   Int                       @default(1) @db.TinyInt
+  ans_duration Int                       @default(60)
+  quiz_status  quiz_content_quiz_status? @default(active)
+  quiz_index   Int?                      @default(0)
+  creator      String                    @db.VarChar(100)
+  created_at   DateTime                  @default(now()) @db.Timestamp(0)
+  updated_at   DateTime                  @default(now()) @db.Timestamp(0)
+
+  @@index([code, learn_number, quiz_index], map: "idx_quiz_index")
+  @@index([code, learn_number, quiz_status], map: "idx_quiz_lookup")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model quiz_logs {
+  id           BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  ans_id       String   @unique(map: "uq_ans_id") @db.VarChar(100)
+  quiz_id      String   @db.VarChar(100)
+  code         String   @db.VarChar(50)
+  learn_number Int
+  username     String   @db.VarChar(100)
+  name         String   @db.VarChar(100)
+  class_id     String   @db.VarChar(100)
+  ans_info     Json
+  score        Decimal  @default(0.00) @db.Decimal(5, 2)
+  duration     Int
+  is_latest    Int      @default(1) @db.TinyInt
+  created_at   DateTime @default(now()) @db.Timestamp(0)
+
+  @@index([class_id, created_at], map: "idx_quiz_logs_class")
+  @@index([code, learn_number, quiz_id, is_latest, created_at], map: "idx_quiz_logs_latest")
+  @@index([code, learn_number, quiz_id, created_at], map: "idx_quiz_logs_lookup")
+  @@index([username, quiz_id, created_at], map: "idx_quiz_logs_user")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model quiz_session {
+  id            Int      @id @default(autoincrement()) @db.UnsignedInt
+  code          String   @db.VarChar(50)
+  learn_number  Int
+  quiz_id       String   @db.VarChar(100)
+  quiz_end_time DateTime @db.Timestamp(0)
+  quiz_status   Int      @default(1) @db.TinyInt
+  created_at    DateTime @default(now()) @db.Timestamp(0)
+  updated_at    DateTime @default(now()) @db.Timestamp(0)
+
+  @@unique([code, learn_number, quiz_id], map: "uq_quiz_session")
+  @@index([code, learn_number, quiz_status], map: "idx_quiz_session_active")
+  @@index([quiz_end_time], map: "idx_quiz_session_end")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model quiz_session_logs {
+  id           Int      @id @default(autoincrement()) @db.UnsignedInt
+  username     String   @db.VarChar(100)
+  name         String   @db.VarChar(100)
+  code         String   @db.VarChar(50)
+  learn_number Int
+  quiz_id      String   @db.VarChar(100)
+  action       Int      @db.TinyInt
+  duration     Int?
+  status       Int      @default(1) @db.TinyInt
+  class_id     String?  @db.VarChar(100)
+  created_at   DateTime @default(now()) @db.Timestamp(0)
+
+  @@index([quiz_id, action, created_at], map: "idx_qsl_action")
+  @@index([created_at], map: "idx_qsl_created")
+  @@index([code, learn_number, quiz_id, action], map: "idx_qsl_lookup")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model room_config {
+  code         String    @db.VarChar(50)
+  learn_number Int
+  config       Json
+  updated_by   String?   @db.VarChar(100)
+  updated_at   DateTime? @default(now()) @db.Timestamp(0)
+
+  @@id([code, learn_number])
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model stream {
+  id           Int       @id @default(autoincrement()) @db.UnsignedInt
+  code         String    @db.VarChar(50)
+  learn_number Int
+  room_id      Int?
+  stream_key   String?   @db.VarChar(200)
+  banner_url   String?   @db.VarChar(500)
+  type         Int?      @db.TinyInt
+  class_id     String?   @db.VarChar(100)
+  created_at   DateTime? @default(now()) @db.Timestamp(0)
+  updated_at   DateTime? @default(now()) @db.Timestamp(0)
+
+  @@unique([code, learn_number, room_id], map: "uq_streams")
+  @@index([code, learn_number], map: "idx_streams_code")
+  @@index([room_id], map: "idx_streams_room")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model teacher_profiles {
+  id           Int       @id @default(autoincrement()) @db.UnsignedInt
+  username     String    @unique(map: "uq_teacher_username") @db.VarChar(120)
+  teacher_type Int       @default(0) @db.TinyInt
+  display_name String?   @db.VarChar(100)
+  created_at   DateTime? @default(now()) @db.Timestamp(0)
+  updated_at   DateTime? @default(now()) @db.Timestamp(0)
+
+  @@index([teacher_type], map: "idx_teacher_type")
+}
+
+model team_notify_history {
+  id             BigInt    @id @default(autoincrement())
+  notify_type    String    @db.VarChar(50)
+  notify_key     String?
+  source         String?   @db.VarChar(100)
+  status         String    @db.VarChar(30)
+  code           String?   @db.VarChar(100)
+  channel_name   String?   @db.VarChar(255)
+  learn_number   String?   @db.VarChar(50)
+  session_date   DateTime? @db.Date
+  payload_action String?   @db.VarChar(100)
+  message_title  String?   @db.VarChar(255)
+  message_html   String?   @db.LongText
+  checked_at     DateTime? @db.DateTime(0)
+  sent_at        DateTime? @db.DateTime(0)
+  error_message  String?   @db.Text
+  meta_json      String?   @db.LongText
+  created_time   DateTime  @default(now()) @db.Timestamp(0)
+  updated_time   DateTime  @default(now()) @db.Timestamp(0)
+
+  @@index([code, learn_number], map: "idx_notify_history_code")
+  @@index([session_date, notify_type], map: "idx_notify_history_date")
+  @@index([notify_key], map: "idx_notify_history_key")
+  @@index([status], map: "idx_notify_history_status")
+}
+
+model team_notify_locks {
+  id           BigInt   @id @default(autoincrement())
+  notify_key   String   @unique(map: "uq_notify_key")
+  source       String?  @db.VarChar(100)
+  created_time DateTime @default(now()) @db.Timestamp(0)
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model user_update_queue {
+  username     String?   @db.VarChar(255)
+  code         String?   @db.VarChar(255)
+  learn_number Int?
+  room_id      Int?
+  class_id     String?   @db.VarChar(255)
+  batch_date   DateTime? @db.Date
+
+  @@index([username, code, learn_number], map: "idx_queue")
+  @@ignore
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model users {
+  id           Int      @id @default(autoincrement()) @db.UnsignedInt
+  username     String   @db.VarChar(100)
+  student_hmid String?  @db.VarChar(50)
+  email        String?  @db.VarChar(100)
+  name         String   @db.VarChar(150)
+  code         String   @db.VarChar(50)
+  learn_number Int      @default(0)
+  islearn      Int      @default(0) @db.TinyInt
+  phone        String?  @db.VarChar(20)
+  room_id      Int?
+  class_id     String?  @db.VarChar(100)
+  created_at   DateTime @default(now()) @db.Timestamp(0)
+  updated_at   DateTime @default(now()) @db.Timestamp(0)
+
+  userRoles userRoles[]
+
+  @@unique([username, code, learn_number], map: "uq_users_enroll")
+  @@index([code, learn_number], map: "idx_users_code_learn")
+  @@index([student_hmid], map: "idx_users_hmid")
+  @@index([name], map: "idx_users_name")
+  @@index([room_id], map: "idx_users_room")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model users_block {
+  id           BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  user_id      String    @db.VarChar(100)
+  user         String?   @db.VarChar(200)
+  code         String    @db.VarChar(100)
+  learn_number Int       @default(0)
+  note         String?   @db.VarChar(300)
+  expired_at   DateTime? @db.DateTime(0)
+  type         Int?      @default(0)
+  created_at   DateTime? @default(now()) @db.DateTime(0)
+  updated_at   DateTime? @default(now()) @db.DateTime(0)
+
+  @@unique([user_id, code, learn_number], map: "uq_user_block")
+  @@index([code, learn_number, expired_at], map: "idx_block_expired")
+  @@index([updated_at], map: "idx_block_updated")
+}
+
+/// This table is a partition table and requires additional setup for migrations. Visit https://pris.ly/d/partition-tables for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model users_logs {
+  id            BigInt                    @default(autoincrement()) @db.UnsignedBigInt
+  username      String                    @db.VarChar(100)
+  name          String?                   @db.VarChar(150)
+  code          String                    @db.VarChar(50)
+  learn_number  Int                       @default(0)
+  learn_date    DateTime?                 @db.Date
+  created_at    DateTime                  @default(now()) @db.Timestamp(0)
+  ischeck       Int                       @default(0) @db.TinyInt
+  ip            String?                   @db.VarChar(30)
+  status        Int?                      @default(0) @db.TinyInt
+  session_id    String?                   @db.VarChar(50)
+  url           String?                   @db.VarChar(200)
+  source_system users_logs_source_system? @default(default)
+
+  @@id([id, created_at])
+  @@index([learn_date], map: "idx_logs_learn_date")
+  @@index([created_at], map: "idx_logs_time")
+  @@index([username, code, learn_number], map: "idx_logs_user_code")
+}
+
+model users_logs_history {
+  id           BigInt   @id @default(autoincrement())
+  user         String   @db.VarChar(50)
+  code         String   @db.VarChar(50)
+  learn_number Int      @default(0)
+  learn_date   String?  @db.VarChar(40)
+  created_at   DateTime @db.DateTime(0)
+  ischeck      Int      @default(0) @db.TinyInt
+  ip           String?  @db.VarChar(30)
+  status       Int?     @default(0) @db.TinyInt
+  url          String?  @db.VarChar(50)
+
+  @@index([user, code, learn_number], map: "idx_user_code_learn")
+}
+
+
+enum quiz_content_quiz_status {
+  active
+  disable
+  done
+}
+
+enum users_logs_source_system {
+  default
+  tc
+  tu
+}
+
+enum logs_chat_new_source_system {
+  topclass
+  tu
+}
+
+enum calendar_system_type {
+  topclass
+  event
+  phaken
+  topuni
+}
+
+
+
+/// ===============================================================
+/// RBAC
+/// ===============================================================
+
+model roles {
+  id              BigInt           @id @default(autoincrement()) @db.UnsignedBigInt
+  code            String           @unique @db.VarChar(50)
+  name            String           @db.VarChar(100)
+  description     String?          @db.VarChar(255)
+  isActive        Boolean          @default(true)
+  fieldPolicy     Json?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  userRoles       userRoles[]
+  rolePermissions rolePermissions[]
+
+  @@map("roles")
+}
+
+model permissions {
+  id              BigInt           @id @default(autoincrement()) @db.UnsignedBigInt
+  code            String           @unique @db.VarChar(100)
+  name            String           @db.VarChar(100)
+  description     String?          @db.VarChar(255)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  rolePermissions rolePermissions[]
+
+  @@map("permissions")
+}
+
+model userRoles {
+  id        Int      @id @default(autoincrement())
+  userId    Int  @db.UnsignedInt
+  roleId    BigInt   @db.UnsignedBigInt
+  createdAt DateTime @default(now())
+
+  user users @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role roles @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model rolePermissions {
+  id           Int         @id @default(autoincrement())
+  roleId       BigInt      @db.UnsignedBigInt
+  permissionId BigInt      @db.UnsignedBigInt
+  createdAt    DateTime    @default(now())
+
+  role       roles       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission permissions @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+/// ===============================================================
+/// Quản lý Module và Trường (để cấu hình fieldPolicy)
+/// ===============================================================
+
+model modules {
+  id        BigInt         @id @default(autoincrement()) @db.UnsignedBigInt
+  code      String         @unique @db.VarChar(50)
+  name      String         @db.VarChar(100)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  fields    moduleFields[]
+
+  @@map("modules")
+}
+
+model moduleFields {
+  id         BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  moduleId   BigInt   @db.UnsignedBigInt
+  fieldCode  String   @db.VarChar(50)
+  fieldLabel String   @db.VarChar(100)
+  fieldType  String?  @db.VarChar(20)
+  sortOrder  Int      @default(0)
+
+  module modules @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([moduleId, fieldCode])
+  @@index([moduleId])
+  @@map("module_fields")
+}

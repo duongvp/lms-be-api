@@ -1,0 +1,90 @@
+/// ===============================================================
+/// RBAC
+/// ===============================================================
+
+model roles {
+  id              BigInt           @id @default(autoincrement()) @db.UnsignedBigInt
+  code            String           @unique @db.VarChar(50)
+  name            String           @db.VarChar(100)
+  description     String?          @db.VarChar(255)
+  isActive        Boolean          @default(true)
+  fieldPolicy     Json?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  userRoles       userRoles[]
+  rolePermissions rolePermissions[]
+
+  @@map("roles")
+}
+
+model permissions {
+  id              BigInt           @id @default(autoincrement()) @db.UnsignedBigInt
+  code            String           @unique @db.VarChar(100)
+  name            String           @db.VarChar(100)
+  description     String?          @db.VarChar(255)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  rolePermissions rolePermissions[]
+
+  @@map("permissions")
+}
+
+model userRoles {
+  id        Int      @id @default(autoincrement())
+  userId    Int  @db.UnsignedInt
+  roleId    BigInt   @db.UnsignedBigInt
+  createdAt DateTime @default(now())
+
+  user users @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role roles @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model rolePermissions {
+  id           Int         @id @default(autoincrement())
+  roleId       BigInt      @db.UnsignedBigInt
+  permissionId BigInt      @db.UnsignedBigInt
+  createdAt    DateTime    @default(now())
+
+  role       roles       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission permissions @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+/// ===============================================================
+/// Quản lý Module và Trường (để cấu hình fieldPolicy)
+/// ===============================================================
+
+model modules {
+  id        BigInt         @id @default(autoincrement()) @db.UnsignedBigInt
+  code      String         @unique @db.VarChar(50)
+  name      String         @db.VarChar(100)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  fields    moduleFields[]
+
+  @@map("modules")
+}
+
+model moduleFields {
+  id         BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  moduleId   BigInt   @db.UnsignedBigInt
+  fieldCode  String   @db.VarChar(50)
+  fieldLabel String   @db.VarChar(100)
+  fieldType  String?  @db.VarChar(20)
+  sortOrder  Int      @default(0)
+
+  module modules @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([moduleId, fieldCode])
+  @@index([moduleId])
+  @@map("module_fields")
+}

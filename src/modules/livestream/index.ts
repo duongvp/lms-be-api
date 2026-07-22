@@ -1,0 +1,1 @@
+export { default as livestreamRoute } from './livestream.route';

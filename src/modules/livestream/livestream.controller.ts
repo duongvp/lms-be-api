@@ -41,6 +41,16 @@ export const updateSchedule = async (req: Request, res: Response, next: NextFunc
   }
 };
 
+export const rescheduleSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const result = await livestreamService.rescheduleSession(Number(id), req.body);
+    res.status(200).json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
 export const cancelSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { id } = req.params;

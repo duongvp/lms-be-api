@@ -4,6 +4,7 @@ import { authRoutes } from "./modules/auth";
 import { roleRoutes } from "./modules/roles";
 import { userRoutes } from "./modules/users";
 import { livestreamRoute } from "./modules/livestream";
+import { moduleRoutes } from "./modules/modules";
 
 
 const app = express();
@@ -20,6 +21,7 @@ app.use(cors({
 
 app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);
+app.use("/api/modules", moduleRoutes);
 app.use("/livestreams", livestreamRoute);
 app.use("/api/auth", authRoutes)
 

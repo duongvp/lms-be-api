@@ -27,9 +27,9 @@ Cho phép sửa: - Thời gian - Giáo viên - Lesson - Tên bài - Phòng học
 Chỉ cập nhật đúng một buổi, các buổi phía sau giữ nguyên.
 
 2.2. Sửa và cập nhật các buổi phía sau
-Áp dụng khi thay đổi ảnh hưởng đến tiến độ học.
+    Áp dụng khi thay đổi ảnh hưởng đến tiến độ học.
 
-Ví dụ: Buổi 5 nghỉ và lùi đề cương một buổi.
+    Ví dụ: Buổi 5 nghỉ và lùi đề cương một buổi.
 
 Hệ thống tự động: - Dời lesson của các buổi sau xuống 1 buổi. - Cập nhật lesson_name. - Cập nhật lesson_count (nếu có). - Giữ nguyên thứ tự đề cương.
 

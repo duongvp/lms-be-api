@@ -1,10 +1,13 @@
-import { PrismaClient } from '@prisma/client';
-import ApiError from '../../utils/ApiError';
-import FieldPermissionService from './field-permission.service';
-
-const prisma = new PrismaClient();
-
-const ACTION_LABELS: Record<string, string> = {
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const client_1 = require("@prisma/client");
+const ApiError_1 = __importDefault(require("../../utils/ApiError"));
+const field_permission_service_1 = __importDefault(require("./field-permission.service"));
+const prisma = new client_1.PrismaClient();
+const ACTION_LABELS = {
     view: 'Xem DS',
     create: 'Thêm mới',
     update: 'Cập nhật',
@@ -16,12 +19,10 @@ const ACTION_LABELS: Record<string, string> = {
     reset_password: 'Đặt lại mật khẩu',
     // thêm các action khác nếu cần
 };
-
 // Hàm lấy tên hiển thị từ action code
-function getActionLabel(action: string): string {
+function getActionLabel(action) {
     return ACTION_LABELS[action] || action;
 }
-
 const RoleService = {
     async getAllRoles() {
         try {
@@ -33,12 +34,12 @@ const RoleService = {
                 ...role,
                 id: Number(role.id)
             }));
-        } catch (error) {
-            throw new ApiError('Failed to fetch roles', 500);
+        }
+        catch (error) {
+            throw new ApiError_1.default('Failed to fetch roles', 500);
         }
     },
-
-    async getRoleById(roleId: string | number) {
+    async getRoleById(roleId) {
         try {
             const id = BigInt(roleId);
             const role = await prisma.roles.findUnique({
@@ -51,37 +52,35 @@ const RoleService = {
                     }
                 }
             });
-
             if (!role) {
-                throw new ApiError('Role not found', 404);
+                throw new ApiError_1.default('Role not found', 404);
             }
-
             return {
                 id: Number(role.id),
                 code: role.code,
                 name: role.name,
                 description: role.description,
                 isActive: role.isActive,
-                fieldPolicy: role.fieldPolicy,  // <-- thêm dòng này
+                fieldPolicy: role.fieldPolicy, // <-- thêm dòng này
                 permissions: role.rolePermissions.map(rp => ({
                     key: rp.permission.code,
                     name: rp.permission.name
                 })),
             };
-        } catch (error: any) {
-            if (error instanceof ApiError) throw error;
+        }
+        catch (error) {
+            if (error instanceof ApiError_1.default)
+                throw error;
             console.error(error);
-            throw new ApiError('Failed to fetch role', 500);
+            throw new ApiError_1.default('Failed to fetch role', 500);
         }
     },
-
-    async createRoleWithPermissions(roleData: any) {
+    async createRoleWithPermissions(roleData) {
         try {
             return await prisma.$transaction(async (tx) => {
                 // 1. Check if code or name exists
                 const code = roleData.code || roleData.role_name.toLowerCase().replace(/\s+/g, '_');
                 const name = roleData.role_name || roleData.name;
-
                 const existingRole = await tx.roles.findFirst({
                     where: {
                         OR: [
@@ -90,32 +89,27 @@ const RoleService = {
                         ]
                     }
                 });
-
                 if (existingRole) {
-                    throw new ApiError('Role name or code already exists', 400);
+                    throw new ApiError_1.default('Role name or code already exists', 400);
                 }
-
                 // 2. Validate permissions if provided
-                let validPermissions: any[] = [];
+                let validPermissions = [];
                 if (roleData.permissions && roleData.permissions.length > 0) {
-                    const permissionKeys = roleData.permissions.map((p: any) => p.key || p.code);
+                    const permissionKeys = roleData.permissions.map((p) => p.key || p.code);
                     validPermissions = await tx.permissions.findMany({
                         where: {
                             code: { in: permissionKeys }
                         }
                     });
-
                     if (validPermissions.length !== permissionKeys.length) {
                         const foundKeys = validPermissions.map(p => p.code);
-                        const missingKeys = permissionKeys.filter((key: string) => !foundKeys.includes(key));
-                        throw new ApiError(`Permissions not found: ${missingKeys.join(', ')}`, 400);
+                        const missingKeys = permissionKeys.filter((key) => !foundKeys.includes(key));
+                        throw new ApiError_1.default(`Permissions not found: ${missingKeys.join(', ')}`, 400);
                     }
                 }
-
                 const fieldPolicy = roleData.fieldPolicy
-                    ? await FieldPermissionService.validateFieldPolicy(roleData.fieldPolicy)
+                    ? await field_permission_service_1.default.validateFieldPolicy(roleData.fieldPolicy)
                     : undefined;
-
                 // 3. Create role with nested relations
                 const newRole = await tx.roles.create({
                     data: {
@@ -137,7 +131,6 @@ const RoleService = {
                         }
                     }
                 });
-
                 return {
                     success: true,
                     role_id: Number(newRole.id),
@@ -150,13 +143,14 @@ const RoleService = {
                     }
                 };
             });
-        } catch (error: any) {
-            if (error instanceof ApiError) throw error;
-            throw new ApiError('Failed to create role: ' + error.message, 500);
+        }
+        catch (error) {
+            if (error instanceof ApiError_1.default)
+                throw error;
+            throw new ApiError_1.default('Failed to create role: ' + error.message, 500);
         }
     },
-
-    async updateRoleWithPermissions(roleId: string | number, roleData: any) {
+    async updateRoleWithPermissions(roleId, roleData) {
         try {
             const id = BigInt(roleId);
             return await prisma.$transaction(async (tx) => {
@@ -164,39 +158,35 @@ const RoleService = {
                 const existingRole = await tx.roles.findUnique({
                     where: { id }
                 });
-
                 if (!existingRole) {
-                    throw new ApiError('Role not found', 404);
+                    throw new ApiError_1.default('Role not found', 404);
                 }
-
                 const name = roleData.role_name || roleData.name;
-                const updateData: any = {};
-                if (name) updateData.name = name;
-                if (roleData.description !== undefined) updateData.description = roleData.description;
+                const updateData = {};
+                if (name)
+                    updateData.name = name;
+                if (roleData.description !== undefined)
+                    updateData.description = roleData.description;
                 if (roleData.fieldPolicy !== undefined) {
-                    updateData.fieldPolicy = await FieldPermissionService.validateFieldPolicy(roleData.fieldPolicy);
+                    updateData.fieldPolicy = await field_permission_service_1.default.validateFieldPolicy(roleData.fieldPolicy);
                 }
-
                 // 2. Handle permissions update if provided
                 if (roleData.permissions) {
                     // Delete old permissions
                     await tx.rolePermissions.deleteMany({
                         where: { roleId: id }
                     });
-
-                    const permissionKeys = roleData.permissions.map((p: any) => p.key || p.code);
+                    const permissionKeys = roleData.permissions.map((p) => p.key || p.code);
                     const validPermissions = await tx.permissions.findMany({
                         where: {
                             code: { in: permissionKeys }
                         }
                     });
-
                     if (validPermissions.length !== permissionKeys.length) {
                         const foundKeys = validPermissions.map(p => p.code);
-                        const missingKeys = permissionKeys.filter((key: string) => !foundKeys.includes(key));
-                        throw new ApiError(`Permissions not found: ${missingKeys.join(', ')}`, 400);
+                        const missingKeys = permissionKeys.filter((key) => !foundKeys.includes(key));
+                        throw new ApiError_1.default(`Permissions not found: ${missingKeys.join(', ')}`, 400);
                     }
-
                     // Assign new permissions
                     updateData.rolePermissions = {
                         create: validPermissions.map(p => ({
@@ -204,7 +194,6 @@ const RoleService = {
                         }))
                     };
                 }
-
                 // 3. Execute update
                 const updatedRole = await tx.roles.update({
                     where: { id },
@@ -215,7 +204,6 @@ const RoleService = {
                         }
                     }
                 });
-
                 return {
                     success: true,
                     role: {
@@ -231,13 +219,14 @@ const RoleService = {
                     }
                 };
             });
-        } catch (error: any) {
-            if (error instanceof ApiError) throw error;
-            throw new ApiError('Failed to update role: ' + error.message, 500);
+        }
+        catch (error) {
+            if (error instanceof ApiError_1.default)
+                throw error;
+            throw new ApiError_1.default('Failed to update role: ' + error.message, 500);
         }
     },
-
-    async deleteRole(roleId: string | number) {
+    async deleteRole(roleId) {
         try {
             const id = BigInt(roleId);
             return await prisma.$transaction(async (tx) => {
@@ -245,52 +234,42 @@ const RoleService = {
                     where: { id },
                     include: { userRoles: true }
                 });
-
                 if (!role) {
-                    throw new ApiError('Role not found', 404);
+                    throw new ApiError_1.default('Role not found', 404);
                 }
-
                 if (role.userRoles && role.userRoles.length > 0) {
                     const userIds = role.userRoles.map(ur => ur.userId);
-
                     // We assume users table has is_deleted or we fallback if it doesn't.
                     // For safety, let's just use queryRaw because schema might not have users fully defined here.
-                    const activeUsers: any = await tx.$queryRawUnsafe(
-                        `SELECT COUNT(*) as count FROM users WHERE id IN (?) AND is_deleted = 0`,
-                        userIds
-                    );
-
+                    const activeUsers = await tx.$queryRawUnsafe(`SELECT COUNT(*) as count FROM users WHERE id IN (?) AND is_deleted = 0`, userIds);
                     const count = Number(activeUsers[0]?.count || 0);
-
                     if (count > 0) {
-                        throw new ApiError('Cannot delete role that is assigned to active users', 400);
+                        throw new ApiError_1.default('Cannot delete role that is assigned to active users', 400);
                     }
-
                     // Soft delete
                     await tx.roles.update({
                         where: { id },
                         data: { isActive: false }
                     });
-
                     return {
                         success: true,
                         message: `Soft deleted role '${role.name}' because it's assigned to deleted users`
                     };
                 }
-
                 // Hard delete
                 await tx.roles.delete({
                     where: { id }
                 });
-
                 return {
                     success: true,
                     message: `Deleted role '${role.name}'`
                 };
             });
-        } catch (error: any) {
-            if (error instanceof ApiError) throw error;
-            throw new ApiError('Failed to delete role: ' + error.message, 500);
+        }
+        catch (error) {
+            if (error instanceof ApiError_1.default)
+                throw error;
+            throw new ApiError_1.default('Failed to delete role: ' + error.message, 500);
         }
     },
     async getModulesStructure() {
@@ -310,7 +289,6 @@ const RoleService = {
                 },
                 orderBy: { id: 'asc' },
             });
-
             return modules.map(mod => ({
                 id: Number(mod.id),
                 code: mod.code,
@@ -320,56 +298,49 @@ const RoleService = {
                     id: Number(field.id),
                 })),
             }));
-        } catch (error) {
-            throw new ApiError('Failed to fetch modules structure', 500);
+        }
+        catch (error) {
+            throw new ApiError_1.default('Failed to fetch modules structure', 500);
         }
     },
-
     async getPermissionsStructure() {
         try {
             const permissions = await prisma.permissions.findMany({
                 orderBy: { code: 'asc' },
             });
-
             // Nhóm permissions theo module (phần đầu của code trước dấu '.')
-            const structure: Record<string, any> = {};
-
+            const structure = {};
             for (const perm of permissions) {
                 const parts = perm.code.split('.');
-                if (parts.length < 2) continue; // bỏ qua nếu không đúng format
+                if (parts.length < 2)
+                    continue; // bỏ qua nếu không đúng format
                 const moduleCode = parts[0];
                 const action = parts.slice(1).join('.'); // vì có thể có action phức như 'reset_password'
-
                 // Lấy tên module từ DB (có thể cache)
                 const module = await prisma.modules.findUnique({
                     where: { code: moduleCode },
                     select: { name: true },
                 });
                 const groupName = module?.name || moduleCode; // nếu không tìm thấy thì dùng code
-
                 if (!structure[groupName]) {
                     structure[groupName] = {};
                 }
-
                 // Mỗi module chỉ có 1 menu cùng tên (hoặc có thể tạo menu con nếu sau này cần)
                 const menuName = groupName; // dùng chính tên module làm menu
-
                 if (!structure[groupName][menuName]) {
                     structure[groupName][menuName] = {
                         actions: [],
                         keys: [],
                     };
                 }
-
                 structure[groupName][menuName].actions.push(getActionLabel(action));
                 structure[groupName][menuName].keys.push(perm.code);
             }
-
             return structure;
-        } catch (error) {
-            throw new ApiError('Failed to fetch permissions structure', 500);
+        }
+        catch (error) {
+            throw new ApiError_1.default('Failed to fetch permissions structure', 500);
         }
     },
 };
-
-export default RoleService;
+exports.default = RoleService;

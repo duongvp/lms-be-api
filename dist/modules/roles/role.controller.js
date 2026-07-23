@@ -1,8 +1,11 @@
-import { Request, Response } from 'express';
-import RoleService from './role.service';
-import FieldPermissionService from './field-permission.service';
-import { SuccessResponse, ErrorResponse } from '../../utils/apiResponse';
-
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const role_service_1 = __importDefault(require("./role.service"));
+const field_permission_service_1 = __importDefault(require("./field-permission.service"));
+const apiResponse_1 = require("../../utils/apiResponse");
 const MOCK_MODULES = [
     {
         code: 'schedule_summary',
@@ -44,7 +47,6 @@ const MOCK_MODULES = [
         ]
     }
 ];
-
 const permissionsStructure = {
     "Hệ thống": {
         "Người dùng": {
@@ -113,102 +115,100 @@ const permissionsStructure = {
         }
     }
 };
-
-const getAllRoles = async (req: Request, res: Response) => {
+const getAllRoles = async (req, res) => {
     try {
-        const roles = await RoleService.getAllRoles();
-        return SuccessResponse(res, 'Success', roles);
-    } catch (error: any) {
-        return ErrorResponse(res, error.message, error.statusCode || 500);
+        const roles = await role_service_1.default.getAllRoles();
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', roles);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
-
-const getRoleById = async (req: Request, res: Response) => {
+const getRoleById = async (req, res) => {
     try {
         const { id } = req.params;
-        const role = await RoleService.getRoleById(id as any);
-        return SuccessResponse(res, 'Success', role);
-    } catch (error: any) {
-        return ErrorResponse(res, error.message, error.statusCode || 500);
+        const role = await role_service_1.default.getRoleById(id);
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', role);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
-
-const createRole = async (req: Request, res: Response) => {
+const createRole = async (req, res) => {
     try {
         const roleData = req.body;
-        const newRole = await RoleService.createRoleWithPermissions(roleData);
+        const newRole = await role_service_1.default.createRoleWithPermissions(roleData);
         // Using HTTP 201 for creation, though SuccessResponse returns 200, we can use res directly or stick to SuccessResponse
         return res.status(201).json({
             success: true,
             message: 'Role created successfully',
             data: newRole
         });
-    } catch (error: any) {
-        return ErrorResponse(res, error.message, error.statusCode || 500);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
-
-const updateRole = async (req: Request, res: Response) => {
+const updateRole = async (req, res) => {
     try {
         const { id } = req.params;
         const roleData = req.body;
-        const updatedRole = await RoleService.updateRoleWithPermissions(id as any, roleData);
-        return SuccessResponse(res, 'Role updated successfully', updatedRole);
-    } catch (error: any) {
-        return ErrorResponse(res, error.message, error.statusCode || 500);
+        const updatedRole = await role_service_1.default.updateRoleWithPermissions(id, roleData);
+        return (0, apiResponse_1.SuccessResponse)(res, 'Role updated successfully', updatedRole);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
-
-const deleteRole = async (req: Request, res: Response) => {
+const deleteRole = async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await RoleService.deleteRole(id as any);
-        return SuccessResponse(res, result.message, result);
-    } catch (error: any) {
-        return ErrorResponse(res, error.message, error.statusCode || 500);
+        const result = await role_service_1.default.deleteRole(id);
+        return (0, apiResponse_1.SuccessResponse)(res, result.message, result);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
-
-const getModulesStructure = async (req: Request, res: Response) => {
+const getModulesStructure = async (req, res) => {
     try {
-        const modules = await RoleService.getModulesStructure();
-        return SuccessResponse(res, 'Success', modules);
-    } catch (error: any) {
-        return ErrorResponse(res, error.message, error.statusCode || 500);
+        const modules = await role_service_1.default.getModulesStructure();
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', modules);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
-
-const getRoleFieldPolicy = async (req: Request, res: Response) => {
-    try {
-        const { id } = req.params;
-        const result = await FieldPermissionService.getRoleFieldPolicy(id as string);
-        return SuccessResponse(res, 'Success', result);
-    } catch (error: any) {
-        return ErrorResponse(res, error.message, error.statusCode || 500);
-    }
-};
-
-const updateRoleFieldPolicy = async (req: Request, res: Response) => {
+const getRoleFieldPolicy = async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await FieldPermissionService.updateRoleFieldPolicy(id as string, req.body?.fieldPolicy);
-        return SuccessResponse(res, 'Field policy updated successfully', result);
-    } catch (error: any) {
-        return ErrorResponse(res, error.message, error.statusCode || 500);
+        const result = await field_permission_service_1.default.getRoleFieldPolicy(id);
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', result);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
-
-const getPermissionsStructure = async (req: Request, res: Response) => {
+const updateRoleFieldPolicy = async (req, res) => {
     try {
-        const permissions = await RoleService.getPermissionsStructure();
-        return SuccessResponse(res, 'Success', permissions);
-    } catch (error: any) {
-        return ErrorResponse(res, error.message, error.statusCode || 500);
+        const { id } = req.params;
+        const result = await field_permission_service_1.default.updateRoleFieldPolicy(id, req.body?.fieldPolicy);
+        return (0, apiResponse_1.SuccessResponse)(res, 'Field policy updated successfully', result);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
-
-
-export default {
+const getPermissionsStructure = async (req, res) => {
+    try {
+        const permissions = await role_service_1.default.getPermissionsStructure();
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', permissions);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
+    }
+};
+exports.default = {
     getAllRoles,
     getRoleById,
     createRole,

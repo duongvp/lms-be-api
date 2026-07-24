@@ -20,6 +20,7 @@ async function main() {
   const modulesData = [
     { code: 'users', name: 'Quản lý người dùng' },
     { code: 'calendar', name: 'Lịch học' },
+    { code: 'lessons', name: 'Nội dung bài học' },
     { code: 'quiz', name: 'Bài kiểm tra' },
     { code: 'logs', name: 'Nhật ký truy cập' },
     { code: 'stream', name: 'Livestream' },
@@ -64,6 +65,22 @@ async function main() {
     { moduleCode: 'calendar', fieldCode: 'lesson_document', fieldLabel: 'Tài liệu', fieldType: 'text', sortOrder: 10 },
     { moduleCode: 'calendar', fieldCode: 'evg_stream', fieldLabel: 'Stream', fieldType: 'text', sortOrder: 11 },
     { moduleCode: 'calendar', fieldCode: 'lesson_status', fieldLabel: 'Trạng thái', fieldType: 'number', sortOrder: 12 },
+
+    // Lessons
+    { moduleCode: 'lessons', fieldCode: 'id', fieldLabel: 'ID', fieldType: 'number', sortOrder: 1 },
+    { moduleCode: 'lessons', fieldCode: 'grade', fieldLabel: 'Khối', fieldType: 'select', sortOrder: 2 },
+    { moduleCode: 'lessons', fieldCode: 'subject_name', fieldLabel: 'Tên môn học', fieldType: 'select', sortOrder: 3 },
+    { moduleCode: 'lessons', fieldCode: 'learn_number', fieldLabel: 'Số thứ tự bài', fieldType: 'number', sortOrder: 4 },
+    { moduleCode: 'lessons', fieldCode: 'lesson_name', fieldLabel: 'Tên bài học', fieldType: 'text', sortOrder: 5 },
+    { moduleCode: 'lessons', fieldCode: 'lesson_document', fieldLabel: 'Tài liệu bài học', fieldType: 'textarea', sortOrder: 6 },
+    { moduleCode: 'lessons', fieldCode: 'lesson_baitap', fieldLabel: 'Bài tập', fieldType: 'textarea', sortOrder: 7 },
+    { moduleCode: 'lessons', fieldCode: 'lesson_tomtat', fieldLabel: 'Tóm tắt', fieldType: 'textarea', sortOrder: 8 },
+    { moduleCode: 'lessons', fieldCode: 'lesson_phuongphap', fieldLabel: 'Phương pháp', fieldType: 'textarea', sortOrder: 9 },
+    { moduleCode: 'lessons', fieldCode: 'lesson_luuy', fieldLabel: 'Lưu ý', fieldType: 'textarea', sortOrder: 10 },
+    { moduleCode: 'lessons', fieldCode: 'lesson_ketqua', fieldLabel: 'Kết quả', fieldType: 'textarea', sortOrder: 11 },
+    { moduleCode: 'lessons', fieldCode: 'status', fieldLabel: 'Trạng thái', fieldType: 'number', sortOrder: 12 },
+    { moduleCode: 'lessons', fieldCode: 'created_at', fieldLabel: 'Ngày tạo', fieldType: 'datetime', sortOrder: 13 },
+    { moduleCode: 'lessons', fieldCode: 'updated_at', fieldLabel: 'Ngày cập nhật', fieldType: 'datetime', sortOrder: 14 },
 
     // Quiz
     { moduleCode: 'quiz', fieldCode: 'id', fieldLabel: 'ID', fieldType: 'number', sortOrder: 1 },
@@ -183,6 +200,7 @@ async function main() {
         modules: {
           users: { fields: { '*': { visible: true, editable: true } } },
           calendar: { fields: { '*': { visible: true, editable: true } } },
+          lessons: { fields: { '*': { visible: true, editable: true } } },
           quiz: { fields: { '*': { visible: true, editable: true } } },
           logs: { fields: { '*': { visible: true, editable: true } } },
           stream: { fields: { '*': { visible: true, editable: true } } },
@@ -199,6 +217,7 @@ async function main() {
         modules: {
           users: { fields: { '*': { visible: true, editable: true } } },
           calendar: { fields: { '*': { visible: true, editable: true } } },
+          lessons: { fields: { '*': { visible: true, editable: true } } },
           quiz: { fields: { '*': { visible: true, editable: true } } },
           logs: { fields: { '*': { visible: true, editable: false } } }, // chỉ xem log, không sửa
           stream: { fields: { '*': { visible: true, editable: true } } },
@@ -217,6 +236,7 @@ async function main() {
         modules: {
           users: { fields: { '*': { visible: false, editable: false } } }, // không xem user
           calendar: { fields: { '*': { visible: true, editable: true } } },
+          lessons: { fields: { '*': { visible: true, editable: false } } },
           quiz: { fields: { '*': { visible: true, editable: true } } },
           logs: { fields: { '*': { visible: false, editable: false } } },
           stream: { fields: { '*': { visible: true, editable: true } } },
@@ -226,6 +246,7 @@ async function main() {
       permissions: allPermissions
         .filter(p =>
           p.code.startsWith('calendar.') ||
+          p.code === 'lessons.view' ||
           p.code.startsWith('quiz.') ||
           p.code.startsWith('stream.') ||
           p.code === 'teacher.view'
@@ -252,6 +273,14 @@ async function main() {
               // các trường khác ẩn
             }
           },
+          lessons: {
+            fields: {
+              grade: { visible: true, editable: false },
+              subject_name: { visible: true, editable: false },
+              learn_number: { visible: true, editable: false },
+              lesson_name: { visible: true, editable: false },
+            }
+          },
           quiz: {
             fields: {
               quiz_name: { visible: true, editable: false },
@@ -274,6 +303,7 @@ async function main() {
       permissions: allPermissions
         .filter(p =>
           p.code === 'calendar.view' ||
+          p.code === 'lessons.view' ||
           p.code === 'quiz.view' ||
           p.code === 'stream.view'
         )

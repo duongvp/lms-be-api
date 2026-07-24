@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getCalendar = exports.cancelSession = exports.updateSchedule = exports.updateBulk = exports.createBulk = exports.createSingle = void 0;
+exports.getCalendar = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const createSingle = async (req, res, next) => {
     try {
@@ -79,6 +79,17 @@ const updateSchedule = async (req, res, next) => {
     }
 };
 exports.updateSchedule = updateSchedule;
+const rescheduleSession = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const result = await livestreamService.rescheduleSession(Number(id), req.body);
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.rescheduleSession = rescheduleSession;
 const cancelSession = async (req, res, next) => {
     try {
         const { id } = req.params;

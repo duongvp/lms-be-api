@@ -41,6 +41,27 @@ model calendar {
   @@index([start_time, end_time], map: "idx_calendar_time")
 }
 
+model lessons {
+  id                BigInt   @id @default(autoincrement())
+  grade             Int
+  subject_code      String   @db.VarChar(20)
+  subject_name      String   @db.VarChar(100)
+  learn_number      Int
+  lesson_name       String   @db.VarChar(400)
+  lesson_document   String?  @db.VarChar(500)
+  lesson_baitap     String?  @db.VarChar(500)
+  lesson_tomtat     String?  @db.VarChar(500)
+  lesson_phuongphap String?  @db.VarChar(500)
+  lesson_luuy       String?  @db.VarChar(500)
+  lesson_ketqua     String?  @db.VarChar(500)
+  status            Int      @default(1)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  @@unique([grade, subject_code, learn_number], map: "uq_lessons_grade_subject_learn")
+  @@index([grade, subject_code], map: "idx_lessons_grade_subject")
+}
+
 model evg_callbacks {
   id              BigInt    @id @default(autoincrement())
   live_session_id String?   @db.VarChar(100)

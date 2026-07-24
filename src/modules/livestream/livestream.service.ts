@@ -69,13 +69,65 @@ const normalizeRoom = (data: any) => {
   return data;
 };
 
+const hydrateLessonData = async (tx: any, input: any) => {
+  const data = { ...input };
+  const lessonId = data.lesson_id;
+  const customLessonName = typeof data.lesson_name === 'string'
+    ? data.lesson_name.trim()
+    : '';
+
+  if (customLessonName.length > 400) {
+    throw new Error("lesson_name không được vượt quá 400 ký tự");
+  }
+
+  delete data.lesson_id;
+  delete data.grade;
+  delete data.subject_code;
+  delete data.subject_name;
+
+  // Các client cũ không gửi lesson_id vẫn tiếp tục dùng payload calendar hiện tại.
+  if (lessonId === undefined || lessonId === null || lessonId === '') {
+    return data;
+  }
+
+  let parsedLessonId: bigint;
+  try {
+    parsedLessonId = BigInt(lessonId);
+  } catch {
+    throw new Error("lesson_id không hợp lệ");
+  }
+
+  const lessons = await tx.$queryRawUnsafe(
+    'SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1',
+    parsedLessonId
+  ) as any[];
+  const lesson = lessons[0];
+
+  if (!lesson) {
+    throw new Error("Bài học không tồn tại hoặc đã ngừng hoạt động");
+  }
+
+  return {
+    ...data,
+    learn_number: lesson.learn_number,
+    subject: lesson.subject_name,
+    lesson_name: customLessonName || lesson.lesson_name,
+    lesson_document: lesson.lesson_document,
+    lesson_baitap: lesson.lesson_baitap,
+    lesson_tomtat: lesson.lesson_tomtat,
+    lesson_phuongphap: lesson.lesson_phuongphap,
+    lesson_luuy: lesson.lesson_luuy,
+    lesson_ketqua: lesson.lesson_ketqua,
+  };
+};
+
 const ensureValidTimeRange = (startTime: Date, endTime: Date) => {
   if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
     throw new Error("Thời gian không hợp lệ");
   }
 
   if (startTime >= endTime) {
-    throw new Error("start_time phải nhỏ hơn end_time");
+    throw new Error("Thời gian kết thúc phải sau thời gian bắt đầu");
   }
 };
 
@@ -89,6 +141,18 @@ const ensureNotAfterCourseEnd = (endTime: Date, courseEndTime?: unknown) => {
 
   if (endTime > courseEnd) {
     throw new Error("Lịch học không được vượt ngày kết thúc khóa học");
+  }
+};
+
+const startOfDay = (value: Date) => {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const ensureNotBeforeDate = (value: Date, minDate: Date, message: string) => {
+  if (startOfDay(value) < startOfDay(minDate)) {
+    throw new Error(message);
   }
 };
 
@@ -236,7 +300,7 @@ const prepareCalendarCreateData = async (
   input: any,
   reservedCounts?: Map<string, Set<number>>
 ) => {
-  const data = normalizeRoom({ ...input });
+  const data = normalizeRoom(await hydrateLessonData(tx, input));
   if (!data.code) {
     throw new Error("Vui lòng cung cấp mã khóa học");
   }
@@ -395,17 +459,23 @@ export const createBulk = async (config: any) => {
   return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
     const createdCalendars = [];
 
-    for (const cal of calendars) {
-      const calendarData = await prepareCalendarCreateData(tx, cal, reservedCounts);
-      await checkConflict({
-        teacher: calendarData.teacher,
-        channel_name: calendarData.channel_name,
-        code: calendarData.code,
-        start_time: calendarData.start_time,
-        end_time: calendarData.end_time,
-        client: tx,
-      });
-      createdCalendars.push(await tx.calendar.create({ data: calendarData }));
+    for (let index = 0; index < calendars.length; index += 1) {
+      const cal = calendars[index];
+      try {
+        const calendarData = await prepareCalendarCreateData(tx, cal, reservedCounts);
+        await checkConflict({
+          teacher: calendarData.teacher,
+          channel_name: calendarData.channel_name,
+          code: calendarData.code,
+          start_time: calendarData.start_time,
+          end_time: calendarData.end_time,
+          client: tx,
+        });
+        createdCalendars.push(await tx.calendar.create({ data: calendarData }));
+      } catch (error: any) {
+        const lessonLabel = cal.lesson_name ? ` (${cal.lesson_name})` : '';
+        throw new Error(`Buổi ${index + 1}${lessonLabel}: ${error.message || 'Không thể tạo lịch học'}`);
+      }
     }
 
     return { count: createdCalendars.length, calendars: createdCalendars };
@@ -425,6 +495,11 @@ const cancelWithMakeup = async (tx: any, current: any, payload: any) => {
   const endTime = new Date(newSessionInput.end_time);
   const systemType = String(current.system_type || 'topclass');
   ensureNotAfterCourseEnd(endTime, payload.course_end_time);
+  ensureNotBeforeDate(
+    startTime,
+    current.start_time,
+    "Ngày học bù không được trước ngày của buổi học hiện tại"
+  );
 
   await checkConflict({
     teacher: newSessionInput.teacher ?? current.teacher,
@@ -478,7 +553,19 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any) => {
   const startTime = new Date(newSessionInput.start_time);
   const endTime = new Date(newSessionInput.end_time);
   const systemType = String(current.system_type || 'topclass');
-  ensureNotAfterCourseEnd(endTime, payload.course_end_time);
+  const lastCourseSession = await tx.calendar.findFirst({
+    where: {
+      code: current.code,
+      system_type: current.system_type,
+    },
+    orderBy: [{ end_time: 'desc' }, { id: 'desc' }],
+    select: { end_time: true },
+  });
+  ensureNotBeforeDate(
+    startTime,
+    lastCourseSession?.end_time ?? current.end_time,
+    "Ngày buổi mới không được trước ngày kết thúc khóa"
+  );
 
   await checkConflict({
     teacher: newSessionInput.teacher ?? current.teacher,
@@ -677,6 +764,7 @@ export const getCalendar = async (query: any) => {
 
   const keyword = normalizeString(query.keyword);
   const code = normalizeString(query.code);
+  const exactCode = normalizeString(query.code_exact);
   const teacher = normalizeString(query.teacher);
   const subject = normalizeString(query.subject);
   const classroom = normalizeString(query.classroom);
@@ -684,8 +772,13 @@ export const getCalendar = async (query: any) => {
   const lessonStatus = normalizeNumber(query.lesson_status, 'lesson_status');
   const startTime = normalizeDate(query.start_time, 'start_time');
   const endTime = normalizeDate(query.end_time, 'end_time');
-  const sortBy = normalizeString(query.sort_by);
-  const sortOrder = normalizeSortOrder(query.sort_order);
+  const sortFields = (normalizeString(query.sort_by) || '')
+    .split(',')
+    .map((field) => field.trim())
+    .filter((field) => CALENDAR_SORT_FIELDS.includes(field));
+  const requestedSortOrders = (normalizeString(query.sort_order) || '')
+    .split(',')
+    .map((order) => normalizeSortOrder(order));
 
   if (systemType && !CALENDAR_SYSTEM_TYPES.includes(systemType)) {
     throw new Error('system_type không hợp lệ');
@@ -711,7 +804,11 @@ export const getCalendar = async (query: any) => {
       { channel_name: { contains: keyword } },
     ];
   }
-  if (code) where.code = { contains: code };
+  if (exactCode) {
+    where.code = exactCode;
+  } else if (code) {
+    where.code = { contains: code };
+  }
   if (teacher) where.teacher = { contains: teacher };
   if (subject) where.subject = { contains: subject };
   if (classroom) where.channel_name = { contains: classroom };
@@ -724,9 +821,11 @@ export const getCalendar = async (query: any) => {
     };
   }
 
-  const orderBy = sortBy && CALENDAR_SORT_FIELDS.includes(sortBy)
-    ? { [sortBy]: sortOrder }
-    : { start_time: 'asc' as Prisma.SortOrder };
+  const orderBy: Prisma.calendarOrderByWithRelationInput[] = sortFields.length
+    ? sortFields.map((field, index) => ({
+        [field]: requestedSortOrders[index] ?? 'asc',
+      }))
+    : [{ start_time: 'asc' }];
 
   const [total, data] = await Promise.all([
     prisma.calendar.count({ where }),

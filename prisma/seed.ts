@@ -409,6 +409,80 @@ async function main() {
     console.log(`✅ Gán role ${mapping.roleCode} cho user ${mapping.username}`);
   }
 
+  // ---------- 6. Seed package_lesson_mapping ----------
+  // Không set id vì id là autoincrement trong DB.
+  const packageLessonMappingsData = [
+    {
+      package_id: '9150',
+      lesson_id: '171233',
+      code: 'nguvan-6-2027',
+      learn_number: 1,
+      key: 'tc_2627_nguvan-6-2027_1',
+    },
+    {
+      package_id: '9174',
+      lesson_id: '171310',
+      code: 'nguvan-6-2027',
+      learn_number: 1,
+      key: 'tc_2627_nguvan-6-2027_1',
+    },
+    {
+      package_id: '9150',
+      lesson_id: '171234',
+      code: 'nguvan-6-2027',
+      learn_number: 2,
+      key: 'tc_2627_nguvan-6-2027_2',
+    },
+    {
+      package_id: '9174',
+      lesson_id: '173131',
+      code: 'nguvan-6-2027',
+      learn_number: 2,
+      key: 'tc_2627_nguvan-6-2027_2',
+    },
+    {
+      package_id: '9150',
+      lesson_id: '171237',
+      code: 'nguvan-6-2027',
+      learn_number: 3,
+      key: 'tc_2627_nguvan-6-2027_3',
+    },
+    {
+      package_id: '9174',
+      lesson_id: '173134',
+      code: 'nguvan-6-2027',
+      learn_number: 3,
+      key: 'tc_2627_nguvan-6-2027_3',
+    },
+    {
+      package_id: '9150',
+      lesson_id: '174392',
+      code: 'nguvan-6-2027',
+      learn_number: 4,
+      key: 'tc_2627_nguvan-6-2027_4',
+    },
+  ];
+
+  await prisma.package_lesson_mapping.deleteMany({
+    where: {
+      code: 'nguvan-6-2027',
+      package_id: { in: ['9150', '9174'] },
+      key: {
+        in: [
+          'tc_2627_nguvan-6-2027_1',
+          'tc_2627_nguvan-6-2027_2',
+          'tc_2627_nguvan-6-2027_3',
+          'tc_2627_nguvan-6-2027_4',
+        ],
+      },
+    },
+  });
+
+  await prisma.package_lesson_mapping.createMany({
+    data: packageLessonMappingsData,
+  });
+  console.log(`✅ Đã seed ${packageLessonMappingsData.length} package_lesson_mapping`);
+
   console.log('🎉 Seed dữ liệu hoàn tất!');
 }
 

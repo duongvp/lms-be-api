@@ -152,6 +152,29 @@ const replacePackageLessonMapping = async (tx, sourceKey, targetKey, targetLearn
     const sourceMappings = await tx.package_lesson_mapping.findMany({
         where: { key: sourceKey },
     });
+    await replacePackageLessonMappingRows(tx, sourceMappings, targetKey, targetLearnNumber);
+};
+const getPackageLessonMappingSnapshot = async (tx, keys) => {
+    const uniqueKeys = Array.from(new Set(keys.filter(Boolean).map((key) => String(key))));
+    if (uniqueKeys.length === 0)
+        return new Map();
+    const mappings = await tx.package_lesson_mapping.findMany({
+        where: { key: { in: uniqueKeys } },
+    });
+    const mappingByKey = new Map();
+    mappings.forEach((mapping) => {
+        if (!mapping.key)
+            return;
+        const key = String(mapping.key);
+        const currentMappings = mappingByKey.get(key) || [];
+        currentMappings.push(mapping);
+        mappingByKey.set(key, currentMappings);
+    });
+    return mappingByKey;
+};
+const replacePackageLessonMappingRows = async (tx, sourceMappings, targetKey, targetLearnNumber) => {
+    if (!targetKey)
+        return;
     await tx.package_lesson_mapping.deleteMany({
         where: { key: targetKey },
     });
@@ -447,10 +470,16 @@ const rescheduleFollowing = async (tx, current, payload) => {
             code: current.code,
             system_type: current.system_type,
             start_time: { gt: current.start_time },
+            OR: [
+                { lesson_status: null },
+                { lesson_status: { not: 1 } },
+            ],
         },
         orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
     });
     const allSessions = [current, ...followings];
+    // Snapshot trước khi dời: 1 key có thể map nhiều lesson_id/package_id.
+    const packageLessonMappingsByKey = await getPackageLessonMappingSnapshot(tx, allSessions.map((session) => session.key));
     const updatedCurrent = await tx.calendar.update({
         where: { id: current.id },
         data: {
@@ -458,6 +487,11 @@ const rescheduleFollowing = async (tx, current, payload) => {
             ...clearSyllabusData(),
         },
     });
+    if (current.key) {
+        await tx.package_lesson_mapping.deleteMany({
+            where: { key: current.key },
+        });
+    }
     const shiftedSessions = [];
     for (let i = 0; i < followings.length; i++) {
         const targetSession = followings[i];
@@ -467,7 +501,7 @@ const rescheduleFollowing = async (tx, current, payload) => {
             where: { id: targetSession.id },
             data: updateData,
         });
-        await replacePackageLessonMapping(tx, sourceSession.key, targetSession.key, sourceSession.learn_number);
+        await replacePackageLessonMappingRows(tx, packageLessonMappingsByKey.get(String(sourceSession.key)) || [], targetSession.key, sourceSession.learn_number);
         shiftedSessions.push(shiftedSession);
     }
     const lastSource = allSessions[allSessions.length - 1];
@@ -485,7 +519,7 @@ const rescheduleFollowing = async (tx, current, payload) => {
         key: uniqueKey.key,
     };
     const createdSession = await tx.calendar.create({ data: newSessionData });
-    await replacePackageLessonMapping(tx, lastSource.key, createdSession.key, createdSession.learn_number);
+    await replacePackageLessonMappingRows(tx, packageLessonMappingsByKey.get(String(lastSource.key)) || [], createdSession.key, createdSession.learn_number);
     return {
         canceled_session: updatedCurrent,
         shifted_sessions: shiftedSessions,

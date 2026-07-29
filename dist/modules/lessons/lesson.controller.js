@@ -1,14 +1,19 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const apiResponse_1 = require("../../utils/apiResponse");
 const lesson_service_1 = require("./lesson.service");
 const lesson_validation_1 = require("./lesson.validation");
 const lesson_io_1 = require("./lesson.io");
+const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const list = async (req, res) => {
     try {
         const query = (0, lesson_validation_1.validateLessonListQuery)(req.query);
         const result = await (0, lesson_service_1.getLessons)(query);
-        return (0, apiResponse_1.SuccessResponse)(res, 'Success', result);
+        const data = await field_permission_service_1.default.filterVisibleRecords(req.user?.roleIds || [], 'lessons', result.data);
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', { ...result, data });
     }
     catch (error) {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
@@ -18,7 +23,8 @@ const detail = async (req, res) => {
     try {
         const id = (0, lesson_validation_1.validateLessonId)(req.params.id);
         const result = await (0, lesson_service_1.getLessonDetail)(id);
-        return (0, apiResponse_1.SuccessResponse)(res, 'Success', result);
+        const visibleResult = await field_permission_service_1.default.filterVisibleRecord(req.user?.roleIds || [], 'lessons', result);
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', visibleResult);
     }
     catch (error) {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);

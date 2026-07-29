@@ -1,6 +1,11 @@
 import { PrismaClient } from '@prisma/client';
 import ApiError from '../../utils/ApiError';
 import FieldPermissionService from './field-permission.service';
+import {
+    RBAC_FIELD_MODULE_CODES,
+    RBAC_MENU_LABELS,
+    RBAC_MENU_MODULE_CODES,
+} from './rbac-ui.constants';
 
 const prisma = new PrismaClient();
 
@@ -296,6 +301,9 @@ const RoleService = {
     async getModulesStructure() {
         try {
             const modules = await prisma.modules.findMany({
+                where: {
+                    code: { in: [...RBAC_FIELD_MODULE_CODES] },
+                },
                 include: {
                     fields: {
                         orderBy: { sortOrder: 'asc' },
@@ -308,10 +316,17 @@ const RoleService = {
                         },
                     },
                 },
-                orderBy: { id: 'asc' },
             });
 
-            return modules.map(mod => ({
+            const moduleOrder = new Map<string, number>(
+                RBAC_FIELD_MODULE_CODES.map((code, index) => [code, index])
+            );
+            return modules
+            .sort((left, right) =>
+                (moduleOrder.get(left.code) ?? Number.MAX_SAFE_INTEGER)
+                - (moduleOrder.get(right.code) ?? Number.MAX_SAFE_INTEGER)
+            )
+            .map(mod => ({
                 id: Number(mod.id),
                 code: mod.code,
                 name: mod.name,
@@ -328,6 +343,11 @@ const RoleService = {
     async getPermissionsStructure() {
         try {
             const permissions = await prisma.permissions.findMany({
+                where: {
+                    OR: RBAC_MENU_MODULE_CODES.map((moduleCode) => ({
+                        code: { startsWith: `${moduleCode}.` },
+                    })),
+                },
                 orderBy: { code: 'asc' },
             });
 
@@ -338,14 +358,10 @@ const RoleService = {
                 const parts = perm.code.split('.');
                 if (parts.length < 2) continue; // bỏ qua nếu không đúng format
                 const moduleCode = parts[0];
+                if (!RBAC_MENU_MODULE_CODES.includes(moduleCode as any)) continue;
                 const action = parts.slice(1).join('.'); // vì có thể có action phức như 'reset_password'
 
-                // Lấy tên module từ DB (có thể cache)
-                const module = await prisma.modules.findUnique({
-                    where: { code: moduleCode },
-                    select: { name: true },
-                });
-                const groupName = module?.name || moduleCode; // nếu không tìm thấy thì dùng code
+                const groupName = RBAC_MENU_LABELS[moduleCode];
 
                 if (!structure[groupName]) {
                     structure[groupName] = {};

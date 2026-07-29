@@ -3,9 +3,21 @@ import userController from './user.controller';
 import { authMiddleware } from '../auth'; // giả định đường dẫn đúng
 
 const router = Router();
+const { authenticate, authorize, authorizeFields } = authMiddleware;
+const authorizeRoleAssignment = (req: any, res: any, next: any) => {
+    if (
+        req.body?.roleIds !== undefined
+        && !req.user?.roles?.includes('admin')
+    ) {
+        return res.status(403).json({
+            success: false,
+            message: 'Only admin can assign roles',
+        });
+    }
+    next();
+};
 
-// Áp dụng middleware xác thực cho tất cả route
-// router.use(authMiddleware.authenticate);
+router.use(authenticate);
 
 /**
  * @swagger
@@ -26,7 +38,7 @@ const router = Router();
  *       200:
  *         description: Thành công
  */
-router.get('/', userController.getAllUsers);
+router.get('/', authorize(['users.view']), userController.getAllUsers);
 
 /**
  * @swagger
@@ -46,7 +58,7 @@ router.get('/', userController.getAllUsers);
  *       200:
  *         description: Chi tiết người dùng
  */
-router.get('/:id', userController.getUserById);
+router.get('/:id', authorize(['users.view']), userController.getUserById);
 
 /**
  * @swagger
@@ -85,7 +97,15 @@ router.get('/:id', userController.getUserById);
  *       200:
  *         description: Cập nhật thành công
  */
-router.put('/:id', userController.updateUser);
+router.put(
+    '/:id',
+    authorize(['users.update']),
+    authorizeRoleAssignment,
+    authorizeFields('users', (req) =>
+        Object.keys(req.body || {}).filter((field) => field !== 'roleIds')
+    ),
+    userController.updateUser
+);
 
 // Các route delete, toggle có thể thêm sau khi bổ sung schema
 

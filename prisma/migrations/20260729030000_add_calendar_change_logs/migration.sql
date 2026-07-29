@@ -1,0 +1,25 @@
+CREATE TABLE `calendar_change_logs` (
+    `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `operation_id` CHAR(36) NOT NULL,
+    `action` VARCHAR(30) NOT NULL,
+    `calendar_id` INTEGER UNSIGNED NULL,
+    `old_key` VARCHAR(100) NULL,
+    `new_key` VARCHAR(100) NULL,
+    `code` VARCHAR(30) NOT NULL,
+    `learn_number` INTEGER NOT NULL,
+    `reason` VARCHAR(500) NOT NULL,
+    `actor_user_id` INTEGER UNSIGNED NULL,
+    `actor_username` VARCHAR(100) NOT NULL,
+    `before_data` JSON NOT NULL,
+    `after_data` JSON NOT NULL,
+    `affected_sessions` JSON NOT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    UNIQUE INDEX `uq_calendar_change_operation`(`operation_id`),
+    INDEX `idx_calendar_change_calendar`(`calendar_id`, `created_at`),
+    INDEX `idx_calendar_change_old_key`(`old_key`),
+    INDEX `idx_calendar_change_new_key`(`new_key`),
+    INDEX `idx_calendar_change_actor`(`actor_user_id`, `created_at`),
+    INDEX `idx_calendar_change_created`(`created_at`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

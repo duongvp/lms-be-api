@@ -5,9 +5,20 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const user_controller_1 = __importDefault(require("./user.controller"));
+const auth_1 = require("../auth"); // giả định đường dẫn đúng
 const router = (0, express_1.Router)();
-// Áp dụng middleware xác thực cho tất cả route
-// router.use(authMiddleware.authenticate);
+const { authenticate, authorize, authorizeFields } = auth_1.authMiddleware;
+const authorizeRoleAssignment = (req, res, next) => {
+    if (req.body?.roleIds !== undefined
+        && !req.user?.roles?.includes('admin')) {
+        return res.status(403).json({
+            success: false,
+            message: 'Only admin can assign roles',
+        });
+    }
+    next();
+};
+router.use(authenticate);
 /**
  * @swagger
  * tags:
@@ -26,7 +37,7 @@ const router = (0, express_1.Router)();
  *       200:
  *         description: Thành công
  */
-router.get('/', user_controller_1.default.getAllUsers);
+router.get('/', authorize(['users.view']), user_controller_1.default.getAllUsers);
 /**
  * @swagger
  * /api/users/{id}:
@@ -45,7 +56,7 @@ router.get('/', user_controller_1.default.getAllUsers);
  *       200:
  *         description: Chi tiết người dùng
  */
-router.get('/:id', user_controller_1.default.getUserById);
+router.get('/:id', authorize(['users.view']), user_controller_1.default.getUserById);
 /**
  * @swagger
  * /api/users/{id}:
@@ -83,6 +94,6 @@ router.get('/:id', user_controller_1.default.getUserById);
  *       200:
  *         description: Cập nhật thành công
  */
-router.put('/:id', user_controller_1.default.updateUser);
+router.put('/:id', authorize(['users.update']), authorizeRoleAssignment, authorizeFields('users', (req) => Object.keys(req.body || {}).filter((field) => field !== 'roleIds')), user_controller_1.default.updateUser);
 // Các route delete, toggle có thể thêm sau khi bổ sung schema
 exports.default = router;

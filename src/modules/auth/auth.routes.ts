@@ -6,6 +6,25 @@ const router = Router();
 
 const { authenticate } = middleware;
 
+const validateLogin = (req: any, res: any, next: any) => {
+    const { username, password, rememberMe } = req.body || {};
+    if (
+        typeof username !== 'string'
+        || !username.trim()
+        || username.length > 100
+        || typeof password !== 'string'
+        || !password
+        || password.length > 255
+        || (rememberMe !== undefined && typeof rememberMe !== 'boolean')
+    ) {
+        return res.status(400).json({
+            success: false,
+            message: 'username/password/rememberMe không hợp lệ',
+        });
+    }
+    next();
+};
+
 /**
  * @swagger
  * tags:
@@ -75,7 +94,7 @@ router.post('/register', controllers.register);
  *       401:
  *         description: Invalid credentials
  */
-router.post('/login', controllers.login);
+router.post('/login', validateLogin, controllers.login);
 router.post('/refresh-token', controllers.refreshToken);
 
 // Quên mật khẩu routes (public)
@@ -84,8 +103,6 @@ router.post('/verify-reset-otp', controllers.verifyOTP);
 router.post('/reset-password', controllers.resetPassword);
 
 // Protected routes
-// Note: apply authenticate middleware where appropriate
-// router.use(authenticate);
 router.post('/logout', authenticate, controllers.logout);
 
 /**

@@ -38,9 +38,30 @@ const client_1 = require("@prisma/client");
 const apiResponse_1 = require("../../utils/apiResponse");
 const logger_1 = require("../../utils/logger");
 const prisma = new client_1.PrismaClient();
+const REFRESH_COOKIE_NAME = 'refreshToken';
+const refreshCookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+};
+const getCookie = (req, name) => {
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader)
+        return undefined;
+    for (const part of cookieHeader.split(';')) {
+        const separator = part.indexOf('=');
+        if (separator < 0)
+            continue;
+        const key = part.slice(0, separator).trim();
+        if (key === name) {
+            return decodeURIComponent(part.slice(separator + 1).trim());
+        }
+    }
+    return undefined;
+};
 const register = async (req, res, next) => {
     try {
-        console.log('Req', req.body);
         const { accessToken, refreshToken, userId } = await authServices.register(req.body);
         logger_1.logger.info(`User ${userId} registered successfully`);
         (0, apiResponse_1.SuccessResponse)(res, 'Registration successful', {
@@ -58,45 +79,39 @@ const login = async (req, res, next) => {
     const { username, password, rememberMe } = req.body;
     try {
         const userData = await authServices.login(username, password, rememberMe);
-        console.log('🚀 ~ login ~ userData:', userData);
         logger_1.logger.info(`User ${userData.userId} logged in`);
-        // Set refreshToken vào HTTP-only cookie (thường là trong controller, không phải service)
         const { refreshToken, ...rest } = userData;
-        const roleAndPermission = {
-            roles: rest.roles,
-            permissions: rest.permissions
-        };
-        // giải pháp tạm thời
+        res.cookie(REFRESH_COOKIE_NAME, refreshToken, refreshCookieOptions);
         (0, apiResponse_1.SuccessResponse)(res, 'Login successful', {
             ...rest,
-            refreshToken,
-            user: encodeURIComponent(JSON.stringify(roleAndPermission))
         });
     }
     catch (error) {
         logger_1.logger.error(`Login failed for ${username}: ${error.message}`);
-        (0, apiResponse_1.ErrorResponse)(res, error.message, 401);
+        (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 401);
     }
 };
 // Làm mới token
 const refreshToken = async (req, res, next) => {
     try {
-        const refreshToken = req.cookies?.refreshToken;
+        const refreshToken = getCookie(req, REFRESH_COOKIE_NAME);
         if (!refreshToken) {
-            throw new Error("Missing refresh token");
+            res.status(401).json({ success: false, message: 'Missing refresh token' });
+            return;
         }
-        const { accessToken } = await authServices.refreshToken(refreshToken);
-        (0, apiResponse_1.SuccessResponse)(res, 'Token refreshed', { accessToken });
+        const tokens = await authServices.refreshToken(refreshToken);
+        res.cookie(REFRESH_COOKIE_NAME, tokens.refreshToken, refreshCookieOptions);
+        (0, apiResponse_1.SuccessResponse)(res, 'Token refreshed', { accessToken: tokens.accessToken });
     }
     catch (error) {
-        console.log('🚀 ~ refreshToken ~ error:', error);
         next(error);
     }
 };
 // Đăng xuất
 const logout = async (req, res, next) => {
     try {
-        await authServices.logout(req.user.userId);
+        await authServices.logout(req.user.sessionId);
+        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions);
         (0, apiResponse_1.SuccessResponse)(res, 'Logout successful');
     }
     catch (error) {
@@ -105,12 +120,10 @@ const logout = async (req, res, next) => {
 };
 const getMe = async (req, res, next) => {
     try {
-        console.log('req.user.userId', req.user.userId);
         const data = await authServices.getMe(req.user.userId);
         (0, apiResponse_1.SuccessResponse)(res, 'Get current user successfully', data);
     }
     catch (error) {
-        console.log('🚀 ~ getMe ~ error:', error);
         next(error);
     }
 };

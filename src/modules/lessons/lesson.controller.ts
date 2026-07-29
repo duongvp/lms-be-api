@@ -26,12 +26,18 @@ import {
   parseLessonImportFile,
 } from './lesson.io';
 import { LessonImportMode, LessonPayload } from './lesson.types';
+import FieldPermissionService from '../roles/field-permission.service';
 
 const list = async (req: Request, res: Response) => {
   try {
     const query = validateLessonListQuery(req.query);
     const result = await getLessons(query);
-    return SuccessResponse(res, 'Success', result);
+    const data = await FieldPermissionService.filterVisibleRecords(
+      req.user?.roleIds || [],
+      'lessons',
+      result.data as any[]
+    );
+    return SuccessResponse(res, 'Success', { ...result, data });
   } catch (error: any) {
     return ErrorResponse(res, error.message, error.statusCode || 400);
   }
@@ -41,7 +47,12 @@ const detail = async (req: Request, res: Response) => {
   try {
     const id = validateLessonId(req.params.id);
     const result = await getLessonDetail(id);
-    return SuccessResponse(res, 'Success', result);
+    const visibleResult = await FieldPermissionService.filterVisibleRecord(
+      req.user?.roleIds || [],
+      'lessons',
+      result as any
+    );
+    return SuccessResponse(res, 'Success', visibleResult);
   } catch (error: any) {
     return ErrorResponse(res, error.message, error.statusCode || 400);
   }

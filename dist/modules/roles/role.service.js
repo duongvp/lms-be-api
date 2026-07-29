@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const field_permission_service_1 = __importDefault(require("./field-permission.service"));
+const rbac_ui_constants_1 = require("./rbac-ui.constants");
 const prisma = new client_1.PrismaClient();
 const ACTION_LABELS = {
     view: 'Xem DS',
@@ -275,6 +276,9 @@ const RoleService = {
     async getModulesStructure() {
         try {
             const modules = await prisma.modules.findMany({
+                where: {
+                    code: { in: [...rbac_ui_constants_1.RBAC_FIELD_MODULE_CODES] },
+                },
                 include: {
                     fields: {
                         orderBy: { sortOrder: 'asc' },
@@ -287,9 +291,12 @@ const RoleService = {
                         },
                     },
                 },
-                orderBy: { id: 'asc' },
             });
-            return modules.map(mod => ({
+            const moduleOrder = new Map(rbac_ui_constants_1.RBAC_FIELD_MODULE_CODES.map((code, index) => [code, index]));
+            return modules
+                .sort((left, right) => (moduleOrder.get(left.code) ?? Number.MAX_SAFE_INTEGER)
+                - (moduleOrder.get(right.code) ?? Number.MAX_SAFE_INTEGER))
+                .map(mod => ({
                 id: Number(mod.id),
                 code: mod.code,
                 name: mod.name,
@@ -306,6 +313,11 @@ const RoleService = {
     async getPermissionsStructure() {
         try {
             const permissions = await prisma.permissions.findMany({
+                where: {
+                    OR: rbac_ui_constants_1.RBAC_MENU_MODULE_CODES.map((moduleCode) => ({
+                        code: { startsWith: `${moduleCode}.` },
+                    })),
+                },
                 orderBy: { code: 'asc' },
             });
             // Nhóm permissions theo module (phần đầu của code trước dấu '.')
@@ -315,13 +327,10 @@ const RoleService = {
                 if (parts.length < 2)
                     continue; // bỏ qua nếu không đúng format
                 const moduleCode = parts[0];
+                if (!rbac_ui_constants_1.RBAC_MENU_MODULE_CODES.includes(moduleCode))
+                    continue;
                 const action = parts.slice(1).join('.'); // vì có thể có action phức như 'reset_password'
-                // Lấy tên module từ DB (có thể cache)
-                const module = await prisma.modules.findUnique({
-                    where: { code: moduleCode },
-                    select: { name: true },
-                });
-                const groupName = module?.name || moduleCode; // nếu không tìm thấy thì dùng code
+                const groupName = rbac_ui_constants_1.RBAC_MENU_LABELS[moduleCode];
                 if (!structure[groupName]) {
                     structure[groupName] = {};
                 }

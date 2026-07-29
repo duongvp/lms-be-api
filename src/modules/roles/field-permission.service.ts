@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import ApiError from '../../utils/ApiError';
+import { RBAC_FIELD_MODULE_CODES } from './rbac-ui.constants';
 
 const prisma = new PrismaClient();
 
@@ -86,6 +87,29 @@ const mergeRule = (current: FieldRule, override?: Partial<FieldRule>): FieldRule
     editable: override?.editable ?? current.editable,
 });
 
+const mergeFieldRuleFromPolicies = (
+    policies: Array<FieldPolicy | null>,
+    moduleCode: string,
+    fieldCode: string
+): FieldRule => {
+    let mergedRule: FieldRule = { visible: false, editable: false };
+
+    for (const policy of policies) {
+        const fields = policy?.modules?.[moduleCode]?.fields;
+        if (!fields) continue;
+        const roleRule = mergeRule(
+            mergeRule({ visible: false, editable: false }, fields['*']),
+            fields[fieldCode]
+        );
+        mergedRule = {
+            visible: mergedRule.visible || roleRule.visible,
+            editable: mergedRule.editable || roleRule.editable,
+        };
+    }
+
+    return mergedRule;
+};
+
 const FieldPermissionService = {
     validateFieldPolicy: async (fieldPolicy: unknown) => {
         const normalizedPolicy = validateFieldPolicyShape(fieldPolicy);
@@ -95,6 +119,9 @@ const FieldPermissionService = {
 
     async getModules() {
         const modules = await prisma.modules.findMany({
+            where: {
+                code: { in: [...RBAC_FIELD_MODULE_CODES] },
+            },
             select: {
                 id: true,
                 code: true,
@@ -102,10 +129,17 @@ const FieldPermissionService = {
                 createdAt: true,
                 updatedAt: true,
             },
-            orderBy: { id: 'asc' },
         });
 
-        return modules.map((module) => ({
+        const moduleOrder = new Map<string, number>(
+            RBAC_FIELD_MODULE_CODES.map((code, index) => [code, index])
+        );
+        return modules
+        .sort((left, right) =>
+            (moduleOrder.get(left.code) ?? Number.MAX_SAFE_INTEGER)
+            - (moduleOrder.get(right.code) ?? Number.MAX_SAFE_INTEGER)
+        )
+        .map((module) => ({
             ...module,
             id: Number(module.id),
         }));
@@ -194,7 +228,7 @@ const FieldPermissionService = {
 
     async getMergedFieldRule(roleIds: Array<string | number | bigint>, moduleCode: string, fieldCode: string): Promise<FieldRule> {
         if (!roleIds.length) {
-            return { visible: true, editable: true };
+            return { visible: false, editable: false };
         }
 
         const roles = await prisma.roles.findMany({
@@ -205,31 +239,11 @@ const FieldPermissionService = {
             select: { fieldPolicy: true },
         });
 
-        let mergedRule: FieldRule = { visible: false, editable: false };
-        let hasModulePolicy = false;
-
-        for (const role of roles) {
-            const policy = role.fieldPolicy as FieldPolicy | null;
-            const fields = policy?.modules?.[moduleCode]?.fields;
-            if (!fields) continue;
-
-            hasModulePolicy = true;
-            const roleRule = mergeRule(
-                mergeRule({ visible: false, editable: false }, fields['*']),
-                fields[fieldCode]
-            );
-
-            mergedRule = {
-                visible: mergedRule.visible || roleRule.visible,
-                editable: mergedRule.editable || roleRule.editable,
-            };
-        }
-
-        if (!hasModulePolicy) {
-            return { visible: true, editable: true };
-        }
-
-        return mergedRule;
+        return mergeFieldRuleFromPolicies(
+            roles.map((role) => role.fieldPolicy as FieldPolicy | null),
+            moduleCode,
+            fieldCode
+        );
     },
 
     async assertEditableFields(roleIds: Array<string | number | bigint>, moduleCode: string, fieldCodes: string[]) {
@@ -240,6 +254,39 @@ const FieldPermissionService = {
                 throw new ApiError(`No permission to edit field ${moduleCode}.${fieldCode}`, 403);
             }
         }
+    },
+
+    async filterVisibleRecords(
+        roleIds: Array<string | number | bigint>,
+        moduleCode: string,
+        records: Array<Record<string, any>>
+    ) {
+        if (!roleIds.length) return records.map(() => ({}));
+        const roles = await prisma.roles.findMany({
+            where: {
+                id: { in: normalizeRoleIds(roleIds) },
+                isActive: true,
+            },
+            select: { fieldPolicy: true },
+        });
+        const policies = roles.map((role) => role.fieldPolicy as FieldPolicy | null);
+
+        return records.map((record) =>
+            Object.entries(record).reduce<Record<string, any>>((result, [fieldCode, value]) => {
+                const rule = mergeFieldRuleFromPolicies(policies, moduleCode, fieldCode);
+                if (rule.visible) result[fieldCode] = value;
+                return result;
+            }, {})
+        );
+    },
+
+    async filterVisibleRecord(
+        roleIds: Array<string | number | bigint>,
+        moduleCode: string,
+        record: Record<string, any>
+    ) {
+        const [filtered] = await this.filterVisibleRecords(roleIds, moduleCode, [record]);
+        return filtered;
     },
 };
 

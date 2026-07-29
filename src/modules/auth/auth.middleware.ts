@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
 import { logger } from '../../utils/logger';
 import { TOKEN_TYPES } from './constants';
+import FieldPermissionService from '../roles/field-permission.service';
 
 const prisma = new PrismaClient();
 
@@ -30,17 +31,44 @@ const authenticate = async (
       return;
     }
 
+    const accessTokenSecret = process.env.ACCESS_TOKEN_SECRET;
+    if (!accessTokenSecret || accessTokenSecret.length < 32) {
+      res.status(503).json({ success: false, message: 'Authentication is not configured' });
+      return;
+    }
+
     const decoded = jwt.verify(
       token,
-      process.env.ACCESS_TOKEN_SECRET as string
+      accessTokenSecret
     ) as any;
 
-    if (decoded.type !== TOKEN_TYPES.ACCESS) {
+    if (decoded.type !== TOKEN_TYPES.ACCESS || !decoded.sessionId) {
       res.status(401).json({ success: false, message: 'Invalid token type' });
       return;
     }
 
-    // Kiểm tra user tồn tại
+    const sessions = await prisma.$queryRaw<Array<{
+      id: string;
+      user_id: bigint;
+      expires_at: Date;
+      revoked_at: Date | null;
+    }>>`
+      SELECT id, user_id, expires_at, revoked_at
+      FROM auth_sessions
+      WHERE id = ${String(decoded.sessionId)}
+      LIMIT 1
+    `;
+    const session = sessions[0];
+    if (
+      !session
+      || Number(session.user_id) !== Number(decoded.userId)
+      || session.revoked_at
+      || session.expires_at <= new Date()
+    ) {
+      res.status(401).json({ success: false, message: 'Session is invalid or revoked' });
+      return;
+    }
+
     const user = await prisma.users.findUnique({
       where: { id: decoded.userId }
     });
@@ -52,7 +80,10 @@ const authenticate = async (
 
     // Lấy roles và permissions
     const userRoles = await prisma.userRoles.findMany({
-      where: { userId: user.id },
+      where: {
+        userId: user.id,
+        role: { isActive: true },
+      },
       include: {
         role: {
           include: {
@@ -77,7 +108,9 @@ const authenticate = async (
     // Gắn user vào request
     req.user = {
       userId: user.id,
+      sessionId: session.id,
       username: user.username,
+      roleIds: roles.map(r => r.id.toString()),
       roles: roles.map(r => r.code),
       permissions: Array.from(permissionsMap.keys())
     };
@@ -124,7 +157,33 @@ const authorize = (requiredPermissions: string[] = []) => {
   };
 };
 
+const authorizeFields = (
+  moduleCode: string,
+  extractFields: (req: Request) => string[]
+) => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ success: false, message: 'Not authenticated' });
+        return;
+      }
+      await FieldPermissionService.assertEditableFields(
+        req.user.roleIds || [],
+        moduleCode,
+        extractFields(req)
+      );
+      next();
+    } catch (error: any) {
+      res.status(error.statusCode || 403).json({
+        success: false,
+        message: error.message || 'Field permission denied',
+      });
+    }
+  };
+};
+
 export default {
   authenticate,
-  authorize
+  authorize,
+  authorizeFields,
 };

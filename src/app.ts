@@ -6,6 +6,8 @@ import { userRoutes } from "./modules/users";
 import { livestreamRoute } from "./modules/livestream";
 import { moduleRoutes } from "./modules/modules";
 import { lessonRoutes } from "./modules/lessons";
+import packageCourseRoutes from "./modules/package-courses/package-course.routes";
+import ApiError from "./utils/ApiError";
 
 
 const app = express();
@@ -24,7 +26,20 @@ app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);
 app.use("/api/modules", moduleRoutes);
 app.use("/api/lessons", lessonRoutes);
+app.use("/api/package-courses", packageCourseRoutes);
 app.use("/livestreams", livestreamRoute);
 app.use("/api/auth", authRoutes)
+
+app.use((_req, _res, next) => {
+    next(new ApiError("Not found", 404));
+});
+
+app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const statusCode = Number(error?.statusCode) || 500;
+    const message = statusCode >= 500 && process.env.NODE_ENV === "production"
+        ? "Internal server error"
+        : (error?.message || "Internal server error");
+    res.status(statusCode).json({ success: false, message });
+});
 
 export default app;

@@ -3,9 +3,9 @@ import roleController from './role.controller';
 import authMiddleware from '../auth/auth.middleware';
 
 const router = Router();
+const { authenticate, authorize } = authMiddleware;
 
-// Apply auth middleware if needed
-// router.use(authMiddleware.authenticate);
+router.use(authenticate);
 
 /**
  * @swagger
@@ -48,17 +48,17 @@ const router = Router();
  *               items:
  *                 $ref: '#/components/schemas/Role'
  */
-router.get('/', roleController.getAllRoles);
+router.get('/', authorize(['roles.view']), roleController.getAllRoles);
 
 // Route to get module structure for UI
-router.get('/modules-structure', roleController.getModulesStructure);
+router.get('/modules-structure', authorize(['roles.view']), roleController.getModulesStructure);
 
 // Route to get permissions structure for UI
-router.get('/permissions-structure', roleController.getPermissionsStructure);
+router.get('/permissions-structure', authorize(['roles.view']), roleController.getPermissionsStructure);
 
 // Field-level policy APIs
-router.get('/:id/field-policy', roleController.getRoleFieldPolicy);
-router.put('/:id/field-policy', roleController.updateRoleFieldPolicy);
+router.get('/:id/field-policy', authorize(['roles.view']), roleController.getRoleFieldPolicy);
+router.put('/:id/field-policy', authorize(['roles.update']), roleController.updateRoleFieldPolicy);
 
 // Route to get a role by ID
 /**
@@ -79,7 +79,7 @@ router.put('/:id/field-policy', roleController.updateRoleFieldPolicy);
  *       200:
  *         description: Chi tiết vai trò
  */
-router.get('/:id', roleController.getRoleById);
+router.get('/:id', authorize(['roles.view']), roleController.getRoleById);
 
 // Route to create a new role
 /**
@@ -107,7 +107,7 @@ router.get('/:id', roleController.getRoleById);
  *       201:
  *         description: Tạo thành công
  */
-router.post('/', roleController.createRole);
+router.post('/', authorize(['roles.create']), roleController.createRole);
 
 // Route to update a role by ID
 /**
@@ -134,7 +134,7 @@ router.post('/', roleController.createRole);
  *       200:
  *         description: Cập nhật thành công
  */
-router.put('/:id', roleController.updateRole);
+router.put('/:id', authorize(['roles.update']), roleController.updateRole);
 
 // Route to delete a role by ID
 /**
@@ -155,6 +155,6 @@ router.put('/:id', roleController.updateRole);
  *       200:
  *         description: Xóa thành công
  */
-router.delete('/:id', roleController.deleteRole);
+router.delete('/:id', authorize(['roles.delete']), roleController.deleteRole);
 
 export default router;

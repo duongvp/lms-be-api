@@ -7,6 +7,7 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const client_1 = require("@prisma/client");
 const logger_1 = require("../../utils/logger");
 const constants_1 = require("./constants");
+const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const prisma = new client_1.PrismaClient();
 // Middleware xác thực JWT
 const authenticate = async (req, res, next) => {
@@ -17,12 +18,30 @@ const authenticate = async (req, res, next) => {
             res.status(401).json({ success: false, message: 'Authentication token missing' });
             return;
         }
-        const decoded = jsonwebtoken_1.default.verify(token, process.env.ACCESS_TOKEN_SECRET);
-        if (decoded.type !== constants_1.TOKEN_TYPES.ACCESS) {
+        const accessTokenSecret = process.env.ACCESS_TOKEN_SECRET;
+        if (!accessTokenSecret || accessTokenSecret.length < 32) {
+            res.status(503).json({ success: false, message: 'Authentication is not configured' });
+            return;
+        }
+        const decoded = jsonwebtoken_1.default.verify(token, accessTokenSecret);
+        if (decoded.type !== constants_1.TOKEN_TYPES.ACCESS || !decoded.sessionId) {
             res.status(401).json({ success: false, message: 'Invalid token type' });
             return;
         }
-        // Kiểm tra user tồn tại
+        const sessions = await prisma.$queryRaw `
+      SELECT id, user_id, expires_at, revoked_at
+      FROM auth_sessions
+      WHERE id = ${String(decoded.sessionId)}
+      LIMIT 1
+    `;
+        const session = sessions[0];
+        if (!session
+            || Number(session.user_id) !== Number(decoded.userId)
+            || session.revoked_at
+            || session.expires_at <= new Date()) {
+            res.status(401).json({ success: false, message: 'Session is invalid or revoked' });
+            return;
+        }
         const user = await prisma.users.findUnique({
             where: { id: decoded.userId }
         });
@@ -32,7 +51,10 @@ const authenticate = async (req, res, next) => {
         }
         // Lấy roles và permissions
         const userRoles = await prisma.userRoles.findMany({
-            where: { userId: user.id },
+            where: {
+                userId: user.id,
+                role: { isActive: true },
+            },
             include: {
                 role: {
                     include: {
@@ -55,7 +77,9 @@ const authenticate = async (req, res, next) => {
         // Gắn user vào request
         req.user = {
             userId: user.id,
+            sessionId: session.id,
             username: user.username,
+            roleIds: roles.map(r => r.id.toString()),
             roles: roles.map(r => r.code),
             permissions: Array.from(permissionsMap.keys())
         };
@@ -93,7 +117,26 @@ const authorize = (requiredPermissions = []) => {
         }
     };
 };
+const authorizeFields = (moduleCode, extractFields) => {
+    return async (req, res, next) => {
+        try {
+            if (!req.user) {
+                res.status(401).json({ success: false, message: 'Not authenticated' });
+                return;
+            }
+            await field_permission_service_1.default.assertEditableFields(req.user.roleIds || [], moduleCode, extractFields(req));
+            next();
+        }
+        catch (error) {
+            res.status(error.statusCode || 403).json({
+                success: false,
+                message: error.message || 'Field permission denied',
+            });
+        }
+    };
+};
 exports.default = {
     authenticate,
-    authorize
+    authorize,
+    authorizeFields,
 };

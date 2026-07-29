@@ -5,9 +5,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const role_controller_1 = __importDefault(require("./role.controller"));
+const auth_middleware_1 = __importDefault(require("../auth/auth.middleware"));
 const router = (0, express_1.Router)();
-// Apply auth middleware if needed
-// router.use(authMiddleware.authenticate);
+const { authenticate, authorize } = auth_middleware_1.default;
+router.use(authenticate);
 /**
  * @swagger
  * tags:
@@ -47,14 +48,14 @@ const router = (0, express_1.Router)();
  *               items:
  *                 $ref: '#/components/schemas/Role'
  */
-router.get('/', role_controller_1.default.getAllRoles);
+router.get('/', authorize(['roles.view']), role_controller_1.default.getAllRoles);
 // Route to get module structure for UI
-router.get('/modules-structure', role_controller_1.default.getModulesStructure);
+router.get('/modules-structure', authorize(['roles.view']), role_controller_1.default.getModulesStructure);
 // Route to get permissions structure for UI
-router.get('/permissions-structure', role_controller_1.default.getPermissionsStructure);
+router.get('/permissions-structure', authorize(['roles.view']), role_controller_1.default.getPermissionsStructure);
 // Field-level policy APIs
-router.get('/:id/field-policy', role_controller_1.default.getRoleFieldPolicy);
-router.put('/:id/field-policy', role_controller_1.default.updateRoleFieldPolicy);
+router.get('/:id/field-policy', authorize(['roles.view']), role_controller_1.default.getRoleFieldPolicy);
+router.put('/:id/field-policy', authorize(['roles.update']), role_controller_1.default.updateRoleFieldPolicy);
 // Route to get a role by ID
 /**
  * @swagger
@@ -74,7 +75,7 @@ router.put('/:id/field-policy', role_controller_1.default.updateRoleFieldPolicy)
  *       200:
  *         description: Chi tiết vai trò
  */
-router.get('/:id', role_controller_1.default.getRoleById);
+router.get('/:id', authorize(['roles.view']), role_controller_1.default.getRoleById);
 // Route to create a new role
 /**
  * @swagger
@@ -101,7 +102,7 @@ router.get('/:id', role_controller_1.default.getRoleById);
  *       201:
  *         description: Tạo thành công
  */
-router.post('/', role_controller_1.default.createRole);
+router.post('/', authorize(['roles.create']), role_controller_1.default.createRole);
 // Route to update a role by ID
 /**
  * @swagger
@@ -127,7 +128,7 @@ router.post('/', role_controller_1.default.createRole);
  *       200:
  *         description: Cập nhật thành công
  */
-router.put('/:id', role_controller_1.default.updateRole);
+router.put('/:id', authorize(['roles.update']), role_controller_1.default.updateRole);
 // Route to delete a role by ID
 /**
  * @swagger
@@ -147,5 +148,5 @@ router.put('/:id', role_controller_1.default.updateRole);
  *       200:
  *         description: Xóa thành công
  */
-router.delete('/:id', role_controller_1.default.deleteRole);
+router.delete('/:id', authorize(['roles.delete']), role_controller_1.default.deleteRole);
 exports.default = router;

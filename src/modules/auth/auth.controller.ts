@@ -6,9 +6,31 @@ import { logger } from '../../utils/logger';
 
 const prisma = new PrismaClient();
 
+const REFRESH_COOKIE_NAME = 'refreshToken';
+const refreshCookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    path: '/',
+};
+
+const getCookie = (req: Request, name: string) => {
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader) return undefined;
+
+    for (const part of cookieHeader.split(';')) {
+        const separator = part.indexOf('=');
+        if (separator < 0) continue;
+        const key = part.slice(0, separator).trim();
+        if (key === name) {
+            return decodeURIComponent(part.slice(separator + 1).trim());
+        }
+    }
+    return undefined;
+};
+
 const register = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        console.log('Req', req.body);
         const { accessToken, refreshToken, userId } = await authServices.register(req.body) as any;
 
         logger.info(`User ${userId} registered successfully`);
@@ -28,43 +50,32 @@ const login = async (req: Request, res: Response, next: NextFunction): Promise<v
 
     try {
         const userData = await authServices.login(username, password, rememberMe);
-        console.log('🚀 ~ login ~ userData:', userData);
-
         logger.info(`User ${userData.userId} logged in`);
-
-        // Set refreshToken vào HTTP-only cookie (thường là trong controller, không phải service)
         const { refreshToken, ...rest } = userData;
-
-        const roleAndPermission = {
-            roles: rest.roles,
-            permissions: rest.permissions
-        };
-
-        // giải pháp tạm thời
+        res.cookie(REFRESH_COOKIE_NAME, refreshToken, refreshCookieOptions);
         SuccessResponse(res, 'Login successful', {
             ...rest,
-            refreshToken,
-            user: encodeURIComponent(JSON.stringify(roleAndPermission))
         });
 
     } catch (error: any) {
         logger.error(`Login failed for ${username}: ${error.message}`);
-        ErrorResponse(res, error.message, 401);
+        ErrorResponse(res, error.message, error.statusCode || 401);
     }
 };
 
 // Làm mới token
 const refreshToken = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        const refreshToken = (req as any).cookies?.refreshToken;
+        const refreshToken = getCookie(req, REFRESH_COOKIE_NAME);
         if (!refreshToken) {
-            throw new Error("Missing refresh token");
+            res.status(401).json({ success: false, message: 'Missing refresh token' });
+            return;
         }
-        const { accessToken } = await authServices.refreshToken(refreshToken);
+        const tokens = await authServices.refreshToken(refreshToken);
+        res.cookie(REFRESH_COOKIE_NAME, tokens.refreshToken, refreshCookieOptions);
 
-        SuccessResponse(res, 'Token refreshed', { accessToken });
+        SuccessResponse(res, 'Token refreshed', { accessToken: tokens.accessToken });
     } catch (error: any) {
-        console.log('🚀 ~ refreshToken ~ error:', error);
         next(error);
     }
 };
@@ -72,7 +83,8 @@ const refreshToken = async (req: Request, res: Response, next: NextFunction): Pr
 // Đăng xuất
 const logout = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        await authServices.logout((req as any).user.userId);
+        await authServices.logout((req as any).user.sessionId);
+        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions);
         SuccessResponse(res, 'Logout successful');
     } catch (error: any) {
         next(error);
@@ -81,13 +93,10 @@ const logout = async (req: Request, res: Response, next: NextFunction): Promise<
 
 const getMe = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-        console.log('req.user.userId', (req as any).user.userId);
-
         const data = await authServices.getMe((req as any).user.userId);
 
         SuccessResponse(res, 'Get current user successfully', data);
     } catch (error: any) {
-        console.log('🚀 ~ getMe ~ error:', error);
         next(error);
     }
 };

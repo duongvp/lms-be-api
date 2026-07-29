@@ -8,6 +8,22 @@ const auth_controller_1 = __importDefault(require("./auth.controller"));
 const auth_middleware_1 = __importDefault(require("./auth.middleware"));
 const router = (0, express_1.Router)();
 const { authenticate } = auth_middleware_1.default;
+const validateLogin = (req, res, next) => {
+    const { username, password, rememberMe } = req.body || {};
+    if (typeof username !== 'string'
+        || !username.trim()
+        || username.length > 100
+        || typeof password !== 'string'
+        || !password
+        || password.length > 255
+        || (rememberMe !== undefined && typeof rememberMe !== 'boolean')) {
+        return res.status(400).json({
+            success: false,
+            message: 'username/password/rememberMe không hợp lệ',
+        });
+    }
+    next();
+};
 /**
  * @swagger
  * tags:
@@ -75,15 +91,13 @@ router.post('/register', auth_controller_1.default.register);
  *       401:
  *         description: Invalid credentials
  */
-router.post('/login', auth_controller_1.default.login);
+router.post('/login', validateLogin, auth_controller_1.default.login);
 router.post('/refresh-token', auth_controller_1.default.refreshToken);
 // Quên mật khẩu routes (public)
 router.post('/forgot-password', auth_controller_1.default.requestPasswordReset);
 router.post('/verify-reset-otp', auth_controller_1.default.verifyOTP);
 router.post('/reset-password', auth_controller_1.default.resetPassword);
 // Protected routes
-// Note: apply authenticate middleware where appropriate
-// router.use(authenticate);
 router.post('/logout', authenticate, auth_controller_1.default.logout);
 /**
  * @swagger

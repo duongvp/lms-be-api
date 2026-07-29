@@ -1,225 +1,318 @@
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
 import { TOKEN_TYPES } from './constants';
 import { logger } from '../../utils/logger';
-import crypto from 'crypto';
 import ApiError from '../../utils/ApiError';
 
 const prisma = new PrismaClient();
 
-const HOCMAI_CHECK_LOGIN_URL = 'https://hocmai.vn/ladipage/check_login.php';
-const HOCMAI_CHECK_LOGIN_TOKEN = process.env.HOCMAI_CHECK_LOGIN_TOKEN || '06d06b11-a058-49af-81d4-88e863f3093a';
-
-// Helper function để tạo tokens
-export const generateTokens = (userId: number, rememberMe: boolean) => {
-    try {
-        const accessToken = jwt.sign(
-            { userId, type: TOKEN_TYPES.ACCESS },
-            process.env.ACCESS_TOKEN_SECRET as string,
-            { expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN as any }
-        );
-
-        const refreshToken = jwt.sign(
-            { userId, type: TOKEN_TYPES.REFRESH },
-            process.env.REFRESH_TOKEN_SECRET as string,
-            { expiresIn: (rememberMe ? process.env.REFRESH_TOKEN_EXPIRES_IN : process.env.REFRESH_TOKEN_SHORT_EXPIRES_IN) as any }
-        );
-
-        logger.debug(`Tokens generated for user ${userId}`);
-        return { accessToken, refreshToken };
-    } catch (error: any) {
-        logger.error(`Token generation failed: ${error.message}`);
-        throw error;
+const getRequiredSecret = (name: 'ACCESS_TOKEN_SECRET' | 'REFRESH_TOKEN_SECRET') => {
+    const value = process.env[name];
+    if (!value || value.length < 32) {
+        throw new ApiError(`${name} must be configured with at least 32 characters`, 503);
     }
+    return value;
 };
 
-export const login = async (username: string, password: string, rememberMe: boolean) => {
-    try {
-        // 1. Authenticate via Hocmai API
-        // const externalRes = await fetch(HOCMAI_CHECK_LOGIN_URL, {
-        //     method: 'POST',
-        //     headers: {
-        //         'Authorization': `Bearer ${HOCMAI_CHECK_LOGIN_TOKEN}`,
-        //         'Content-Type': 'application/json',
-        //     },
-        //     body: JSON.stringify({ user: username, password }),
-        // });
-
-        // const data = await externalRes.json().catch(() => null);
-        // if (!externalRes.ok || !data?.success) {
-        //     throw new ApiError(data?.message || 'Tài khoản không tồn tại hoặc sai mật khẩu.', 401);
-        // }
-
-        const data = {
-            "success": true,
-            "message": "Đăng nhập thành công",
-            "data": {
-                "user_name": "admin",
-                "profile": {
-                    "name": "Admin 283"
-                }
-            }
-        }
-
-        const hocmaiUsername = data.data.user_name;
-        const hocmaiName = data.data.profile?.name;
-
-        // 2. Tìm user trong DB để lấy quyền
-        // Lưu ý: Có thể có nhiều dòng trong bảng users (do enroll nhiều khóa), ta lấy dòng đầu tiên.
-        let user = await prisma.users.findFirst({
-            where: { username: hocmaiUsername }
-        });
-
-        console.log("user", user)
-
-        if (!user) {
-            throw new ApiError('Tài khoản không có quyền truy cập hệ thống quản trị', 403);
-        }
-
-        // 3. Lấy RBAC Roles và Permissions từ Prisma
-        const userRoles = await prisma.userRoles.findMany({
-            where: { userId: user.id },
-            include: {
-                role: {
-                    include: {
-                        rolePermissions: {
-                            include: {
-                                permission: true
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        const roles = userRoles.map(ur => ur.role);
-
-        const permissionsMap = new Map();
-        roles.forEach(r => {
-            r.rolePermissions.forEach(rp => {
-                if (rp.permission) {
-                    permissionsMap.set(rp.permission.code, rp.permission);
-                }
-            });
-        });
-        const permissions = Array.from(permissionsMap.values());
-        const permissionCodes = permissions.map(p => p.code);
-
-        // 4. Tạo tokens
-        const tokens = generateTokens(user.id, rememberMe);
-
-        // 5. Trả về userData
-        const userData = {
-            userId: user.id,
-            username: user.username,
-            full_name: hocmaiName || user.name,
-            roles: roles.map(r => ({ id: r.id.toString(), code: r.code, name: r.name, fieldPolicy: r.fieldPolicy })),
-            permissions: permissionCodes,
-            ...tokens
-        };
-        console.log("userData", userData)
-        logger.info(`User logged in: ${user.id}`);
-        return userData;
-
-    } catch (error: any) {
-        logger.error('Login failed', error);
-        if (error instanceof ApiError) throw error;
-        throw new ApiError('Login failed: ' + error.message, 500);
+const getTokenTtl = (name: string, fallback: string) => {
+    const value = process.env[name]?.trim() || fallback;
+    if (/^\d+$/.test(value)) {
+        return Number(value);
     }
+    if (!/^\d+(ms|s|m|h|d|w|y)$/i.test(value)) {
+        throw new ApiError(`${name} is invalid`, 503);
+    }
+    return value;
+};
+
+const hashToken = (token: string) =>
+    crypto.createHash('sha256').update(token).digest('hex');
+
+const safeEqual = (actual: string, expected: string) => {
+    const actualBuffer = Buffer.from(actual);
+    const expectedBuffer = Buffer.from(expected);
+    return actualBuffer.length === expectedBuffer.length
+        && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+};
+
+const getTokenExpiry = (token: string) => {
+    const decoded = jwt.decode(token) as any;
+    if (!decoded?.exp) throw new ApiError('Token expiration is missing', 500);
+    return new Date(decoded.exp * 1000);
+};
+
+const loadUserAccess = async (userId: number) => {
+    const user = await prisma.users.findUnique({ where: { id: userId } });
+    if (!user) throw new ApiError('User not found', 404);
+
+    const userRoles = await prisma.userRoles.findMany({
+        where: {
+            userId: user.id,
+            role: { isActive: true },
+        },
+        include: {
+            role: {
+                include: {
+                    rolePermissions: {
+                        include: { permission: true },
+                    },
+                },
+            },
+        },
+    });
+
+    const roles = userRoles.map((item) => item.role);
+    const permissionCodes = Array.from(new Set(
+        roles.flatMap((role) =>
+            role.rolePermissions.map((item) => item.permission.code)
+        )
+    ));
+
+    return { user, roles, permissionCodes };
+};
+
+export const generateTokens = (
+    userId: number,
+    sessionId: string,
+    rememberMe: boolean
+) => {
+    const accessToken = jwt.sign(
+        { userId, sessionId, type: TOKEN_TYPES.ACCESS },
+        getRequiredSecret('ACCESS_TOKEN_SECRET'),
+        { expiresIn: getTokenTtl('ACCESS_TOKEN_EXPIRES_IN', '15m') as any }
+    );
+
+    const refreshToken = jwt.sign(
+        { userId, sessionId, rememberMe, type: TOKEN_TYPES.REFRESH },
+        getRequiredSecret('REFRESH_TOKEN_SECRET'),
+        {
+            expiresIn: getTokenTtl(
+                rememberMe ? 'REFRESH_TOKEN_EXPIRES_IN' : 'REFRESH_TOKEN_SHORT_EXPIRES_IN',
+                rememberMe ? '30d' : '1d'
+            ) as any,
+        }
+    );
+
+    return { accessToken, refreshToken };
+};
+
+const verifyHocmaiCredentials = async (username: string, password: string) => {
+    const apiToken = process.env.HOCMAI_CHECK_LOGIN_TOKEN;
+    if (!apiToken) {
+        throw new ApiError('Hocmai authentication is not configured', 503);
+    }
+
+    let response: Response;
+    try {
+        response = await fetch(
+            process.env.HOCMAI_CHECK_LOGIN_URL
+                || 'https://hocmai.vn/ladipage/check_login.php',
+            {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${apiToken}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ user: username, password }),
+            signal: AbortSignal.timeout(10_000),
+            }
+        );
+    } catch {
+        throw new ApiError('Authentication provider is unavailable', 503);
+    }
+
+    const result: any = await response.json().catch(() => null);
+    if (!response.ok || !result?.success || !result?.data?.user_name) {
+        throw new ApiError('Tên đăng nhập hoặc mật khẩu không đúng', 401);
+    }
+
+    return {
+        username: String(result.data.user_name),
+        fullName: result.data.profile?.name
+            ? String(result.data.profile.name)
+            : undefined,
+    };
+};
+
+const verifyCredentials = async (username: string, password: string) => {
+    const provider = (process.env.AUTH_PROVIDER || 'hocmai').trim().toLowerCase();
+
+    if (provider === 'mock') {
+        const mockUsername = process.env.MOCK_AUTH_USERNAME || 'admin';
+        const mockPassword = process.env.MOCK_AUTH_PASSWORD || '1';
+        if (
+            !safeEqual(username, mockUsername)
+            || !safeEqual(password, mockPassword)
+        ) {
+            throw new ApiError('Tên đăng nhập hoặc mật khẩu không đúng', 401);
+        }
+
+        return { username: mockUsername, fullName: undefined };
+    }
+
+    if (provider !== 'hocmai') {
+        throw new ApiError('AUTH_PROVIDER is invalid', 503);
+    }
+
+    return verifyHocmaiCredentials(username, password);
+};
+
+export const login = async (
+    username: string,
+    password: string,
+    rememberMe = false
+) => {
+    const authenticatedUser = await verifyCredentials(username, password);
+    const user = await prisma.users.findFirst({
+        where: { username: authenticatedUser.username },
+    });
+
+    if (!user) {
+        throw new ApiError('Tài khoản không có quyền truy cập hệ thống quản trị', 403);
+    }
+
+    const { roles, permissionCodes } = await loadUserAccess(user.id);
+    if (roles.length === 0) {
+        throw new ApiError('Tài khoản không có vai trò đang hoạt động', 403);
+    }
+
+    const sessionId = crypto.randomUUID();
+    const tokens = generateTokens(user.id, sessionId, Boolean(rememberMe));
+    await prisma.$executeRaw`
+        INSERT INTO auth_sessions (
+            id, user_id, refresh_token_hash, expires_at, created_at, updated_at
+        ) VALUES (
+            ${sessionId},
+            ${user.id},
+            ${hashToken(tokens.refreshToken)},
+            ${getTokenExpiry(tokens.refreshToken)},
+            NOW(),
+            NOW(3)
+        )
+    `;
+
+    logger.info(`User ${user.id} logged in`);
+    return {
+        userId: user.id,
+        username: user.username,
+        full_name: authenticatedUser.fullName || user.name,
+        roles: roles.map((role) => ({
+            id: role.id.toString(),
+            code: role.code,
+            name: role.name,
+            fieldPolicy: role.fieldPolicy,
+        })),
+        permissions: permissionCodes,
+        ...tokens,
+    };
 };
 
 export const getMe = async (userId: number) => {
-    try {
-        const user = await prisma.users.findUnique({
-            where: { id: userId }
-        });
-
-        if (!user) {
-            throw new ApiError('User not found', 404);
-        }
-
-        const userRoles = await prisma.userRoles.findMany({
-            where: { userId: user.id },
-            include: {
-                role: {
-                    include: {
-                        rolePermissions: {
-                            include: {
-                                permission: true
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        const roles = userRoles.map(ur => ur.role);
-
-        const permissionsMap = new Map();
-        roles.forEach(r => {
-            r.rolePermissions.forEach(rp => {
-                if (rp.permission) {
-                    permissionsMap.set(rp.permission.code, rp.permission);
-                }
-            });
-        });
-        const permissions = Array.from(permissionsMap.values());
-        const permissionCodes = permissions.map(p => p.code);
-
-        return {
-            userId: user.id,
-            username: user.username,
-            full_name: user.name,
-            roles: roles.map(r => ({ id: r.id.toString(), code: r.code, name: r.name })),
-            permissions: permissionCodes,
-        };
-    } catch (error: any) {
-        throw new ApiError(error.message, error.statusCode || 500);
-    }
+    const { user, roles, permissionCodes } = await loadUserAccess(userId);
+    return {
+        userId: user.id,
+        username: user.username,
+        full_name: user.name,
+        roles: roles.map((role) => ({
+            id: role.id.toString(),
+            code: role.code,
+            name: role.name,
+            fieldPolicy: role.fieldPolicy,
+        })),
+        permissions: permissionCodes,
+    };
 };
 
 export const refreshToken = async (refreshTokenString: string) => {
+    let decoded: any;
     try {
-        const decoded: any = jwt.verify(refreshTokenString, process.env.REFRESH_TOKEN_SECRET as string);
-
-        if (decoded.type !== TOKEN_TYPES.REFRESH) {
-            throw new Error('Invalid token type');
-        }
-
-        const user = await prisma.users.findUnique({
-            where: { id: decoded.userId }
-        });
-
-        if (!user) {
-            throw new Error('Invalid refresh token');
-        }
-
-        const accessToken = jwt.sign(
-            { userId: user.id, type: TOKEN_TYPES.ACCESS },
-            process.env.ACCESS_TOKEN_SECRET as string,
-            { expiresIn: process.env.ACCESS_TOKEN_EXPIRES_IN as any }
+        decoded = jwt.verify(
+            refreshTokenString,
+            getRequiredSecret('REFRESH_TOKEN_SECRET')
         );
-
-        return { accessToken };
-    } catch (error) {
-        logger.error('Refresh token failed', error);
-        throw error;
+    } catch {
+        throw new ApiError('Invalid or expired refresh token', 401);
     }
+
+    if (
+        decoded.type !== TOKEN_TYPES.REFRESH
+        || !decoded.sessionId
+        || !decoded.userId
+    ) {
+        throw new ApiError('Invalid refresh token', 401);
+    }
+
+    const sessions = await prisma.$queryRaw<Array<{
+        id: string;
+        user_id: bigint;
+        refresh_token_hash: string;
+        expires_at: Date;
+        revoked_at: Date | null;
+    }>>`
+        SELECT id, user_id, refresh_token_hash, expires_at, revoked_at
+        FROM auth_sessions
+        WHERE id = ${String(decoded.sessionId)}
+        LIMIT 1
+    `;
+    const session = sessions[0];
+    const presentedHash = hashToken(refreshTokenString);
+    if (
+        !session
+        || Number(session.user_id) !== Number(decoded.userId)
+        || session.revoked_at
+        || session.expires_at <= new Date()
+        || session.refresh_token_hash !== presentedHash
+    ) {
+        throw new ApiError('Invalid or revoked refresh token', 401);
+    }
+
+    const sessionUserId = Number(session.user_id);
+    await loadUserAccess(sessionUserId);
+    const tokens = generateTokens(
+        sessionUserId,
+        session.id,
+        Boolean(decoded.rememberMe)
+    );
+    const updated = await prisma.$executeRaw`
+        UPDATE auth_sessions
+        SET
+            refresh_token_hash = ${hashToken(tokens.refreshToken)},
+            expires_at = ${getTokenExpiry(tokens.refreshToken)},
+            updated_at = NOW(3)
+        WHERE id = ${session.id}
+          AND refresh_token_hash = ${presentedHash}
+          AND revoked_at IS NULL
+    `;
+
+    if (updated !== 1) {
+        throw new ApiError('Refresh token has already been used', 401);
+    }
+
+    return tokens;
 };
 
-export const logout = async (userId: number) => {
-    try {
-        // Here we could invalidate the refresh token if we were storing it in the DB.
-        logger.info(`User logged out: ${userId}`);
-        return true;
-    } catch (error) {
-        logger.error('Logout failed', error);
-        throw error;
-    }
+export const logout = async (sessionId: string) => {
+    await prisma.$executeRaw`
+        UPDATE auth_sessions
+        SET revoked_at = NOW(), updated_at = NOW(3)
+        WHERE id = ${sessionId} AND revoked_at IS NULL
+    `;
+    return true;
 };
 
-// Dummy exports for unused functions to prevent breaking controller
-export const register = async (data: any) => { throw new Error("Not implemented"); };
-export const requestPasswordReset = async (email: string) => { throw new Error("Not implemented"); };
-export const verifyOTP = async (email: string, otp: string) => { throw new Error("Not implemented"); };
-export const resetPassword = async (token: string, pass: string) => { throw new Error("Not implemented"); };
+export const register = async (_data?: any) => {
+    throw new ApiError('Registration is not available', 501);
+};
+
+export const requestPasswordReset = async (_email?: string) => {
+    throw new ApiError('Password reset is not available', 501);
+};
+
+export const verifyOTP = async (_email?: string, _otp?: string) => {
+    throw new ApiError('Password reset is not available', 501);
+};
+
+export const resetPassword = async (_token?: string, _pass?: string) => {
+    throw new ApiError('Password reset is not available', 501);
+};

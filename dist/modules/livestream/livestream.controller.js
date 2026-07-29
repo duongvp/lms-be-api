@@ -32,9 +32,17 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getCalendar = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.createBulk = exports.createSingle = void 0;
+exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
+const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
+const getChangeActor = (req) => ({
+    userId: Number(req.user?.userId),
+    username: String(req.user?.username || ''),
+});
 const createSingle = async (req, res, next) => {
     try {
         console.log(req.body);
@@ -71,7 +79,7 @@ const updateSchedule = async (req, res, next) => {
     try {
         const { id } = req.params;
         const { update_mode, ...data } = req.body;
-        const result = await livestreamService.updateSchedule(Number(id), data, update_mode);
+        const result = await livestreamService.updateSchedule(Number(id), data, update_mode, getChangeActor(req));
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
@@ -82,7 +90,7 @@ exports.updateSchedule = updateSchedule;
 const rescheduleSession = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const result = await livestreamService.rescheduleSession(Number(id), req.body);
+        const result = await livestreamService.rescheduleSession(Number(id), req.body, getChangeActor(req));
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
@@ -93,7 +101,7 @@ exports.rescheduleSession = rescheduleSession;
 const cancelSession = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const result = await livestreamService.cancelSession(Number(id));
+        const result = await livestreamService.cancelSession(Number(id), req.body, getChangeActor(req));
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
@@ -101,10 +109,35 @@ const cancelSession = async (req, res, next) => {
     }
 };
 exports.cancelSession = cancelSession;
+const deleteSession = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const result = await livestreamService.deleteSession(Number(id));
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.deleteSession = deleteSession;
 const getCalendar = async (req, res, next) => {
     try {
         const result = await livestreamService.getCalendar(req.query);
-        res.status(200).json({ success: true, data: result });
+        const data = await field_permission_service_1.default.filterVisibleRecords(req.user?.roleIds || [], 'calendar', result.data);
+        const now = new Date();
+        const dataWithSystemMetadata = data.map((record, index) => {
+            const source = result.data[index];
+            return {
+                ...record,
+                // id/can_modify là metadata phục vụ thao tác, không phải cột dữ liệu.
+                id: source.id,
+                can_modify: livestreamService.isSessionModifiable(source, now),
+            };
+        });
+        res.status(200).json({
+            success: true,
+            data: { ...result, data: dataWithSystemMetadata },
+        });
     }
     catch (err) {
         res.status(400).json({ success: false, message: err.message });

@@ -35,10 +35,35 @@ model calendar {
   created_at        DateTime?             @default(now()) @db.Timestamp(0)
   updated_at        DateTime?             @default(now()) @db.Timestamp(0)
 
+  @@unique([key], map: "uq_calendar_key")
   @@index([code, learn_number], map: "idx_calendar_code_learn")
   @@index([code, learn_number, start_time, end_time], map: "idx_calendar_code_time")
   @@index([system_type], map: "idx_calendar_system")
   @@index([start_time, end_time], map: "idx_calendar_time")
+}
+
+model calendar_change_logs {
+  id                BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  operation_id      String   @unique(map: "uq_calendar_change_operation") @db.Char(36)
+  action            String   @db.VarChar(30)
+  calendar_id       Int?     @db.UnsignedInt
+  old_key           String?  @db.VarChar(100)
+  new_key           String?  @db.VarChar(100)
+  code              String   @db.VarChar(30)
+  learn_number      Int
+  reason            String   @db.VarChar(500)
+  actor_user_id     Int?     @db.UnsignedInt
+  actor_username    String   @db.VarChar(100)
+  before_data       Json
+  after_data        Json
+  affected_sessions Json
+  created_at        DateTime @default(now()) @db.DateTime(3)
+
+  @@index([calendar_id, created_at], map: "idx_calendar_change_calendar")
+  @@index([old_key], map: "idx_calendar_change_old_key")
+  @@index([new_key], map: "idx_calendar_change_new_key")
+  @@index([actor_user_id, created_at], map: "idx_calendar_change_actor")
+  @@index([created_at], map: "idx_calendar_change_created")
 }
 
 model lessons {
@@ -89,6 +114,19 @@ model hocmai_sync_queue {
   created_at DateTime  @default(now()) @db.Timestamp(0)
 }
 
+model auth_sessions {
+  id                 String    @id @db.VarChar(64)
+  user_id            Int       @db.UnsignedInt
+  refresh_token_hash String    @db.Char(64)
+  expires_at         DateTime  @db.DateTime(0)
+  revoked_at         DateTime? @db.DateTime(0)
+  created_at         DateTime  @default(now()) @db.Timestamp(0)
+  updated_at         DateTime  @updatedAt
+
+  @@index([user_id, revoked_at], map: "idx_auth_sessions_user_revoked")
+  @@index([expires_at], map: "idx_auth_sessions_expires")
+}
+
 model learning_count_daily_cache {
   package_id        String   @db.VarChar(50)
   username          String   @db.VarChar(100)
@@ -133,11 +171,15 @@ model logs_chat_new {
 model package_lesson_mapping {
   id           Int     @id @default(autoincrement())
   package_id   String  @db.VarChar(50)
+  course_id    String? @db.VarChar(50)
   lesson_id    String  @db.VarChar(50)
   code         String  @db.VarChar(30)
   learn_number Int
   key          String? @db.VarChar(100)
 
+  @@unique([key, package_id, lesson_id], map: "uq_plm_key_package_lesson")
+  @@index([key], map: "idx_plm_key")
+  @@index([course_id, lesson_id], map: "idx_plm_course_lesson")
   @@index([package_id, code, learn_number], map: "idx_plm_package_code_learn")
 }
 
@@ -387,7 +429,6 @@ model users_logs_history {
   @@index([user, code, learn_number], map: "idx_user_code_learn")
 }
 
-
 enum quiz_content_quiz_status {
   active
   disable
@@ -412,21 +453,19 @@ enum calendar_system_type {
   topuni
 }
 
-
-
 /// ===============================================================
 /// RBAC
 /// ===============================================================
 
 model roles {
-  id              BigInt           @id @default(autoincrement()) @db.UnsignedBigInt
-  code            String           @unique @db.VarChar(50)
-  name            String           @db.VarChar(100)
-  description     String?          @db.VarChar(255)
-  isActive        Boolean          @default(true)
+  id              BigInt            @id @default(autoincrement()) @db.UnsignedBigInt
+  code            String            @unique @db.VarChar(50)
+  name            String            @db.VarChar(100)
+  description     String?           @db.VarChar(255)
+  isActive        Boolean           @default(true)
   fieldPolicy     Json?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
   userRoles       userRoles[]
   rolePermissions rolePermissions[]
 
@@ -434,12 +473,12 @@ model roles {
 }
 
 model permissions {
-  id              BigInt           @id @default(autoincrement()) @db.UnsignedBigInt
-  code            String           @unique @db.VarChar(100)
-  name            String           @db.VarChar(100)
-  description     String?          @db.VarChar(255)
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  id              BigInt            @id @default(autoincrement()) @db.UnsignedBigInt
+  code            String            @unique @db.VarChar(100)
+  name            String            @db.VarChar(100)
+  description     String?           @db.VarChar(255)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
   rolePermissions rolePermissions[]
 
   @@map("permissions")
@@ -447,7 +486,7 @@ model permissions {
 
 model userRoles {
   id        Int      @id @default(autoincrement())
-  userId    Int  @db.UnsignedInt
+  userId    Int      @db.UnsignedInt
   roleId    BigInt   @db.UnsignedBigInt
   createdAt DateTime @default(now())
 
@@ -461,10 +500,10 @@ model userRoles {
 }
 
 model rolePermissions {
-  id           Int         @id @default(autoincrement())
-  roleId       BigInt      @db.UnsignedBigInt
-  permissionId BigInt      @db.UnsignedBigInt
-  createdAt    DateTime    @default(now())
+  id           Int      @id @default(autoincrement())
+  roleId       BigInt   @db.UnsignedBigInt
+  permissionId BigInt   @db.UnsignedBigInt
+  createdAt    DateTime @default(now())
 
   role       roles       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission permissions @relation(fields: [permissionId], references: [id], onDelete: Cascade)
@@ -491,12 +530,12 @@ model modules {
 }
 
 model moduleFields {
-  id         BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
-  moduleId   BigInt   @db.UnsignedBigInt
-  fieldCode  String   @db.VarChar(50)
-  fieldLabel String   @db.VarChar(100)
-  fieldType  String?  @db.VarChar(20)
-  sortOrder  Int      @default(0)
+  id         BigInt  @id @default(autoincrement()) @db.UnsignedBigInt
+  moduleId   BigInt  @db.UnsignedBigInt
+  fieldCode  String  @db.VarChar(50)
+  fieldLabel String  @db.VarChar(100)
+  fieldType  String? @db.VarChar(20)
+  sortOrder  Int     @default(0)
 
   module modules @relation(fields: [moduleId], references: [id], onDelete: Cascade)
 

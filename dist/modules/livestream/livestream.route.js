@@ -37,10 +37,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const multer_1 = __importDefault(require("multer"));
 const livestreamController = __importStar(require("./livestream.controller"));
 const auth_middleware_1 = __importDefault(require("../auth/auth.middleware"));
 const router = (0, express_1.Router)();
 const { authenticate, authorize, authorizeFields } = auth_middleware_1.default;
+const upload = (0, multer_1.default)({
+    storage: multer_1.default.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+});
 const normalizeCalendarFields = (fields) => Array.from(new Set(fields
     .filter((field) => ![
     'lesson_id',
@@ -62,6 +67,9 @@ const normalizeCalendarFields = (fields) => Array.from(new Set(fields
 })));
 router.use(authenticate);
 router.get('/', authorize(['calendar.view']), livestreamController.getCalendar);
+router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
+router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
+router.post('/import', authorize(['calendar.import']), upload.single('file'), livestreamController.importFile);
 router.post('/single', authorize(['calendar.create']), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))), livestreamController.createSingle);
 router.post('/bulk', authorize(['calendar.create']), authorizeFields('calendar', (req) => normalizeCalendarFields((req.body?.calendars || []).flatMap((item) => Object.keys(item || {})))), livestreamController.createBulk);
 // Thêm dòng này (Bắt buộc phải đặt trước các route có param /:id)

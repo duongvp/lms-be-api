@@ -1,6 +1,10 @@
 import crypto from 'crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { resolvePackagesByCourseId } from '../../integrations/package-course-sheet.service';
+import {
+  enqueueRescheduleSync,
+  withManualHocmaiQueue,
+} from './hocmai-sync-queue.service';
 
 const prisma = new PrismaClient();
 
@@ -37,6 +41,7 @@ const toAuditJson = (value: any) => JSON.stringify(
 const writeCalendarChangeLog = async (
   tx: Prisma.TransactionClient,
   input: {
+    operationId?: string;
     action: string;
     current: any;
     reason: string;
@@ -64,7 +69,7 @@ const writeCalendarChangeLog = async (
       affected_sessions,
       created_at
     ) VALUES (
-      ${crypto.randomUUID()},
+      ${input.operationId || crypto.randomUUID()},
       ${input.action},
       ${input.current.id},
       ${input.current.key || null},
@@ -103,23 +108,9 @@ const generateKey = (
   }
 
   const sessionNum = (lessonCount || 0) + 1;
-  return `${sysCode}_${schoolYear}_${code}_${learnNumber}_b${sessionNum}`;
+  const sessionSuffix = sessionNum > 1 ? `_b${sessionNum}` : '';
+  return `${sysCode}_${schoolYear}_${code}_${learnNumber}${sessionSuffix}`;
 };
-
-const SYLLABUS_FIELDS = [
-  'subject',
-  'lesson_name',
-  'lesson_document',
-  'evg_banner',
-  'evg_stream',
-  'lesson_link',
-  'lesson_baitap',
-  'lesson_tomtat',
-  'lesson_phuongphap',
-  'lesson_luuy',
-  'lesson_ketqua',
-  'lesson_noti',
-];
 
 const COPY_SESSION_FIELDS = [
   'code',
@@ -137,6 +128,7 @@ const COPY_SESSION_FIELDS = [
   'lesson_luuy',
   'lesson_ketqua',
   'channel_name',
+  'lesson_count',
   'lesson_noti',
   'system_type',
 ];
@@ -194,6 +186,9 @@ const hydrateLessonData = async (tx: any, input: any) => {
     subject: lesson.subject_name,
     lesson_name: customLessonName || lesson.lesson_name,
     lesson_document: lesson.lesson_document,
+    evg_banner: lesson.evg_banner,
+    evg_stream: lesson.evg_stream,
+    lesson_link: lesson.lesson_link,
     lesson_baitap: lesson.lesson_baitap,
     lesson_tomtat: lesson.lesson_tomtat,
     lesson_phuongphap: lesson.lesson_phuongphap,
@@ -381,24 +376,6 @@ const copySessionData = (source: any) => {
   const data: any = {};
   COPY_SESSION_FIELDS.forEach((field) => {
     data[field] = source[field];
-  });
-  return data;
-};
-
-const copySyllabusData = (source: any) => {
-  const data: any = {
-    learn_number: source.learn_number,
-  };
-  SYLLABUS_FIELDS.forEach((field) => {
-    data[field] = source[field];
-  });
-  return data;
-};
-
-const clearSyllabusData = () => {
-  const data: any = {};
-  SYLLABUS_FIELDS.forEach((field) => {
-    data[field] = null;
   });
   return data;
 };
@@ -630,6 +607,42 @@ const generateUniqueKey = async (
   return { key, lesson_count: nextLessonCount };
 };
 
+/**
+ * Key phát sinh do tạo lịch bù hoặc ở cuối chuỗi dời lịch vẫn thuộc bài học
+ * nguồn, vì vậy giữ learn_number/lesson_count và thêm namespace `_rN`.
+ * Điều này dành key `..._5` cho bài 5 thật, thay vì để một lần dời bài 4 chiếm
+ * key đó và khiến bài 5 lần đầu bị sinh nhầm thành `..._5_b2`.
+ */
+const generateUniqueRescheduleKey = async (
+  tx: any,
+  systemType: string,
+  startTime: Date,
+  code: string,
+  learnNumber: number,
+  lessonCount: number
+) => {
+  const baseKey = generateKey(
+    systemType,
+    startTime,
+    code,
+    learnNumber,
+    lessonCount
+  );
+  let rescheduleNumber = 1;
+  let key = `${baseKey}_r${rescheduleNumber}`;
+
+  while (await tx.calendar.findFirst({ where: { key } })) {
+    rescheduleNumber += 1;
+    key = `${baseKey}_r${rescheduleNumber}`;
+  }
+
+  return {
+    key,
+    lesson_count: lessonCount,
+    reschedule_number: rescheduleNumber,
+  };
+};
+
 // 1.3 & 5 Kiểm tra trùng lặp
 const checkConflict = async ({
   teacher,
@@ -800,14 +813,16 @@ const cancelWithMakeup = async (tx: any, current: any, payload: any) => {
     client: tx,
   });
 
-  const requestedLessonCount = await getNextLessonCount(tx, current.code, systemType, current.learn_number);
-  const uniqueKey = await generateUniqueKey(
+  // Lịch bù là lịch phát sinh do dời: giữ nguyên bài và số lần chiếu, đồng
+  // thời dùng namespace `_rN` giống luồng dời chuỗi. `_bN` chỉ dành cho
+  // trường hợp chủ động tạo thêm buổi chiếu của cùng một bài.
+  const uniqueKey = await generateUniqueRescheduleKey(
     tx,
     systemType,
     startTime,
     current.code,
     current.learn_number,
-    requestedLessonCount
+    normalizeLessonCount(current.lesson_count) ?? 0
   );
   const newSessionData = {
     ...copySessionData(current),
@@ -887,11 +902,13 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any) => {
   );
   const updatedCurrent = await tx.calendar.update({
     where: { id: current.id },
-    data: {
-      lesson_status: 1,
-      ...clearSyllabusData(),
-    },
+    // Buổi cũ vẫn là lịch sử của bài đã xếp; chỉ đánh dấu nghỉ.
+    data: { lesson_status: 1 },
   });
+
+  // package_lesson_mapping chỉ phản ánh key hiện hành của lesson. Snapshot ở
+  // trên đã giữ dữ liệu cần thiết để dịch chuỗi; xóa mapping của key nghỉ để
+  // một lesson_id không đồng thời trỏ vào cả lịch cũ và lịch mới.
   if (current.key) {
     await tx.package_lesson_mapping.deleteMany({
       where: { key: current.key },
@@ -902,7 +919,10 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any) => {
   for (let i = 0; i < followings.length; i++) {
     const targetSession = followings[i];
     const sourceSession = allSessions[i];
-    const updateData = copySyllabusData(sourceSession);
+    const updateData = {
+      ...copySessionData(sourceSession),
+      lesson_status: 0,
+    };
 
     const shiftedSession = await tx.calendar.update({
       where: { id: targetSession.id },
@@ -919,14 +939,13 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any) => {
   }
 
   const lastSource = allSessions[allSessions.length - 1];
-  const requestedLessonCount = await getNextLessonCount(tx, current.code, systemType, lastSource.learn_number);
-  const uniqueKey = await generateUniqueKey(
+  const uniqueKey = await generateUniqueRescheduleKey(
     tx,
     systemType,
     startTime,
     current.code,
     lastSource.learn_number,
-    requestedLessonCount
+    normalizeLessonCount(lastSource.lesson_count) ?? 0
   );
   const newSessionData = {
     ...copySessionData(lastSource),
@@ -964,7 +983,8 @@ export const rescheduleSession = async (
   const reason = normalizeChangeReason(payload);
   const actor = normalizeChangeActor(changeActor);
 
-  return await withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => {
+  return await withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => withManualHocmaiQueue(tx, async () => {
+    const operationId = crypto.randomUUID();
     // Đọc và validate bên trong transaction để không dùng snapshot cũ khi có
     // hai yêu cầu cùng dời lịch của một khóa.
     const current = await tx.calendar.findUnique({ where: { id } });
@@ -1011,6 +1031,7 @@ export const rescheduleSession = async (
           ];
 
     await writeCalendarChangeLog(tx, {
+      operationId,
       action,
       current,
       reason,
@@ -1024,8 +1045,10 @@ export const rescheduleSession = async (
       newKey: result?.created_session?.key,
     });
 
+    await enqueueRescheduleSync(tx, action, result, operationId);
+
     return result;
-  }));
+  })));
 };
 
 // 2.1 & 2.2 Sửa lịch
@@ -1221,6 +1244,53 @@ export const getCalendar = async (query: any) => {
   ]);
 
   return { total, page, limit, data };
+};
+
+export const getCalendarRowsForExport = async (rawIds?: unknown) => {
+  const ids = String(rawIds ?? '')
+    .split(',')
+    .map((id) => Number(id.trim()))
+    .filter((id) => Number.isInteger(id) && id > 0);
+  const calendars = await prisma.calendar.findMany({
+    where: ids.length ? { id: { in: ids } } : {},
+    orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
+  });
+  const keys = calendars
+    .map((calendar) => calendar.key)
+    .filter((key): key is string => Boolean(key));
+  const mappings = keys.length
+    ? await prisma.package_lesson_mapping.findMany({
+        where: { key: { in: keys } },
+        orderBy: [{ course_id: 'asc' }, { lesson_id: 'asc' }],
+      })
+    : [];
+
+  const mappingsByKey = new Map<string, Map<string, string[]>>();
+  mappings.forEach((mapping) => {
+    if (!mapping.key || !mapping.course_id) return;
+    const byCourse = mappingsByKey.get(mapping.key) ?? new Map<string, string[]>();
+    const lessonIds = byCourse.get(mapping.course_id) ?? [];
+    if (!lessonIds.includes(mapping.lesson_id)) lessonIds.push(mapping.lesson_id);
+    byCourse.set(mapping.course_id, lessonIds);
+    mappingsByKey.set(mapping.key, byCourse);
+  });
+
+  return calendars.map((calendar) => ({
+    system_type: calendar.system_type,
+    code: calendar.code,
+    learn_number: calendar.learn_number,
+    lesson_count: calendar.lesson_count ?? 0,
+    subject: calendar.subject,
+    teacher: calendar.teacher,
+    lesson_name: calendar.lesson_name,
+    start_time: calendar.start_time.toISOString(),
+    end_time: calendar.end_time.toISOString(),
+    channel_name: calendar.channel_name,
+    lesson_status: calendar.lesson_status ?? 0,
+    package_lesson_mappings: Array.from(
+      mappingsByKey.get(calendar.key || '')?.entries() ?? []
+    ).map(([courseId, lessonIds]) => `${courseId}:${lessonIds.join('|')}`).join(';'),
+  }));
 };
 
 

@@ -58,6 +58,41 @@ const optionalString = (value, fieldName, maxLength) => {
     }
     return parsed;
 };
+const normalizeLessonDocuments = (value) => {
+    if (value === undefined || value === null || value === '')
+        return null;
+    let documents = value;
+    if (typeof value === 'string') {
+        const text = value.trim();
+        if (!text)
+            return null;
+        try {
+            documents = JSON.parse(text);
+        }
+        catch {
+            // Hỗ trợ dữ liệu cũ chỉ lưu một đường dẫn/tên file.
+            documents = [{ link: text, title: 'Tài liệu bài học', type: 'pdf' }];
+        }
+    }
+    if (!Array.isArray(documents)) {
+        throw new ApiError_1.default('lesson_document phải là danh sách tài liệu', 400);
+    }
+    const normalized = documents.map((document, index) => {
+        if (!document || typeof document !== 'object' || Array.isArray(document)) {
+            throw new ApiError_1.default(`lesson_document[${index}] không hợp lệ`, 400);
+        }
+        const item = document;
+        const link = requiredString(item.link, `lesson_document[${index}].link`, 2000);
+        const title = requiredString(item.title, `lesson_document[${index}].title`, 400);
+        const type = requiredString(item.type ?? 'pdf', `lesson_document[${index}].type`, 50);
+        return { link: link.trim(), title, type };
+    });
+    const serialized = JSON.stringify(normalized);
+    if (serialized.length > 65_535) {
+        throw new ApiError_1.default('lesson_document vượt quá dung lượng cho phép', 400);
+    }
+    return serialized;
+};
 const valueToString = (value) => {
     if (value === undefined || value === null)
         return undefined;
@@ -148,7 +183,13 @@ const validateLessonPayload = (body, isUpdate = false) => {
     if (!isUpdate || body.lesson_name !== undefined)
         payload.lesson_name = requiredString(body.lesson_name, 'lesson_name', 400);
     if (body.lesson_document !== undefined)
-        payload.lesson_document = optionalString(body.lesson_document, 'lesson_document', 500);
+        payload.lesson_document = normalizeLessonDocuments(body.lesson_document);
+    if (body.evg_banner !== undefined)
+        payload.evg_banner = optionalString(body.evg_banner, 'evg_banner', 500);
+    if (body.evg_stream !== undefined)
+        payload.evg_stream = optionalString(body.evg_stream, 'evg_stream', 500);
+    if (body.lesson_link !== undefined)
+        payload.lesson_link = optionalString(body.lesson_link, 'lesson_link', 500);
     if (body.lesson_baitap !== undefined)
         payload.lesson_baitap = optionalString(body.lesson_baitap, 'lesson_baitap', 500);
     if (body.lesson_tomtat !== undefined)
@@ -241,6 +282,15 @@ const validateLessonImportRows = (rows) => {
             : optionalInteger(row.status, 'status');
         if (status !== undefined && ![0, 1].includes(status))
             addError('status', 'Status chỉ nhận 0 hoặc 1');
+        let lessonDocument = null;
+        let lessonDocumentValid = true;
+        try {
+            lessonDocument = normalizeLessonDocuments(row.lesson_document);
+        }
+        catch (error) {
+            lessonDocumentValid = false;
+            addError('lesson_document', error.message || 'Lesson Document không hợp lệ');
+        }
         if (grade !== undefined && subject && learnNumber !== undefined) {
             const key = `${grade}|${subject.subject_code}|${learnNumber}`;
             if (seenKeys.has(key))
@@ -254,6 +304,7 @@ const validateLessonImportRows = (rows) => {
             subject &&
             lessonName &&
             lessonName.length <= 400 &&
+            lessonDocumentValid &&
             (learnNumber === undefined || learnNumber > 0) &&
             status !== undefined &&
             [0, 1].includes(status)) {
@@ -264,7 +315,10 @@ const validateLessonImportRows = (rows) => {
                 subject_name: subject.subject_name,
                 learn_number: learnNumber,
                 lesson_name: lessonName,
-                lesson_document: optionalImportText(row.lesson_document, 500),
+                lesson_document: lessonDocument,
+                evg_banner: optionalImportText(row.evg_banner, 500),
+                evg_stream: optionalImportText(row.evg_stream, 500),
+                lesson_link: optionalImportText(row.lesson_link, 500),
                 lesson_baitap: optionalImportText(row.lesson_baitap, 500),
                 lesson_tomtat: optionalImportText(row.lesson_tomtat, 500),
                 lesson_phuongphap: optionalImportText(row.lesson_phuongphap, 500),

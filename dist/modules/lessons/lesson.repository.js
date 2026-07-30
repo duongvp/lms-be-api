@@ -98,9 +98,10 @@ const createLesson = async (payload) => {
         }
         await tx.$executeRawUnsafe(`INSERT INTO lessons (
         grade, subject_code, subject_name, learn_number,
-        lesson_name, lesson_document, lesson_baitap, lesson_tomtat, lesson_phuongphap,
+        lesson_name, lesson_document, evg_banner, evg_stream, lesson_link,
+        lesson_baitap, lesson_tomtat, lesson_phuongphap,
         lesson_luuy, lesson_ketqua, status, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`, payload.grade, payload.subject_code, payload.subject_name, learnNumber, payload.lesson_name, payload.lesson_document ?? null, payload.lesson_baitap ?? null, payload.lesson_tomtat ?? null, payload.lesson_phuongphap ?? null, payload.lesson_luuy ?? null, payload.lesson_ketqua ?? null, payload.status ?? 1);
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`, payload.grade, payload.subject_code, payload.subject_name, learnNumber, payload.lesson_name, payload.lesson_document ?? null, payload.evg_banner ?? null, payload.evg_stream ?? null, payload.lesson_link ?? null, payload.lesson_baitap ?? null, payload.lesson_tomtat ?? null, payload.lesson_phuongphap ?? null, payload.lesson_luuy ?? null, payload.lesson_ketqua ?? null, payload.status ?? 1);
         const rows = await tx.$queryRawUnsafe('SELECT * FROM lessons WHERE id = LAST_INSERT_ID() LIMIT 1');
         return rows[0] ?? null;
     });
@@ -161,26 +162,30 @@ const importLessons = async (rows, mode) => {
                 }
                 if (row.status === 0) {
                     await tx.$executeRawUnsafe(`UPDATE lessons SET
-              lesson_name = ?, lesson_document = ?, lesson_baitap = ?, lesson_tomtat = ?,
+              lesson_name = ?, lesson_document = ?, evg_banner = ?, evg_stream = ?, lesson_link = ?,
+              lesson_baitap = ?, lesson_tomtat = ?,
               lesson_phuongphap = ?, lesson_luuy = ?, lesson_ketqua = ?, status = 0,
               learn_number = -CAST(id AS SIGNED), updated_at = CURRENT_TIMESTAMP(3)
-            WHERE id = ?`, row.lesson_name, row.lesson_document ?? null, row.lesson_baitap ?? null, row.lesson_tomtat ?? null, row.lesson_phuongphap ?? null, row.lesson_luuy ?? null, row.lesson_ketqua ?? null, existing.id);
+            WHERE id = ?`, row.lesson_name, row.lesson_document ?? null, row.evg_banner ?? null, row.evg_stream ?? null, row.lesson_link ?? null, row.lesson_baitap ?? null, row.lesson_tomtat ?? null, row.lesson_phuongphap ?? null, row.lesson_luuy ?? null, row.lesson_ketqua ?? null, existing.id);
                 }
                 else {
                     await tx.$executeRawUnsafe(`UPDATE lessons SET
-              subject_name = ?, lesson_name = ?, lesson_document = ?, lesson_baitap = ?, lesson_tomtat = ?,
+              subject_name = ?, lesson_name = ?, lesson_document = ?,
+              evg_banner = ?, evg_stream = ?, lesson_link = ?,
+              lesson_baitap = ?, lesson_tomtat = ?,
               lesson_phuongphap = ?, lesson_luuy = ?, lesson_ketqua = ?, status = ?,
               updated_at = CURRENT_TIMESTAMP(3)
-            WHERE id = ?`, row.subject_name, row.lesson_name, row.lesson_document ?? null, row.lesson_baitap ?? null, row.lesson_tomtat ?? null, row.lesson_phuongphap ?? null, row.lesson_luuy ?? null, row.lesson_ketqua ?? null, row.status ?? 1, existing.id);
+            WHERE id = ?`, row.subject_name, row.lesson_name, row.lesson_document ?? null, row.evg_banner ?? null, row.evg_stream ?? null, row.lesson_link ?? null, row.lesson_baitap ?? null, row.lesson_tomtat ?? null, row.lesson_phuongphap ?? null, row.lesson_luuy ?? null, row.lesson_ketqua ?? null, row.status ?? 1, existing.id);
                 }
                 updated += 1;
                 continue;
             }
             await tx.$executeRawUnsafe(`INSERT INTO lessons (
           grade, subject_code, subject_name, learn_number,
-          lesson_name, lesson_document, lesson_baitap, lesson_tomtat, lesson_phuongphap,
+          lesson_name, lesson_document, evg_banner, evg_stream, lesson_link,
+          lesson_baitap, lesson_tomtat, lesson_phuongphap,
           lesson_luuy, lesson_ketqua, status, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`, row.grade, row.subject_code, row.subject_name, learnNumber, row.lesson_name, row.lesson_document ?? null, row.lesson_baitap ?? null, row.lesson_tomtat ?? null, row.lesson_phuongphap ?? null, row.lesson_luuy ?? null, row.lesson_ketqua ?? null, row.status ?? 1);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`, row.grade, row.subject_code, row.subject_name, learnNumber, row.lesson_name, row.lesson_document ?? null, row.evg_banner ?? null, row.evg_stream ?? null, row.lesson_link ?? null, row.lesson_baitap ?? null, row.lesson_tomtat ?? null, row.lesson_phuongphap ?? null, row.lesson_luuy ?? null, row.lesson_ketqua ?? null, row.status ?? 1);
             if (row.status === 0) {
                 await tx.$executeRawUnsafe('UPDATE lessons SET learn_number = -CAST(id AS SIGNED), updated_at = CURRENT_TIMESTAMP(3) WHERE id = LAST_INSERT_ID()');
             }

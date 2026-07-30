@@ -106,7 +106,7 @@ lesson_count = 0
 Sinh ra
 
 ```
-tc_2627_toan-6_5_b1
+tc_2627_toan-6_5
 ```
 
 Nếu cùng bài được livestream lần 2
@@ -172,7 +172,7 @@ Giáo viên chọn một ngày học bù.
 Nếu thời gian hợp lệ thì:
 
 - tạo một record calendar mới
-- copy toàn bộ dữ liệu bài học
+- copy toàn bộ thông tin nghiệp vụ của row
 - lesson_number giữ nguyên
 - lesson_count tăng thêm 1
 - sinh KEY mới
@@ -186,13 +186,13 @@ lesson_number = 1
 
 lesson_count = 0
 
-key = tc_2627_toan-6_1_b1
+key = tc_2627_toan-6_1
 ```
 
 Buổi học bù
 
 ```
-lesson_number = 1
+lesson_number dữ liệu = 1
 
 lesson_count = 1
 

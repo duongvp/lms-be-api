@@ -19,6 +19,9 @@ export interface LessonPayload {
   learn_number?: number;
   lesson_name: string;
   lesson_document?: string | null;
+  evg_banner?: string | null;
+  evg_stream?: string | null;
+  lesson_link?: string | null;
   lesson_baitap?: string | null;
   lesson_tomtat?: string | null;
   lesson_phuongphap?: string | null;

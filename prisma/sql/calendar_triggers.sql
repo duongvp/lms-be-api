@@ -23,7 +23,10 @@ BEGIN
         SET docs_json = JSON_ARRAY();
     END IF;
 
-    IF NEW.`key` IS NOT NULL AND NEW.`key` != '' THEN
+    IF COALESCE(@lms_manual_hocmai_queue, 0) = 0
+       AND NEW.`key` IS NOT NULL
+       AND NEW.`key` != ''
+    THEN
         INSERT INTO hocmai_sync_queue (c_key, action, payload, status)
         VALUES (
             NEW.`key`,
@@ -66,7 +69,8 @@ BEGIN
         SET docs_json = JSON_ARRAY();
     END IF;
 
-    IF NEW.`key` IS NOT NULL
+    IF COALESCE(@lms_manual_hocmai_queue, 0) = 0
+       AND NEW.`key` IS NOT NULL
        AND NEW.`key` != ''
        AND (
            NOT (OLD.`key` <=> NEW.`key`)
@@ -107,7 +111,8 @@ CREATE TRIGGER `trg_calendar_status_notify`
 AFTER UPDATE ON `calendar`
 FOR EACH ROW
 BEGIN
-    IF NEW.`key` IS NOT NULL
+    IF COALESCE(@lms_manual_hocmai_queue, 0) = 0
+       AND NEW.`key` IS NOT NULL
        AND NEW.`key` != ''
        AND (
            NOT (OLD.lesson_status <=> NEW.lesson_status)

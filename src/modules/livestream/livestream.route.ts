@@ -1,9 +1,14 @@
 import { Router } from 'express';
+import multer from 'multer';
 import * as livestreamController from './livestream.controller';
 import authMiddleware from '../auth/auth.middleware';
 
 const router = Router();
 const { authenticate, authorize, authorizeFields } = authMiddleware;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 
 const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
   fields
@@ -28,6 +33,14 @@ const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
 router.use(authenticate);
 
 router.get('/', authorize(['calendar.view']), livestreamController.getCalendar);
+router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
+router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
+router.post(
+  '/import',
+  authorize(['calendar.import']),
+  upload.single('file'),
+  livestreamController.importFile
+);
 router.post(
   '/single',
   authorize(['calendar.create']),

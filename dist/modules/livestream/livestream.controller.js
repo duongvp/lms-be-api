@@ -36,9 +36,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.createBulk = exports.createSingle = void 0;
+exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
+const livestream_io_1 = require("./livestream.io");
 const getChangeActor = (req) => ({
     userId: Number(req.user?.userId),
     username: String(req.user?.username || ''),
@@ -144,3 +145,52 @@ const getCalendar = async (req, res, next) => {
     }
 };
 exports.getCalendar = getCalendar;
+const exportFile = async (req, res) => {
+    try {
+        const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+        const rows = await livestreamService.getCalendarRowsForExport(req.query.ids);
+        const buffer = (0, livestream_io_1.buildCalendarFile)(rows, format);
+        res.setHeader('Content-Type', (0, livestream_io_1.getCalendarFileContentType)(format));
+        res.setHeader('Content-Disposition', `attachment; filename="calendar-export-${Date.now()}.${format}"`);
+        res.send(buffer);
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.exportFile = exportFile;
+const importTemplate = async (req, res) => {
+    const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+    res.setHeader('Content-Type', (0, livestream_io_1.getCalendarFileContentType)(format));
+    res.setHeader('Content-Disposition', `attachment; filename="calendar-import-template.${format}"`);
+    res.send((0, livestream_io_1.buildCalendarTemplate)(format));
+};
+exports.importTemplate = importTemplate;
+const importFile = async (req, res) => {
+    try {
+        if (!req.file) {
+            res.status(400).json({ success: false, message: 'Vui lòng chọn file import' });
+            return;
+        }
+        const rows = (0, livestream_io_1.parseCalendarImportFile)(req.file.buffer, req.file.originalname);
+        const { calendars, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
+        if (errors.length) {
+            res.status(400).json({
+                success: false,
+                message: 'File import có dữ liệu không hợp lệ',
+                errors,
+            });
+            return;
+        }
+        const result = await livestreamService.createBulk({ calendars });
+        res.status(201).json({
+            success: true,
+            message: 'Import lịch học thành công',
+            data: result,
+        });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.importFile = importFile;

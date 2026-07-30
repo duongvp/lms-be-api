@@ -1,6 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import * as livestreamService from './livestream.service';
 import FieldPermissionService from '../roles/field-permission.service';
+import {
+  buildCalendarFile,
+  buildCalendarTemplate,
+  getCalendarFileContentType,
+  parseCalendarImportFile,
+  validateCalendarImportRows,
+} from './livestream.io';
 
 const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => ({
   userId: Number(req.user?.userId),
@@ -111,6 +118,59 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
     res.status(200).json({
       success: true,
       data: { ...result, data: dataWithSystemMetadata },
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const exportFile = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+    const rows = await livestreamService.getCalendarRowsForExport(req.query.ids);
+    const buffer = buildCalendarFile(rows, format);
+    res.setHeader('Content-Type', getCalendarFileContentType(format));
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="calendar-export-${Date.now()}.${format}"`
+    );
+    res.send(buffer);
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const importTemplate = async (req: Request, res: Response): Promise<void> => {
+  const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+  res.setHeader('Content-Type', getCalendarFileContentType(format));
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="calendar-import-template.${format}"`
+  );
+  res.send(buildCalendarTemplate(format));
+};
+
+export const importFile = async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ success: false, message: 'Vui lòng chọn file import' });
+      return;
+    }
+    const rows = parseCalendarImportFile(req.file.buffer, req.file.originalname);
+    const { calendars, errors } = validateCalendarImportRows(rows);
+    if (errors.length) {
+      res.status(400).json({
+        success: false,
+        message: 'File import có dữ liệu không hợp lệ',
+        errors,
+      });
+      return;
+    }
+    const result = await livestreamService.createBulk({ calendars });
+    res.status(201).json({
+      success: true,
+      message: 'Import lịch học thành công',
+      data: result,
     });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });

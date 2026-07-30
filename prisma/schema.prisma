@@ -17,7 +17,7 @@ model calendar {
   end_time          DateTime              @db.Timestamp(0)
   teacher           String?               @db.VarChar(150)
   lesson_name       String?               @db.VarChar(400)
-  lesson_document   String?               @db.VarChar(500)
+  lesson_document   String?               @db.LongText
   evg_banner        String?               @db.VarChar(500)
   evg_stream        String?               @db.VarChar(500)
   lesson_link       String?               @db.VarChar(500)
@@ -73,7 +73,10 @@ model lessons {
   subject_name      String   @db.VarChar(100)
   learn_number      Int
   lesson_name       String   @db.VarChar(400)
-  lesson_document   String?  @db.VarChar(500)
+  lesson_document   String?  @db.LongText
+  evg_banner        String?  @db.VarChar(500)
+  evg_stream        String?  @db.VarChar(500)
+  lesson_link       String?  @db.VarChar(500)
   lesson_baitap     String?  @db.VarChar(500)
   lesson_tomtat     String?  @db.VarChar(500)
   lesson_phuongphap String?  @db.VarChar(500)
@@ -104,14 +107,19 @@ model evg_callbacks {
 }
 
 model hocmai_sync_queue {
-  id         Int       @id @default(autoincrement())
-  c_key      String    @db.VarChar(50)
-  action     String    @db.VarChar(20)
-  payload    String    @db.LongText
-  status     Int?      @default(0) @db.TinyInt
-  synced_at  DateTime? @db.Timestamp(0)
-  last_error String?   @db.Text
-  created_at DateTime  @default(now()) @db.Timestamp(0)
+  id           Int       @id @default(autoincrement())
+  c_key        String    @db.VarChar(100)
+  action       String    @db.VarChar(20)
+  payload      String    @db.LongText
+  status       Int?      @default(0) @db.TinyInt
+  operation_id String?   @db.VarChar(36)
+  sequence_no  Int?
+  synced_at    DateTime? @db.Timestamp(0)
+  last_error   String?   @db.Text
+  created_at   DateTime  @default(now()) @db.Timestamp(0)
+
+  @@index([operation_id, sequence_no], map: "idx_hocmai_sync_operation_sequence")
+  @@index([status, created_at], map: "idx_hocmai_sync_status_created")
 }
 
 model auth_sessions {

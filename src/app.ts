@@ -18,7 +18,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-    origin: "http://localhost:3000",
+    origin: ["http://localhost:3000", "https://lms-fe-ten.vercel.app"],
     credentials: true,
 }));
 

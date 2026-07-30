@@ -20,7 +20,7 @@ app.use((req, res, next) => {
     next();
 });
 app.use((0, cors_1.default)({
-    origin: "http://localhost:3000",
+    origin: ["http://localhost:3000", "https://lms-fe-ten.vercel.app"],
     credentials: true,
 }));
 app.use("/api/users", users_1.userRoutes);

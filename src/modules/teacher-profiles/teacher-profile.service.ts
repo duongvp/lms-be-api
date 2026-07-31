@@ -33,13 +33,14 @@ const assistantUsernames = (value: string | null) =>
     .map((item) => item.trim())
     .filter(Boolean);
 
-const findUsage = async (username: string) => {
+const findUsage = async (username: string, displayName?: string | null) => {
   const [teacherRows, possibleAssistantRows] = await Promise.all([
-    prisma.$queryRaw<Array<{ total: bigint }>>`
+    prisma.$queryRaw<Array<{ total: bigint }>>(Prisma.sql`
       SELECT COUNT(*) AS total
       FROM calendar
       WHERE teacher = ${username}
-    `,
+        ${displayName ? Prisma.sql`OR teacher = ${displayName}` : Prisma.empty}
+    `),
     prisma.$queryRaw<Array<{ assistant_teacher: string | null }>>`
       SELECT assistant_teacher
       FROM calendar
@@ -146,11 +147,12 @@ export const createTeacherProfile = async (payload: TeacherProfilePayload) => {
 
 const assertTypeCanChange = async (
   username: string,
+  displayName: string | null,
   currentType: number,
   nextType?: TeacherType
 ) => {
   if (nextType === undefined || nextType === currentType) return;
-  const usage = await findUsage(username);
+  const usage = await findUsage(username, displayName);
   if (usage.teacherCount > 0 || usage.assistantCount > 0) {
     throw new ApiError(
       'Không thể đổi loại nhân sự vì username đang được sử dụng trong lịch học',
@@ -164,7 +166,12 @@ export const updateTeacherProfile = async (
   payload: TeacherProfilePayload
 ) => {
   const current = await getProfileRow(id);
-  await assertTypeCanChange(current.username, current.teacher_type, payload.teacher_type);
+  await assertTypeCanChange(
+    current.username,
+    current.display_name,
+    current.teacher_type,
+    payload.teacher_type
+  );
 
   const assignments: Prisma.Sql[] = [];
   if (payload.display_name !== undefined) {
@@ -198,7 +205,7 @@ export const updateTeacherProfileStatus = async (id: number, status: 0 | 1) => {
 
 export const deleteTeacherProfile = async (id: number) => {
   const current = await getProfileRow(id);
-  const usage = await findUsage(current.username);
+  const usage = await findUsage(current.username, current.display_name);
   if (usage.teacherCount > 0 || usage.assistantCount > 0) {
     throw new ApiError(
       'Không thể xóa nhân sự đang được sử dụng trong lịch học; hãy chuyển sang trạng thái ngừng hoạt động',
@@ -249,13 +256,22 @@ export const importTeacherProfiles = async (
     return current && current.teacher_type !== row.teacher_type;
   });
   if (mode === 'overwrite' && typeChanges.length) {
-    const changingUsernames = new Set(
-      typeChanges.map((row) => row.username.toLowerCase())
-    );
-    const usageConditions = typeChanges.flatMap((row) => [
-      Prisma.sql`teacher = ${row.username}`,
-      Prisma.sql`assistant_teacher LIKE ${`%${row.username}%`}`,
-    ]);
+    const teacherIdentifierToUsername = new Map<string, string>();
+    const usageConditions = typeChanges.flatMap((row) => {
+      const username = row.username.toLowerCase();
+      const current = existingByUsername.get(username);
+      teacherIdentifierToUsername.set(username, username);
+      if (current?.display_name) {
+        teacherIdentifierToUsername.set(current.display_name.toLowerCase(), username);
+      }
+      return [
+        Prisma.sql`teacher = ${row.username}`,
+        ...(current?.display_name
+          ? [Prisma.sql`teacher = ${current.display_name}`]
+          : []),
+        Prisma.sql`assistant_teacher LIKE ${`%${row.username}%`}`,
+      ];
+    });
     const calendarRows = await tx.$queryRaw<Array<{
       teacher: string | null;
       assistant_teacher: string | null;
@@ -267,10 +283,11 @@ export const importTeacherProfiles = async (
     const usedUsernames = new Set<string>();
     calendarRows.forEach((calendar) => {
       const teacher = String(calendar.teacher || '').toLowerCase();
-      if (changingUsernames.has(teacher)) usedUsernames.add(teacher);
+      const teacherUsername = teacherIdentifierToUsername.get(teacher);
+      if (teacherUsername) usedUsernames.add(teacherUsername);
       assistantUsernames(calendar.assistant_teacher).forEach((assistant) => {
         const normalized = assistant.toLowerCase();
-        if (changingUsernames.has(normalized)) usedUsernames.add(normalized);
+        if (teacherIdentifierToUsername.has(normalized)) usedUsernames.add(normalized);
       });
     });
     if (usedUsernames.size) {

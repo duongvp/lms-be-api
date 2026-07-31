@@ -124,49 +124,26 @@ const normalizeTeachingAssignments = async (client, data) => {
     const assistants = hasAssistants
         ? parseAssistantTeachers(data.assistant_teacher)
         : [];
-    const assignmentValues = Array.from(new Set([
-        ...(teacher ? [teacher] : []),
-        ...assistants,
-    ]));
-    if (assignmentValues.length) {
+    if (teacher && teacher.length > 150) {
+        throw new Error('Tên giáo viên không được vượt quá 150 ký tự');
+    }
+    // calendar.teacher is free text/display_name, not a teacher_profile username.
+    // Only assistants are account assignments and need profile validation.
+    if (assistants.length) {
         const profiles = await client.$queryRaw(client_1.Prisma.sql `
-      SELECT username, teacher_type, display_name
+      SELECT username, teacher_type
       FROM teacher_profiles
-      WHERE (
-          username IN (${client_1.Prisma.join(assignmentValues)})
-          ${teacher ? client_1.Prisma.sql `OR display_name = ${teacher}` : client_1.Prisma.empty}
-        )
+      WHERE username IN (${client_1.Prisma.join(assistants)})
         AND status = 1
     `);
         const profileByUsername = new Map(profiles.map((profile) => [profile.username, profile.teacher_type]));
-        const exactTeacherProfile = teacher
-            ? profiles.find((profile) => profile.username === teacher && profile.teacher_type === 1)
-            : undefined;
-        const teacherProfilesByDisplayName = teacher
-            ? profiles.filter((profile) => (profile.display_name === teacher && profile.teacher_type === 1))
-            : [];
-        if (!exactTeacherProfile && teacherProfilesByDisplayName.length > 1) {
-            throw new Error(`Tên hiển thị giáo viên "${teacher}" đang bị trùng`);
-        }
-        const teacherProfile = exactTeacherProfile || teacherProfilesByDisplayName[0];
-        if (teacher && !teacherProfile) {
-            throw new Error(`Giáo viên "${teacher}" không tồn tại, đã ngừng hoạt động hoặc sai loại`);
-        }
         const invalidAssistants = assistants.filter((username) => profileByUsername.get(username) !== 2);
         if (invalidAssistants.length) {
             throw new Error(`Trợ giảng không tồn tại, đã ngừng hoạt động hoặc sai loại: ${invalidAssistants.join(', ')}`);
         }
-        if (teacherProfile && assistants.includes(teacherProfile.username)) {
-            throw new Error('Một người không thể vừa là giáo viên chính vừa là trợ giảng');
-        }
-        if (hasTeacher) {
-            data.teacher = teacherProfile
-                ? String(teacherProfile.display_name || teacherProfile.username).trim()
-                : null;
-        }
     }
-    if (hasTeacher && !teacher)
-        data.teacher = null;
+    if (hasTeacher)
+        data.teacher = teacher || null;
     if (hasAssistants) {
         data.assistant_teacher = assistants.length ? assistants.join(',') : null;
     }

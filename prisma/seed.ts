@@ -25,6 +25,7 @@ async function main() {
     { code: 'logs', name: 'Nhật ký truy cập' },
     { code: 'stream', name: 'Livestream' },
     { code: 'teacher', name: 'Giáo viên' },
+    { code: 'teacher_profile', name: 'Giáo viên & Trợ giảng' },
   ];
 
   for (const mod of modulesData) {
@@ -60,11 +61,12 @@ async function main() {
     { moduleCode: 'calendar', fieldCode: 'start_time', fieldLabel: 'Bắt đầu', fieldType: 'datetime', sortOrder: 5 },
     { moduleCode: 'calendar', fieldCode: 'end_time', fieldLabel: 'Kết thúc', fieldType: 'datetime', sortOrder: 6 },
     { moduleCode: 'calendar', fieldCode: 'teacher', fieldLabel: 'Giáo viên', fieldType: 'text', sortOrder: 7 },
-    { moduleCode: 'calendar', fieldCode: 'lesson_name', fieldLabel: 'Tên bài học', fieldType: 'text', sortOrder: 8 },
-    { moduleCode: 'calendar', fieldCode: 'lesson_link', fieldLabel: 'Link bài học', fieldType: 'text', sortOrder: 9 },
-    { moduleCode: 'calendar', fieldCode: 'lesson_document', fieldLabel: 'Tài liệu', fieldType: 'text', sortOrder: 10 },
-    { moduleCode: 'calendar', fieldCode: 'evg_stream', fieldLabel: 'Stream', fieldType: 'text', sortOrder: 11 },
-    { moduleCode: 'calendar', fieldCode: 'lesson_status', fieldLabel: 'Trạng thái', fieldType: 'number', sortOrder: 12 },
+    { moduleCode: 'calendar', fieldCode: 'assistant_teacher', fieldLabel: 'Trợ giảng', fieldType: 'select', sortOrder: 8 },
+    { moduleCode: 'calendar', fieldCode: 'lesson_name', fieldLabel: 'Tên bài học', fieldType: 'text', sortOrder: 9 },
+    { moduleCode: 'calendar', fieldCode: 'lesson_link', fieldLabel: 'Link bài học', fieldType: 'text', sortOrder: 10 },
+    { moduleCode: 'calendar', fieldCode: 'lesson_document', fieldLabel: 'Tài liệu', fieldType: 'text', sortOrder: 11 },
+    { moduleCode: 'calendar', fieldCode: 'evg_stream', fieldLabel: 'Stream', fieldType: 'text', sortOrder: 12 },
+    { moduleCode: 'calendar', fieldCode: 'lesson_status', fieldLabel: 'Trạng thái', fieldType: 'number', sortOrder: 13 },
 
     // Lessons
     { moduleCode: 'lessons', fieldCode: 'id', fieldLabel: 'ID', fieldType: 'number', sortOrder: 1 },
@@ -122,6 +124,15 @@ async function main() {
     { moduleCode: 'teacher', fieldCode: 'username', fieldLabel: 'Tên đăng nhập', fieldType: 'text', sortOrder: 2 },
     { moduleCode: 'teacher', fieldCode: 'display_name', fieldLabel: 'Tên hiển thị', fieldType: 'text', sortOrder: 3 },
     { moduleCode: 'teacher', fieldCode: 'teacher_type', fieldLabel: 'Loại giáo viên', fieldType: 'number', sortOrder: 4 },
+
+    // Teacher Profile
+    { moduleCode: 'teacher_profile', fieldCode: 'id', fieldLabel: 'ID', fieldType: 'number', sortOrder: 1 },
+    { moduleCode: 'teacher_profile', fieldCode: 'username', fieldLabel: 'Mã nhân sự', fieldType: 'text', sortOrder: 2 },
+    { moduleCode: 'teacher_profile', fieldCode: 'display_name', fieldLabel: 'Họ và tên', fieldType: 'text', sortOrder: 3 },
+    { moduleCode: 'teacher_profile', fieldCode: 'teacher_type', fieldLabel: 'Loại nhân sự', fieldType: 'select', sortOrder: 4 },
+    { moduleCode: 'teacher_profile', fieldCode: 'status', fieldLabel: 'Trạng thái', fieldType: 'select', sortOrder: 5 },
+    { moduleCode: 'teacher_profile', fieldCode: 'created_at', fieldLabel: 'Ngày tạo', fieldType: 'datetime', sortOrder: 6 },
+    { moduleCode: 'teacher_profile', fieldCode: 'updated_at', fieldLabel: 'Ngày cập nhật', fieldType: 'datetime', sortOrder: 7 },
   ];
 
   // Lấy danh sách module đã tạo
@@ -173,6 +184,11 @@ async function main() {
     { code: 'calendar.approve', name: 'Duyệt lịch', description: 'Duyệt lịch học' },
     { code: 'quiz.grade', name: 'Chấm điểm', description: 'Chấm điểm bài kiểm tra' },
     { code: 'users.reset_password', name: 'Đặt lại mật khẩu', description: 'Cho phép đặt lại mật khẩu người dùng' },
+    { code: 'teacher_profile.status', name: 'Thay đổi trạng thái nhân sự', description: 'Kích hoạt hoặc vô hiệu hóa nhân sự giảng dạy' },
+    { code: 'calendar.teacher.view', name: 'Xem phân công giáo viên', description: 'Xem giáo viên và trợ giảng được phân công' },
+    { code: 'calendar.teacher.assign', name: 'Gán giáo viên và trợ giảng', description: 'Phân công khi tạo lịch' },
+    { code: 'calendar.teacher.update', name: 'Cập nhật phân công', description: 'Thay đổi phân công trong lịch' },
+    { code: 'calendar.teacher.remove', name: 'Gỡ phân công', description: 'Gỡ giáo viên và trợ giảng khỏi lịch' },
   );
 
   for (const perm of permissionsData) {
@@ -208,6 +224,7 @@ async function main() {
           logs: { fields: { '*': { visible: true, editable: true } } },
           stream: { fields: { '*': { visible: true, editable: true } } },
           teacher: { fields: { '*': { visible: true, editable: true } } },
+          teacher_profile: { fields: { '*': { visible: true, editable: true } } },
         }
       },
       permissions: allPermissions.map(p => p.id), // tất cả
@@ -225,10 +242,18 @@ async function main() {
           logs: { fields: { '*': { visible: true, editable: false } } }, // chỉ xem log, không sửa
           stream: { fields: { '*': { visible: true, editable: true } } },
           teacher: { fields: { '*': { visible: true, editable: true } } },
+          teacher_profile: { fields: { '*': { visible: true, editable: true } } },
         }
       },
       permissions: allPermissions
-        .filter(p => !p.code.includes('.delete') && !p.code.includes('.import') && !p.code.includes('.export'))
+        .filter(p => (
+          (
+            !p.code.includes('.delete')
+            && !p.code.includes('.import')
+            && !p.code.includes('.export')
+          )
+          || ['teacher_profile.import', 'teacher_profile.export'].includes(p.code)
+        ))
         .map(p => p.id),
     },
     {
@@ -244,6 +269,7 @@ async function main() {
           logs: { fields: { '*': { visible: false, editable: false } } },
           stream: { fields: { '*': { visible: true, editable: true } } },
           teacher: { fields: { '*': { visible: true, editable: false } } }, // chỉ xem thông tin giáo viên
+          teacher_profile: { fields: { '*': { visible: true, editable: false } } },
         }
       },
       permissions: allPermissions
@@ -252,7 +278,9 @@ async function main() {
           p.code === 'lessons.view' ||
           p.code.startsWith('quiz.') ||
           p.code.startsWith('stream.') ||
-          p.code === 'teacher.view'
+          p.code === 'teacher.view' ||
+          p.code === 'teacher_profile.view' ||
+          p.code === 'calendar.teacher.view'
         )
         .map(p => p.id),
     },
@@ -271,6 +299,7 @@ async function main() {
               start_time: { visible: true, editable: false },
               end_time: { visible: true, editable: false },
               teacher: { visible: true, editable: false },
+              assistant_teacher: { visible: true, editable: false },
               lesson_name: { visible: true, editable: false },
               lesson_link: { visible: true, editable: false },
               // các trường khác ẩn
@@ -301,6 +330,7 @@ async function main() {
             }
           },
           teacher: { fields: { '*': { visible: false, editable: false } } },
+          teacher_profile: { fields: { '*': { visible: true, editable: false } } },
         }
       },
       permissions: allPermissions
@@ -308,7 +338,9 @@ async function main() {
           p.code === 'calendar.view' ||
           p.code === 'lessons.view' ||
           p.code === 'quiz.view' ||
-          p.code === 'stream.view'
+          p.code === 'stream.view' ||
+          p.code === 'teacher_profile.view' ||
+          p.code === 'calendar.teacher.view'
         )
         .map(p => p.id),
     },

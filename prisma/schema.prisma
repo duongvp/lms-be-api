@@ -16,6 +16,7 @@ model calendar {
   start_time        DateTime              @db.Timestamp(0)
   end_time          DateTime              @db.Timestamp(0)
   teacher           String?               @db.VarChar(150)
+  assistant_teacher String?               @db.VarChar(500)
   lesson_name       String?               @db.VarChar(400)
   lesson_document   String?               @db.LongText
   evg_banner        String?               @db.VarChar(500)
@@ -302,12 +303,14 @@ model stream {
 model teacher_profiles {
   id           Int       @id @default(autoincrement()) @db.UnsignedInt
   username     String    @unique(map: "uq_teacher_username") @db.VarChar(120)
-  teacher_type Int       @default(0) @db.TinyInt
+  teacher_type Int       @default(1) @db.TinyInt
   display_name String?   @db.VarChar(100)
+  status       Int       @default(1) @db.TinyInt
   created_at   DateTime? @default(now()) @db.Timestamp(0)
   updated_at   DateTime? @default(now()) @db.Timestamp(0)
 
   @@index([teacher_type], map: "idx_teacher_type")
+  @@index([status, teacher_type], map: "idx_teacher_status_type")
 }
 
 model team_notify_history {

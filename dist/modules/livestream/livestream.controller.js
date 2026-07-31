@@ -40,6 +40,7 @@ exports.importFile = exports.importTemplate = exports.exportFile = exports.getCa
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const livestream_io_1 = require("./livestream.io");
+const calendar_import_service_1 = require("./calendar-import.service");
 const getChangeActor = (req) => ({
     userId: Number(req.user?.userId),
     username: String(req.user?.username || ''),
@@ -173,18 +174,36 @@ const importFile = async (req, res) => {
             return;
         }
         const rows = (0, livestream_io_1.parseCalendarImportFile)(req.file.buffer, req.file.originalname);
-        const { calendars, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
+        const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
         if (errors.length) {
+            const invalidRows = new Set(errors.map((error) => error.row)).size;
             res.status(400).json({
                 success: false,
+                status: 'validation_error',
                 message: 'File import có dữ liệu không hợp lệ',
+                summary: {
+                    totalRows: rows.length,
+                    validRows: Math.max(0, rows.length - invalidRows),
+                    invalidRows,
+                },
                 errors,
             });
             return;
         }
-        const result = await livestreamService.createBulk({ calendars });
+        const result = await (0, calendar_import_service_1.importCalendarFromSheet)(importRows);
+        if (result.status === 'validation_error') {
+            res.status(400).json({
+                success: false,
+                status: result.status,
+                message: 'File import có dữ liệu không hợp lệ',
+                summary: result.summary,
+                errors: result.errors,
+            });
+            return;
+        }
         res.status(201).json({
             success: true,
+            status: result.status,
             message: 'Import lịch học thành công',
             data: result,
         });

@@ -1,10 +1,11 @@
 import { Response } from 'express';
+import { serializeBigInt } from '../lib/serializer';
 
 export const SuccessResponse = (res: Response, message: string, data: any = {}) => {
     return res.status(200).json({
         success: true,
         message,
-        data
+        data: serializeBigInt(data)
     });
 };
 

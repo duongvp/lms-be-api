@@ -1,21 +1,36 @@
 import * as XLSX from 'xlsx';
 import { LessonExportFormat } from './lesson.types';
 
-export const LESSON_EXPORT_COLUMNS = [
-  { key: 'grade', header: 'Grade' },
-  { key: 'subject_name', header: 'Subject' },
-  { key: 'learn_number', header: 'Learn Number' },
-  { key: 'lesson_name', header: 'Lesson Name' },
-  { key: 'lesson_document', header: 'Lesson Document' },
-  { key: 'evg_banner', header: 'EVG Banner' },
+type LessonExportColumn = {
+  key: string;
+  header: string;
+};
+
+const LESSON_BASIC_COLUMNS: LessonExportColumn[] = [
+  { key: 'grade', header: 'Khối' },
+  { key: 'subject_name', header: 'Môn học' },
+  { key: 'learn_number', header: 'Số thứ tự bài' },
+  { key: 'lesson_name', header: 'Tên bài học' },
+];
+
+const LESSON_CONTENT_COLUMNS: LessonExportColumn[] = [
+  { key: 'evg_banner', header: 'Banner' },
   { key: 'evg_stream', header: 'EVG Stream' },
-  { key: 'lesson_link', header: 'Lesson Link' },
-  { key: 'lesson_baitap', header: 'Lesson Bài tập' },
-  { key: 'lesson_tomtat', header: 'Lesson Tóm tắt' },
-  { key: 'lesson_phuongphap', header: 'Lesson Phương pháp' },
-  { key: 'lesson_luuy', header: 'Lesson Lưu ý' },
-  { key: 'lesson_ketqua', header: 'Lesson Kết quả' },
-  { key: 'status', header: 'Status' },
+  { key: 'lesson_link', header: 'Link bài học' },
+  { key: 'lesson_baitap', header: 'Bài tập' },
+  { key: 'lesson_tomtat', header: 'Tóm tắt' },
+  { key: 'lesson_phuongphap', header: 'Phương pháp' },
+  { key: 'lesson_luuy', header: 'Lưu ý' },
+  { key: 'lesson_ketqua', header: 'Kết quả' },
+  { key: 'status', header: 'Trạng thái' },
+];
+
+// Giữ export này cho các nơi đang dùng danh sách cột cũ. Các cột tài liệu được
+// tạo động ở bên dưới vì mỗi bài học có thể có nhiều tài liệu.
+export const LESSON_EXPORT_COLUMNS = [
+  ...LESSON_BASIC_COLUMNS,
+  { key: 'lesson_document', header: 'Tài liệu bài học' },
+  ...LESSON_CONTENT_COLUMNS,
 ];
 
 const HEADER_ALIASES: Record<string, string> = {
@@ -80,6 +95,67 @@ const HEADER_ALIASES: Record<string, string> = {
 
 const normalizeHeader = (value: unknown) => String(value ?? '').trim().toLocaleLowerCase('vi-VN');
 
+type LessonDocument = {
+  title: string;
+  type: string;
+  link: string;
+};
+
+const parseLessonDocuments = (value: unknown): LessonDocument[] => {
+  const text = String(value ?? '').trim();
+  if (!text) return [];
+
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+        .map((item) => ({
+          title: String(item.title ?? '').trim(),
+          type: String(item.type ?? 'pdf').trim(),
+          link: String(item.link ?? '').trim(),
+        }));
+    }
+  } catch {
+    // Dữ liệu cũ chỉ có một đường dẫn/tên file.
+  }
+
+  return [{ title: 'Tài liệu bài học', type: 'pdf', link: text }];
+};
+
+const documentColumn = (index: number, field: keyof LessonDocument): LessonExportColumn => {
+  const labels: Record<keyof LessonDocument, string> = {
+    title: 'Tiêu đề',
+    type: 'Loại',
+    link: 'Đường dẫn',
+  };
+  return {
+    key: `lesson_document_${index}_${field}`,
+    header: `Tài liệu ${index} - ${labels[field]}`,
+  };
+};
+
+const buildDocumentColumns = (count: number) => Array.from(
+  { length: Math.max(count, 1) },
+  (_, offset) => offset + 1
+).flatMap((index) => [
+  documentColumn(index, 'title'),
+  documentColumn(index, 'type'),
+  documentColumn(index, 'link'),
+]);
+
+const getExportColumns = (rows: any[], minimumDocumentCount = 1) => {
+  const maximumDocumentCount = rows.reduce(
+    (maximum, row) => Math.max(maximum, parseLessonDocuments(row.lesson_document).length),
+    minimumDocumentCount
+  );
+  return [
+    ...LESSON_BASIC_COLUMNS,
+    ...buildDocumentColumns(maximumDocumentCount),
+    ...LESSON_CONTENT_COLUMNS,
+  ];
+};
+
 const parseCsvLine = (line: string) => {
   const values: string[] = [];
   let current = '';
@@ -128,25 +204,68 @@ const parseCsvBuffer = (buffer: Buffer) => {
   });
 };
 
+const DOCUMENT_HEADER_PATTERN = /^(?:tài liệu|tai lieu|document)\s*(\d+)\s*[-–—_:./]*\s*(tiêu đề|tieu de|title|loại|loai|type|đường dẫn|duong dan|link|url)$/i;
+
+const normalizeDocumentField = (value: string): keyof LessonDocument => {
+  const normalized = normalizeHeader(value);
+  if (normalized === 'tiêu đề' || normalized === 'tieu de' || normalized === 'title') return 'title';
+  if (normalized === 'loại' || normalized === 'loai' || normalized === 'type') return 'type';
+  return 'link';
+};
+
 const normalizeImportRows = (rows: Record<string, unknown>[]) => rows.map((row) => {
   const normalized: Record<string, unknown> = {};
+  const documents = new Map<number, Partial<LessonDocument>>();
+
   Object.entries(row).forEach(([key, value]) => {
-    const mappedKey = HEADER_ALIASES[normalizeHeader(key)];
+    const normalizedHeader = normalizeHeader(key);
+    const mappedKey = HEADER_ALIASES[normalizedHeader];
     if (mappedKey) normalized[mappedKey] = value;
+
+    const documentHeader = normalizedHeader.match(DOCUMENT_HEADER_PATTERN);
+    if (documentHeader) {
+      const index = Number(documentHeader[1]);
+      const document = documents.get(index) ?? {};
+      document[normalizeDocumentField(documentHeader[2])] = String(value ?? '').trim();
+      documents.set(index, document);
+    }
   });
+
+  if (documents.size) {
+    const documentList = [...documents.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, document]) => ({
+        title: String(document.title ?? '').trim(),
+        type: String(document.type || 'pdf').trim(),
+        link: String(document.link ?? '').trim(),
+      }))
+      .filter((document) => document.title || document.link);
+    normalized.lesson_document = documentList.length ? JSON.stringify(documentList) : '';
+  }
+
   return normalized;
 });
 
-const toSheetRows = (rows: any[]) => rows.map((row) => (
-  Object.fromEntries(
-    LESSON_EXPORT_COLUMNS.map((column) => [column.header, row[column.key] ?? ''])
-  )
-));
-
-export const buildLessonWorkbookBuffer = (rows: any[]) => {
-  const worksheet = XLSX.utils.json_to_sheet(toSheetRows(rows), {
-    header: LESSON_EXPORT_COLUMNS.map((column) => column.header),
+const toExportRow = (row: any, columns: LessonExportColumn[]) => {
+  const documents = parseLessonDocuments(row.lesson_document);
+  const values: Record<string, unknown> = { ...row };
+  documents.forEach((document, offset) => {
+    const index = offset + 1;
+    values[`lesson_document_${index}_title`] = document.title;
+    values[`lesson_document_${index}_type`] = document.type;
+    values[`lesson_document_${index}_link`] = document.link;
   });
+  return Object.fromEntries(columns.map((column) => [column.header, values[column.key] ?? '']));
+};
+
+export const buildLessonWorkbookBuffer = (rows: any[], minimumDocumentCount = 1) => {
+  const columns = getExportColumns(rows, minimumDocumentCount);
+  const worksheet = XLSX.utils.json_to_sheet(rows.map((row) => toExportRow(row, columns)), {
+    header: columns.map((column) => column.header),
+  });
+  worksheet['!cols'] = columns.map((column) => ({
+    wch: column.key.endsWith('_link') ? 42 : Math.max(14, column.header.length + 2),
+  }));
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Lessons');
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
@@ -158,10 +277,14 @@ const escapeCsvValue = (value: unknown) => {
   return text;
 };
 
-export const buildLessonCsvBuffer = (rows: any[]) => {
+export const buildLessonCsvBuffer = (rows: any[], minimumDocumentCount = 1) => {
+  const columns = getExportColumns(rows, minimumDocumentCount);
   const lines = [
-    LESSON_EXPORT_COLUMNS.map((column) => escapeCsvValue(column.header)).join(','),
-    ...rows.map((row) => LESSON_EXPORT_COLUMNS.map((column) => escapeCsvValue(row[column.key])).join(',')),
+    columns.map((column) => escapeCsvValue(column.header)).join(','),
+    ...rows.map((row) => {
+      const exportRow = toExportRow(row, columns);
+      return columns.map((column) => escapeCsvValue(exportRow[column.header])).join(',');
+    }),
   ];
   return Buffer.from(`\uFEFF${lines.join('\n')}`, 'utf8');
 };
@@ -172,7 +295,10 @@ export const buildLessonTemplateBuffer = (format: LessonExportFormat) => {
     subject_name: 'Toán',
     learn_number: '',
     lesson_name: 'Bài học mẫu',
-    lesson_document: '[{"link":"https://example.com/tai-lieu.pdf","title":"Phiếu học tập","type":"pdf"}]',
+    lesson_document: JSON.stringify([
+      { title: 'Phiếu học tập', type: 'pdf', link: 'https://example.com/phieu-hoc-tap.pdf' },
+      { title: 'Video hướng dẫn', type: 'video', link: 'https://example.com/video' },
+    ]),
     evg_banner: '',
     evg_stream: '',
     lesson_link: '',
@@ -183,7 +309,9 @@ export const buildLessonTemplateBuffer = (format: LessonExportFormat) => {
     lesson_ketqua: '',
     status: 1,
   }];
-  return format === 'csv' ? buildLessonCsvBuffer(example) : buildLessonWorkbookBuffer(example);
+  return format === 'csv'
+    ? buildLessonCsvBuffer(example, 3)
+    : buildLessonWorkbookBuffer(example, 3);
 };
 
 export const parseLessonImportFile = (buffer: Buffer, originalName: string) => {

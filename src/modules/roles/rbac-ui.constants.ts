@@ -1,6 +1,7 @@
 export const RBAC_MENU_MODULES = [
     { code: 'lessons', label: 'Quản lý nội dung' },
     { code: 'calendar', label: 'Quản lý lịch học' },
+    { code: 'teacher_profile', label: 'Giáo viên & Trợ giảng' },
     { code: 'users', label: 'Quản trị viên' },
     { code: 'roles', label: 'Vai trò thành viên' },
 ] as const;

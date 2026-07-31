@@ -5,10 +5,37 @@ import authMiddleware from '../auth/auth.middleware';
 
 const router = Router();
 const { authenticate, authorize, authorizeFields } = authMiddleware;
+const configuredImportFileSize = Number(process.env.CALENDAR_IMPORT_MAX_FILE_SIZE_MB);
+const importFileSizeMb = Number.isFinite(configuredImportFileSize)
+  && configuredImportFileSize > 0
+  ? configuredImportFileSize
+  : 10;
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: {
+    fileSize: importFileSizeMb * 1024 * 1024,
+  },
 });
+
+const containsTeachingAssignment = (value: any): boolean => {
+  if (!value || typeof value !== 'object') return false;
+  if ('teacher' in value || 'assistant_teacher' in value) return true;
+  if (Array.isArray(value)) return value.some(containsTeachingAssignment);
+  return Object.values(value).some(containsTeachingAssignment);
+};
+
+const authorizeTeachingAssignment = (permission: string) => (
+  req: any,
+  res: any,
+  next: any
+) => {
+  if (!containsTeachingAssignment(req.body)) return next();
+  if (req.user?.permissions?.includes(permission)) return next();
+  return res.status(403).json({
+    success: false,
+    message: 'Không có quyền phân công giáo viên hoặc trợ giảng',
+  });
+};
 
 const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
   fields
@@ -44,12 +71,14 @@ router.post(
 router.post(
   '/single',
   authorize(['calendar.create']),
+  authorizeTeachingAssignment('calendar.teacher.assign'),
   authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))),
   livestreamController.createSingle
 );
 router.post(
   '/bulk',
   authorize(['calendar.create']),
+  authorizeTeachingAssignment('calendar.teacher.assign'),
   authorizeFields('calendar', (req) => normalizeCalendarFields(
     (req.body?.calendars || []).flatMap((item: any) => Object.keys(item || {}))
   )),
@@ -60,6 +89,7 @@ router.post(
 router.put(
   '/bulk',
   authorize(['calendar.update']),
+  authorizeTeachingAssignment('calendar.teacher.update'),
   authorizeFields('calendar', (req) => normalizeCalendarFields(
     Array.isArray(req.body?.update_data)
       ? req.body.update_data.flatMap((item: any) => Object.keys(item || {}))
@@ -70,6 +100,7 @@ router.put(
 router.put(
   '/:id/reschedule',
   authorize(['calendar.update']),
+  authorizeTeachingAssignment('calendar.teacher.update'),
   authorizeFields('calendar', (req) => normalizeCalendarFields(
     Object.keys(req.body?.new_session || {})
   )),
@@ -78,6 +109,7 @@ router.put(
 router.put(
   '/:id',
   authorize(['calendar.update']),
+  authorizeTeachingAssignment('calendar.teacher.update'),
   authorizeFields('calendar', (req) => normalizeCalendarFields([
     ...Object.keys(req.body || {}),
     ...Object.keys(req.body?.new_session || {}),

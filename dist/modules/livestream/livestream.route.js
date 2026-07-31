@@ -42,10 +42,36 @@ const livestreamController = __importStar(require("./livestream.controller"));
 const auth_middleware_1 = __importDefault(require("../auth/auth.middleware"));
 const router = (0, express_1.Router)();
 const { authenticate, authorize, authorizeFields } = auth_middleware_1.default;
+const configuredImportFileSize = Number(process.env.CALENDAR_IMPORT_MAX_FILE_SIZE_MB);
+const importFileSizeMb = Number.isFinite(configuredImportFileSize)
+    && configuredImportFileSize > 0
+    ? configuredImportFileSize
+    : 10;
 const upload = (0, multer_1.default)({
     storage: multer_1.default.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 },
+    limits: {
+        fileSize: importFileSizeMb * 1024 * 1024,
+    },
 });
+const containsTeachingAssignment = (value) => {
+    if (!value || typeof value !== 'object')
+        return false;
+    if ('teacher' in value || 'assistant_teacher' in value)
+        return true;
+    if (Array.isArray(value))
+        return value.some(containsTeachingAssignment);
+    return Object.values(value).some(containsTeachingAssignment);
+};
+const authorizeTeachingAssignment = (permission) => (req, res, next) => {
+    if (!containsTeachingAssignment(req.body))
+        return next();
+    if (req.user?.permissions?.includes(permission))
+        return next();
+    return res.status(403).json({
+        success: false,
+        message: 'Không có quyền phân công giáo viên hoặc trợ giảng',
+    });
+};
 const normalizeCalendarFields = (fields) => Array.from(new Set(fields
     .filter((field) => ![
     'lesson_id',
@@ -70,14 +96,14 @@ router.get('/', authorize(['calendar.view']), livestreamController.getCalendar);
 router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
 router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
 router.post('/import', authorize(['calendar.import']), upload.single('file'), livestreamController.importFile);
-router.post('/single', authorize(['calendar.create']), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))), livestreamController.createSingle);
-router.post('/bulk', authorize(['calendar.create']), authorizeFields('calendar', (req) => normalizeCalendarFields((req.body?.calendars || []).flatMap((item) => Object.keys(item || {})))), livestreamController.createBulk);
+router.post('/single', authorize(['calendar.create']), authorizeTeachingAssignment('calendar.teacher.assign'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))), livestreamController.createSingle);
+router.post('/bulk', authorize(['calendar.create']), authorizeTeachingAssignment('calendar.teacher.assign'), authorizeFields('calendar', (req) => normalizeCalendarFields((req.body?.calendars || []).flatMap((item) => Object.keys(item || {})))), livestreamController.createBulk);
 // Thêm dòng này (Bắt buộc phải đặt trước các route có param /:id)
-router.put('/bulk', authorize(['calendar.update']), authorizeFields('calendar', (req) => normalizeCalendarFields(Array.isArray(req.body?.update_data)
+router.put('/bulk', authorize(['calendar.update']), authorizeTeachingAssignment('calendar.teacher.update'), authorizeFields('calendar', (req) => normalizeCalendarFields(Array.isArray(req.body?.update_data)
     ? req.body.update_data.flatMap((item) => Object.keys(item || {}))
     : Object.keys(req.body?.update_data || {}))), livestreamController.updateBulk);
-router.put('/:id/reschedule', authorize(['calendar.update']), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body?.new_session || {}))), livestreamController.rescheduleSession);
-router.put('/:id', authorize(['calendar.update']), authorizeFields('calendar', (req) => normalizeCalendarFields([
+router.put('/:id/reschedule', authorize(['calendar.update']), authorizeTeachingAssignment('calendar.teacher.update'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body?.new_session || {}))), livestreamController.rescheduleSession);
+router.put('/:id', authorize(['calendar.update']), authorizeTeachingAssignment('calendar.teacher.update'), authorizeFields('calendar', (req) => normalizeCalendarFields([
     ...Object.keys(req.body || {}),
     ...Object.keys(req.body?.new_session || {}),
 ])), livestreamController.updateSchedule);

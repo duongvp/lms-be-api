@@ -12,6 +12,7 @@ const livestream_1 = require("./modules/livestream");
 const modules_1 = require("./modules/modules");
 const lessons_1 = require("./modules/lessons");
 const package_course_routes_1 = __importDefault(require("./modules/package-courses/package-course.routes"));
+const teacher_profiles_1 = require("./modules/teacher-profiles");
 const ApiError_1 = __importDefault(require("./utils/ApiError"));
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
@@ -20,7 +21,7 @@ app.use((req, res, next) => {
     next();
 });
 app.use((0, cors_1.default)({
-    origin: ["http://localhost:3000", "https://lms-fe-ten.vercel.app"],
+    origin: "http://localhost:3000",
     credentials: true,
 }));
 app.use("/api/users", users_1.userRoutes);
@@ -28,6 +29,7 @@ app.use("/api/roles", roles_1.roleRoutes);
 app.use("/api/modules", modules_1.moduleRoutes);
 app.use("/api/lessons", lessons_1.lessonRoutes);
 app.use("/api/package-courses", package_course_routes_1.default);
+app.use("/api/teacher-profiles", teacher_profiles_1.teacherProfileRoutes);
 app.use("/livestreams", livestream_1.livestreamRoute);
 app.use("/api/auth", auth_1.authRoutes);
 app.use((_req, _res, next) => {

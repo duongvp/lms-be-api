@@ -8,6 +8,7 @@ import {
   parseCalendarImportFile,
   validateCalendarImportRows,
 } from './livestream.io';
+import { importCalendarFromSheet } from './calendar-import.service';
 
 const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => ({
   userId: Number(req.user?.userId),
@@ -157,18 +158,38 @@ export const importFile = async (req: Request, res: Response): Promise<void> => 
       return;
     }
     const rows = parseCalendarImportFile(req.file.buffer, req.file.originalname);
-    const { calendars, errors } = validateCalendarImportRows(rows);
+    const { importRows, errors } = validateCalendarImportRows(rows);
     if (errors.length) {
+      const invalidRows = new Set(errors.map((error) => error.row)).size;
       res.status(400).json({
         success: false,
+        status: 'validation_error',
         message: 'File import có dữ liệu không hợp lệ',
+        summary: {
+          totalRows: rows.length,
+          validRows: Math.max(0, rows.length - invalidRows),
+          invalidRows,
+        },
         errors,
       });
       return;
     }
-    const result = await livestreamService.createBulk({ calendars });
+
+    const result = await importCalendarFromSheet(importRows);
+    if (result.status === 'validation_error') {
+      res.status(400).json({
+        success: false,
+        status: result.status,
+        message: 'File import có dữ liệu không hợp lệ',
+        summary: result.summary,
+        errors: result.errors,
+      });
+      return;
+    }
+
     res.status(201).json({
       success: true,
+      status: result.status,
       message: 'Import lịch học thành công',
       data: result,
     });

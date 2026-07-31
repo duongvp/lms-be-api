@@ -188,19 +188,43 @@ export const enqueueRescheduleSync = async (
     throw new Error('Thiếu lịch nghỉ để tạo queue dời lịch HMO');
   }
 
-  await enqueueStatus(tx, operationId, sequenceNo++, canceledSession);
+  if (action === 'following' || action === 'makeup') {
+    // K1 được chuyển sang slot sau/lịch bù; row nghỉ dùng K1_huy là một key
+    // hoàn toàn mới trên HMO, nên create bản ghi nghỉ rồi update lại K1.
+    await enqueueCalendar(
+      tx,
+      operationId,
+      sequenceNo++,
+      'create',
+      canceledSession
+    );
 
-  if (action === 'following') {
-    for (const shiftedSession of result.shifted_sessions || []) {
-      await enqueueCalendar(
-        tx,
-        operationId,
-        sequenceNo++,
-        'update',
-        shiftedSession
-      );
+    if (action === 'following') {
+      for (const shiftedSession of result.shifted_sessions || []) {
+        await enqueueCalendar(
+          tx,
+          operationId,
+          sequenceNo++,
+          'update',
+          shiftedSession
+        );
+      }
     }
+
+    if (!result.created_session) {
+      throw new Error('Thiếu lịch mới để tạo queue dời lịch HMO');
+    }
+    await enqueueCalendar(
+      tx,
+      operationId,
+      sequenceNo,
+      'update',
+      result.created_session
+    );
+    return operationId;
   }
+
+  await enqueueStatus(tx, operationId, sequenceNo++, canceledSession);
 
   if (action !== 'cancel') {
     if (!result.created_session) {

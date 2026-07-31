@@ -1,139 +1,249 @@
 import * as XLSX from 'xlsx';
+import {
+  CalendarImportError,
+  CalendarImportErrorCode,
+  CalendarImportRow,
+} from './calendar-import.types';
 
 export type CalendarFileFormat = 'csv' | 'xlsx';
 
-export type CalendarImportError = {
-  row: number;
-  field: string;
-  message: string;
-};
+export const CALENDAR_IMPORT_FILE_COLUMNS = [
+  'Môn',
+  'Mã buổi học',
+  'Tên bài giảng',
+  'Tên GV',
+  'Ngày live',
+  'Thứ',
+  'Khung giờ',
+  'Tài liệu live\n(TL HS)',
+  'Nhiệm vụ học tập',
+  'Tài liệu lưu trữ',
+  'BTV ND',
+  'Trợ giảng',
+  'Link sharepoint',
+  'ID course\n(TSA,HSA,V-ACT,TN THPT)',
+  'ID Bài giảng\n(TSA,HSA,V-ACT,TN THPT)',
+  'ID package\n(TSA,HSA,V-ACT,TN THPT)',
+  'Email GV',
+  'Email TG',
+] as const;
 
-export const CALENDAR_FILE_COLUMNS = [
-  { key: 'system_type', header: 'System Type' },
-  { key: 'code', header: 'Code' },
-  { key: 'learn_number', header: 'Learn Number' },
-  { key: 'lesson_count', header: 'Lesson Count' },
-  { key: 'subject', header: 'Subject' },
-  { key: 'teacher', header: 'Teacher' },
-  { key: 'lesson_name', header: 'Lesson Name' },
-  { key: 'start_time', header: 'Start Time' },
-  { key: 'end_time', header: 'End Time' },
-  { key: 'channel_name', header: 'Channel Name' },
-  { key: 'lesson_status', header: 'Lesson Status' },
-  { key: 'package_lesson_mappings', header: 'Course/Lesson Mappings' },
-];
+const CALENDAR_IMPORT_EXPORT_KEYS = [
+  'subject',
+  'code',
+  'lesson_name',
+  'teacher_name',
+  'live_date',
+  'weekday',
+  'time_range',
+  'lesson_document',
+  'lesson_baitap',
+  'archive_document',
+  'content_homework',
+  'assistant_name',
+  'sharepoint_link',
+  'course_ids',
+  'lesson_ids',
+  'package_ids',
+  'teacher_email',
+  'assistant_email',
+] as const;
+
+// Export dùng chính cấu trúc của file import để người dùng có thể sửa file
+// vừa xuất rồi import lại mà không phải đổi tên hoặc sắp xếp cột.
+export const CALENDAR_FILE_COLUMNS = CALENDAR_IMPORT_FILE_COLUMNS.map(
+  (header, index) => ({
+    key: CALENDAR_IMPORT_EXPORT_KEYS[index],
+    header,
+  })
+);
 
 const normalizeHeader = (value: unknown) => String(value ?? '')
   .trim()
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '')
   .toLowerCase()
+  .replace(/đ/g, 'd')
   .replace(/[_-]+/g, ' ')
   .replace(/\s+/g, ' ');
 
 const HEADER_ALIASES: Record<string, string> = {
-  'system type': 'system_type',
-  'he thong': 'system_type',
-  code: 'code',
-  'ma lop': 'code',
-  'learn number': 'learn_number',
-  'so bai': 'learn_number',
-  'lesson count': 'lesson_count',
-  'so lan chieu': 'lesson_count',
-  subject: 'subject',
+  mon: 'subject',
   'mon hoc': 'subject',
-  teacher: 'teacher',
-  'giao vien': 'teacher',
-  'lesson name': 'lesson_name',
-  'ten bai hoc': 'lesson_name',
-  'start time': 'start_time',
-  'bat dau': 'start_time',
-  'end time': 'end_time',
-  'ket thuc': 'end_time',
-  'channel name': 'channel_name',
-  'phong kenh hoc': 'channel_name',
-  'lesson status': 'lesson_status',
-  'trang thai': 'lesson_status',
-  'course/lesson mappings': 'package_lesson_mappings',
-  'course lesson mappings': 'package_lesson_mappings',
-  mapping: 'package_lesson_mappings',
+  'ma buoi hoc': 'code',
+  'ten bai giang': 'lesson_name',
+  'ten gv': 'teacher_name',
+  'ngay live': 'live_date',
+  'khung gio': 'time_range',
+  'tai lieu live (tl hs)': 'lesson_document',
+  'nhiem vu hoc tap': 'lesson_baitap',
+  'tro giang': 'assistant_name',
+  'email gv': 'teacher_email',
+  'email tg': 'assistant_email',
 };
 
-const normalizeRows = (rows: Record<string, unknown>[]) => rows.map((row) => {
-  const normalized: Record<string, unknown> = {};
-  Object.entries(row).forEach(([key, value]) => {
-    const mappedKey = HEADER_ALIASES[normalizeHeader(key)];
-    if (mappedKey) normalized[mappedKey] = value;
-  });
-  return normalized;
-});
+const mapImportHeader = (value: unknown) => {
+  const header = normalizeHeader(value);
+  if (HEADER_ALIASES[header]) return HEADER_ALIASES[header];
+  if (header.startsWith('ma buoi hoc')) return 'code';
+  if (header.startsWith('tai lieu live')) return 'lesson_document';
+  if (header.startsWith('id course')) return 'course_ids';
+  if (header.startsWith('id bai giang')) return 'lesson_ids';
+  if (header.startsWith('id package')) return 'package_ids';
+  return undefined;
+};
 
-const parseCsvLine = (line: string) => {
-  const values: string[] = [];
-  let current = '';
+const REQUIRED_HEADER_KEYS = new Set([
+  'code',
+  'live_date',
+  'time_range',
+  'course_ids',
+  'lesson_ids',
+]);
+
+const DATA_MARKER_KEYS = new Set([
+  'code',
+  'live_date',
+  'time_range',
+  'course_ids',
+  'lesson_ids',
+  'package_ids',
+]);
+
+const isRestRow = (row: Record<string, unknown>) => (
+  [row.code, row.lesson_name].some((value) => (
+    normalizeHeader(value).startsWith('nghi')
+  ))
+);
+
+const normalizeMatrixRows = (matrix: unknown[][]) => {
+  const candidates = matrix
+    .slice(0, 50)
+    .map((row, index) => {
+      const mappedHeaders = row.map(mapImportHeader);
+      const keys = new Set(mappedHeaders.filter(Boolean));
+      const requiredCount = Array.from(REQUIRED_HEADER_KEYS)
+        .filter((key) => keys.has(key))
+        .length;
+      return {
+        index,
+        mappedHeaders,
+        score: keys.size,
+        requiredCount,
+        hasCode: keys.has('code'),
+      };
+    })
+    .filter((candidate) => candidate.hasCode && candidate.requiredCount >= 3)
+    .sort((left, right) => (
+      right.requiredCount - left.requiredCount
+      || right.score - left.score
+      || left.index - right.index
+    ));
+
+  const header = candidates[0];
+  if (!header) {
+    throw new Error(
+      'Không tìm thấy hàng tiêu đề hợp lệ. File cần có các cột Mã buổi học, '
+      + 'Ngày live, Khung giờ, ID course và ID Bài giảng.'
+    );
+  }
+
+  return matrix
+    .slice(header.index + 1)
+    .map((values, offset) => {
+      const normalized: Record<string, unknown> = {
+        __rowNumber: header.index + offset + 2,
+      };
+      header.mappedHeaders.forEach((mappedKey, columnIndex) => {
+        if (mappedKey) normalized[mappedKey] = values[columnIndex] ?? '';
+      });
+      return normalized;
+    })
+    .filter((row) => (
+      !isRestRow(row)
+      && Object.entries(row).some(([key, value]) => (
+        DATA_MARKER_KEYS.has(key) && String(value ?? '').trim()
+      ))
+    ));
+};
+
+const parseCsvRows = (buffer: Buffer) => {
+  const content = buffer.toString('utf8').replace(/^\uFEFF/, '');
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
   let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if (char === '"' && quoted && line[index + 1] === '"') {
-      current += '"';
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    const nextCharacter = content[index + 1];
+    if (character === '"' && quoted && nextCharacter === '"') {
+      cell += '"';
       index += 1;
-    } else if (char === '"') {
+    } else if (character === '"') {
       quoted = !quoted;
-    } else if (char === ',' && !quoted) {
-      values.push(current.trim());
-      current = '';
+    } else if (character === ',' && !quoted) {
+      row.push(cell);
+      cell = '';
+    } else if ((character === '\n' || character === '\r') && !quoted) {
+      if (character === '\r' && nextCharacter === '\n') index += 1;
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
     } else {
-      current += char;
+      cell += character;
     }
   }
-  values.push(current.trim());
-  return values;
+  row.push(cell);
+  if (row.some((value) => value.trim())) rows.push(row);
+  return rows;
 };
 
-const parseCsvBuffer = (buffer: Buffer) => {
-  const lines = buffer.toString('utf8')
-    .replace(/^\uFEFF/, '')
-    .split(/\r?\n/)
-    .filter((line) => line.trim());
-  if (!lines.length) return [];
-  const headers = parseCsvLine(lines[0]);
-  return lines.slice(1).map((line) => {
-    const values = parseCsvLine(line);
-    return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? '']));
+const getWorksheetImportRange = (sheet: XLSX.WorkSheet) => {
+  const originalRange = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
+  const populatedRows = Array.from(new Set(
+    Object.entries(sheet)
+      .filter(([address, cell]) => (
+        !address.startsWith('!')
+        && cell?.v !== undefined
+        && String(cell.v).trim() !== ''
+      ))
+      .map(([address]) => XLSX.utils.decode_cell(address).r)
+  )).sort((left, right) => left - right);
+
+  let lastRow = originalRange.e.r;
+  for (let index = 1; index < populatedRows.length; index += 1) {
+    if (populatedRows[index] - populatedRows[index - 1] > 1000) {
+      lastRow = populatedRows[index - 1];
+      break;
+    }
+  }
+
+  return XLSX.utils.encode_range({
+    s: { r: 0, c: 0 },
+    e: { r: lastRow, c: originalRange.e.c },
   });
 };
 
 export const parseCalendarImportFile = (buffer: Buffer, originalName: string) => {
   const extension = originalName.split('.').pop()?.toLowerCase();
-  if (extension === 'csv') return normalizeRows(parseCsvBuffer(buffer));
-  if (extension !== 'xlsx') throw new Error('Chỉ hỗ trợ file .xlsx hoặc .csv');
+  if (extension !== 'xlsx' && extension !== 'csv') {
+    throw new Error('Chỉ hỗ trợ file .xlsx hoặc .csv');
+  }
+  if (extension === 'csv') return normalizeMatrixRows(parseCsvRows(buffer));
 
   const workbook = XLSX.read(buffer, { type: 'buffer', raw: false });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   if (!sheet) return [];
-  return normalizeRows(XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+  return normalizeMatrixRows(XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1,
     defval: '',
-    blankrows: false,
+    blankrows: true,
+    raw: false,
+    range: getWorksheetImportRange(sheet),
   }));
 };
-
-const parseMappings = (value: unknown) => String(value ?? '')
-  .split(';')
-  .map((group) => group.trim())
-  .filter(Boolean)
-  .map((group) => {
-    const separator = group.indexOf(':');
-    if (separator < 1) throw new Error('Mapping phải có dạng course_id:lesson_id1|lesson_id2');
-    const courseId = group.slice(0, separator).trim();
-    const lessonIds = group.slice(separator + 1)
-      .split('|')
-      .map((lessonId) => lessonId.trim())
-      .filter(Boolean);
-    if (!courseId || !lessonIds.length) {
-      throw new Error('Mapping phải có Course ID và ít nhất một Lesson ID');
-    }
-    return { course_id: courseId, lesson_ids: lessonIds };
-  });
 
 const requiredText = (value: unknown, field: string) => {
   const text = String(value ?? '').trim();
@@ -141,74 +251,245 @@ const requiredText = (value: unknown, field: string) => {
   return text;
 };
 
-const optionalInteger = (value: unknown, field: string) => {
-  if (value === undefined || value === null || value === '') return undefined;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${field} không hợp lệ`);
-  return parsed;
+const limitedText = (
+  value: unknown,
+  field: string,
+  maxLength: number,
+  required = false
+) => {
+  const text = String(value ?? '').trim();
+  if (required && !text) throw new Error(`${field} không được để trống`);
+  if (text.length > maxLength) {
+    throw new Error(`${field} không được vượt quá ${maxLength} ký tự`);
+  }
+  return text || undefined;
 };
 
-const requiredDate = (value: unknown, field: string) => {
-  const text = requiredText(value, field);
-  const date = new Date(text.includes('T') ? text : text.replace(' ', 'T'));
-  if (Number.isNaN(date.getTime())) throw new Error(`${field} không hợp lệ`);
-  return date.toISOString();
+const parseIds = (
+  value: unknown,
+  field: string,
+  errorCode: CalendarImportErrorCode,
+  required = true
+) => {
+  const rawValue = String(value ?? '').trim();
+  const normalizedValue = /^[\d\s,.]+$/.test(rawValue)
+    ? rawValue.replace(/\./g, ',')
+    : rawValue;
+  const values = Array.from(new Set(
+    normalizedValue
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  ));
+  if (required && !values.length) {
+    const error = new Error(`${field} không được để trống`) as Error & {
+      errorCode?: CalendarImportErrorCode;
+      field?: string;
+    };
+    error.errorCode = errorCode;
+    error.field = field;
+    throw error;
+  }
+  const invalid = values.find((id) => !/^\d+$/.test(id) || id.length > 50);
+  if (invalid) {
+    const error = new Error(`${field} "${invalid}" không hợp lệ`) as Error & {
+      errorCode?: CalendarImportErrorCode;
+      field?: string;
+      invalidId?: string;
+    };
+    error.errorCode = errorCode;
+    error.field = field;
+    error.invalidId = invalid;
+    throw error;
+  }
+  return values;
+};
+
+const parsePackageIds = (value: unknown) => {
+  const packageValues = String(value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item && !/^https?:\/\//i.test(item));
+  return parseIds(
+    packageValues.join(','),
+    'ID package',
+    'INVALID_PACKAGE_ID',
+    false
+  );
+};
+
+const parseLiveDate = (value: unknown) => {
+  if (typeof value === 'number') {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed) {
+      return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
+    }
+  }
+  const text = requiredText(value, 'Ngày live');
+  const vietnamese = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  const parts = vietnamese
+    ? { day: Number(vietnamese[1]), month: Number(vietnamese[2]), year: Number(vietnamese[3]) }
+    : iso
+      ? { day: Number(iso[3]), month: Number(iso[2]), year: Number(iso[1]) }
+      : null;
+  if (!parts) throw new Error('Ngày live phải có định dạng DD/MM/YYYY');
+
+  const test = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  if (
+    test.getUTCFullYear() !== parts.year
+    || test.getUTCMonth() !== parts.month - 1
+    || test.getUTCDate() !== parts.day
+  ) {
+    throw new Error('Ngày live không hợp lệ');
+  }
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+};
+
+const parseTimeRange = (value: unknown) => {
+  const text = requiredText(value, 'Khung giờ');
+  const parts = text.split(/\s*[-–—]\s*/);
+  if (parts.length !== 2) {
+    throw new Error('Khung giờ phải có định dạng HH:mm-HH:mm');
+  }
+  const normalizeTime = (time: string) => {
+    const match = time.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) throw new Error('Khung giờ phải có định dạng HH:mm-HH:mm');
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (hour > 23 || minute > 59) throw new Error('Khung giờ không hợp lệ');
+    return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  };
+  return {
+    start: normalizeTime(parts[0]),
+    end: normalizeTime(parts[1]),
+  };
+};
+
+const normalizeAssignment = (value: unknown) => Array.from(new Set(
+  String(value ?? '')
+    .split(/[;,]/)
+    .map((item) => item.trim().replace(/\s+/g, ''))
+    .filter(Boolean)
+)).join(',');
+
+const normalizeOptionalTeacher = (value: unknown) => {
+  const text = limitedText(value, 'Email GV', 120);
+  if (!text || /\s/.test(text)) return undefined;
+  const teacher = normalizeAssignment(text);
+  if (teacher.includes(',')) {
+    throw new Error('Email GV chỉ được chứa một tài khoản giáo viên');
+  }
+  return teacher || undefined;
+};
+
+const toDocumentJson = (value: unknown) => {
+  const document = String(value ?? '').trim();
+  return document ? JSON.stringify([document]) : undefined;
 };
 
 export const validateCalendarImportRows = (rows: Record<string, unknown>[]) => {
   const errors: CalendarImportError[] = [];
-  const calendars: any[] = [];
+  const importRows: CalendarImportRow[] = [];
+  const learnNumbersByCode = new Map<string, number>();
 
   if (!rows.length) {
     return {
-      calendars,
-      errors: [{ row: 1, field: 'file', message: 'File import không có dữ liệu' }],
+      importRows,
+      errors: [{
+        row: 1,
+        field: 'file',
+        errorCode: 'INVALID_ROW' as const,
+        message: 'File import không có dữ liệu',
+      }],
     };
   }
-  if (rows.length > 500) {
+  const configuredMaxRows = Number(process.env.CALENDAR_IMPORT_MAX_ROWS);
+  const maxRows = Number.isInteger(configuredMaxRows) && configuredMaxRows > 0
+    ? configuredMaxRows
+    : 1000;
+  if (rows.length > maxRows) {
     return {
-      calendars,
-      errors: [{ row: 1, field: 'file', message: 'Mỗi lần chỉ được import tối đa 500 lịch' }],
+      importRows,
+      errors: [{
+        row: 1,
+        field: 'file',
+        errorCode: 'INVALID_ROW' as const,
+        message: `Mỗi lần chỉ được import tối đa ${maxRows} lịch`,
+      }],
     };
   }
 
   rows.forEach((row, index) => {
-    const excelRow = index + 2;
+    const sourceRow = Number(row.__rowNumber);
+    const excelRow = Number.isInteger(sourceRow) && sourceRow > 0
+      ? sourceRow
+      : index + 2;
     try {
-      const learnNumber = optionalInteger(row.learn_number, 'Learn Number');
-      if (learnNumber === undefined || learnNumber < 1) {
-        throw new Error('Learn Number phải lớn hơn 0');
+      const code = requiredText(row.code, 'Mã buổi học');
+      if (code.length > 30) throw new Error('Mã buổi học không được vượt quá 30 ký tự');
+      const learnNumber = (learnNumbersByCode.get(code) ?? 0) + 1;
+      learnNumbersByCode.set(code, learnNumber);
+      const date = parseLiveDate(row.live_date);
+      const time = parseTimeRange(row.time_range);
+      const startTime = `${date}T${time.start}:00+07:00`;
+      const endTime = `${date}T${time.end}:00+07:00`;
+      if (new Date(startTime) >= new Date(endTime)) {
+        throw new Error('Giờ kết thúc phải sau giờ bắt đầu');
       }
-      const lessonCount = optionalInteger(row.lesson_count, 'Lesson Count');
-      const lessonStatus = optionalInteger(row.lesson_status, 'Lesson Status') ?? 0;
-      if (![0, 1].includes(lessonStatus)) throw new Error('Lesson Status chỉ nhận 0 hoặc 1');
-      const mappings = parseMappings(row.package_lesson_mappings);
-      if (!mappings.length) throw new Error('Course/Lesson Mappings không được để trống');
 
-      calendars.push({
-        system_type: requiredText(row.system_type || 'topclass', 'System Type'),
-        code: requiredText(row.code, 'Code'),
-        learn_number: learnNumber,
-        ...(lessonCount !== undefined ? { lesson_count: lessonCount } : {}),
-        subject: String(row.subject ?? '').trim() || undefined,
-        teacher: String(row.teacher ?? '').trim() || undefined,
-        lesson_name: String(row.lesson_name ?? '').trim() || undefined,
-        start_time: requiredDate(row.start_time, 'Start Time'),
-        end_time: requiredDate(row.end_time, 'End Time'),
-        channel_name: String(row.channel_name ?? '').trim() || undefined,
-        lesson_status: lessonStatus,
-        package_lesson_mappings: mappings,
+      const courseIds = parseIds(
+        row.course_ids,
+        'ID course',
+        'INVALID_COURSE_ID'
+      );
+      const lessonIds = parseIds(
+        row.lesson_ids,
+        'ID Bài giảng',
+        'INVALID_LESSON_ID'
+      );
+      const packageIds = parsePackageIds(row.package_ids);
+      const teacher = normalizeOptionalTeacher(row.teacher_email);
+      const assistantTeacher = normalizeAssignment(row.assistant_email);
+      const subject = limitedText(row.subject, 'Môn', 100, true);
+      const lessonName = limitedText(row.lesson_name, 'Tên bài giảng', 400, true);
+      const lessonExercise = limitedText(row.lesson_baitap, 'Nhiệm vụ học tập', 500);
+
+      importRows.push({
+        row: excelRow,
+        packageIds,
+        courseIds,
+        lessonIds,
+        calendar: {
+          system_type: 'topclass',
+          code,
+          learn_number: learnNumber,
+          subject,
+          teacher: teacher || undefined,
+          assistant_teacher: assistantTeacher || undefined,
+          lesson_name: lessonName,
+          lesson_document: toDocumentJson(row.lesson_document),
+          lesson_baitap: lessonExercise,
+          start_time: startTime,
+          end_time: endTime,
+          lesson_status: 0,
+        },
       });
     } catch (error: any) {
+      const invalidId = error.invalidId;
       errors.push({
         row: excelRow,
-        field: 'row',
+        field: error.field || 'row',
+        errorCode: error.errorCode || 'INVALID_ROW',
         message: error.message || 'Dữ liệu không hợp lệ',
+        ...(error.errorCode === 'INVALID_PACKAGE_ID' ? { packageId: invalidId } : {}),
+        ...(error.errorCode === 'INVALID_COURSE_ID' ? { courseId: invalidId } : {}),
+        ...(error.errorCode === 'INVALID_LESSON_ID' ? { lessonId: invalidId } : {}),
       });
     }
   });
 
-  return { calendars, errors };
+  return { importRows, errors };
 };
 
 const escapeCsvValue = (value: unknown) => {
@@ -234,6 +515,16 @@ export const buildCalendarFile = (rows: any[], format: CalendarFileFormat) => {
   const worksheet = XLSX.utils.json_to_sheet(toSheetRows(rows), {
     header: CALENDAR_FILE_COLUMNS.map((column) => column.header),
   });
+  worksheet['!cols'] = CALENDAR_FILE_COLUMNS.map((column) => ({
+    wch: [
+      'lesson_name',
+      'lesson_document',
+      'lesson_baitap',
+      'archive_document',
+      'content_homework',
+      'sharepoint_link',
+    ].includes(column.key) ? 32 : 18,
+  }));
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Calendar');
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
@@ -245,17 +536,66 @@ export const getCalendarFileContentType = (format: CalendarFileFormat) => (
     : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 );
 
-export const buildCalendarTemplate = (format: CalendarFileFormat) => buildCalendarFile([{
-  system_type: 'topclass',
-  code: 'nguvan-6-2027',
-  learn_number: 1,
-  lesson_count: '',
-  subject: 'Ngữ văn',
-  teacher: 'Nguyễn Văn A',
-  lesson_name: 'Bài 1 - Tôi và các bạn',
-  start_time: '2026-08-03T19:00:00+07:00',
-  end_time: '2026-08-03T21:00:00+07:00',
-  channel_name: 'room-nguvan-6',
-  lesson_status: 0,
-  package_lesson_mappings: '1771:171233|171234;3355:171310',
-}], format);
+export const buildCalendarTemplate = (format: CalendarFileFormat) => {
+  const sample = [
+    'Toán',
+    'TOV_TC_T02',
+    'Các dạng câu hỏi điển hình về hàm số',
+    'Nguyễn Văn A',
+    '01/08/2026',
+    '7',
+    '19:00-21:00',
+    'https://example.com/tai-lieu-live.pdf',
+    'https://example.com/nhiem-vu-hoc-tap',
+    '',
+    '',
+    'Trần Thị B',
+    '',
+    '3108,3117',
+    '168357,168572',
+    '9025,9028',
+    'giaovien@example.com',
+    'trogiang@example.com',
+  ];
+
+  if (format === 'csv') {
+    return Buffer.from(
+      `\uFEFF${[
+        CALENDAR_IMPORT_FILE_COLUMNS.map(escapeCsvValue).join(','),
+        sample.map(escapeCsvValue).join(','),
+      ].join('\n')}`,
+      'utf8'
+    );
+  }
+
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    [...CALENDAR_IMPORT_FILE_COLUMNS],
+    sample,
+  ]);
+  worksheet['!cols'] = [
+    { wch: 16 },
+    { wch: 20 },
+    { wch: 42 },
+    { wch: 24 },
+    { wch: 14 },
+    { wch: 8 },
+    { wch: 18 },
+    { wch: 38 },
+    { wch: 38 },
+    { wch: 28 },
+    { wch: 16 },
+    { wch: 24 },
+    { wch: 28 },
+    { wch: 36 },
+    { wch: 36 },
+    { wch: 36 },
+    { wch: 30 },
+    { wch: 30 },
+  ];
+  worksheet['!autofilter'] = {
+    ref: `A1:${XLSX.utils.encode_col(CALENDAR_IMPORT_FILE_COLUMNS.length - 1)}2`,
+  };
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Import Calendar');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+};

@@ -15,13 +15,22 @@ const package_course_routes_1 = __importDefault(require("./modules/package-cours
 const teacher_profiles_1 = require("./modules/teacher-profiles");
 const ApiError_1 = __importDefault(require("./utils/ApiError"));
 const app = (0, express_1.default)();
+const allowedCorsOrigins = new Set((process.env.CORS_ORIGINS
+    || 'https://lms-fe-ten.vercel.app,http://localhost:3000,http://127.0.0.1:3000')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean));
 app.use(express_1.default.json());
 app.use((req, res, next) => {
     console.log(">>>", req.method, req.url);
     next();
 });
 app.use((0, cors_1.default)({
-    origin: "http://localhost:3000",
+    origin: (origin, callback) => {
+        // Requests without Origin come from server-to-server clients such as
+        // the Next.js auth proxy.
+        callback(null, !origin || allowedCorsOrigins.has(origin));
+    },
     credentials: true,
 }));
 app.use("/api/users", users_1.userRoutes);

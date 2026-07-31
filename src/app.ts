@@ -12,6 +12,14 @@ import ApiError from "./utils/ApiError";
 
 
 const app = express();
+const allowedCorsOrigins = new Set(
+    (process.env.CORS_ORIGINS
+        || 'https://lms-fe-ten.vercel.app,http://localhost:3000,http://127.0.0.1:3000')
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean)
+);
+
 app.use(express.json());
 app.use((req, res, next) => {
     console.log(">>>", req.method, req.url);
@@ -19,7 +27,14 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-    origin: "https://lms-fe-ten.vercel.app",
+    origin: (
+        origin: string | undefined,
+        callback: (error: Error | null, allow?: boolean) => void
+    ) => {
+        // Requests without Origin come from server-to-server clients such as
+        // the Next.js auth proxy.
+        callback(null, !origin || allowedCorsOrigins.has(origin));
+    },
     credentials: true,
 }));
 

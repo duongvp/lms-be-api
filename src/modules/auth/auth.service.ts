@@ -9,9 +9,12 @@ const prisma = new PrismaClient();
 
 const getRequiredSecret = (name: 'ACCESS_TOKEN_SECRET' | 'REFRESH_TOKEN_SECRET') => {
     const value = process.env[name];
-    if (!value || value.length < 32) {
-        throw new ApiError(`${name} must be configured with at least 32 characters`, 503);
+    if (!value) {
+        throw new ApiError(`${name} is not configured`, 503);
     }
+    // if (!value || value.length < 32) {
+    //     throw new ApiError(`${name} must be configured with at least 32 characters`, 503);
+    // }
     return value;
 };
 

@@ -32,7 +32,7 @@ const authenticate = async (
     }
 
     const accessTokenSecret = process.env.ACCESS_TOKEN_SECRET;
-    if (!accessTokenSecret || accessTokenSecret.length < 32) {
+    if (!accessTokenSecret?.trim()) {
       res.status(503).json({ success: false, message: 'Authentication is not configured' });
       return;
     }

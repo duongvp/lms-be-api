@@ -3,8 +3,26 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.softDeleteLesson = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = void 0;
+exports.deleteLessonIfUnscheduled = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = void 0;
 const prisma_1 = __importDefault(require("../../lib/prisma"));
+const syncCalendarFromLesson = async (tx, lessonId) => {
+    await tx.$executeRawUnsafe(`UPDATE calendar AS calendar_row
+     INNER JOIN lessons AS lesson ON lesson.id = calendar_row.session_id
+     SET calendar_row.learn_number = lesson.learn_number,
+         calendar_row.subject = lesson.subject_name,
+         calendar_row.lesson_name = lesson.lesson_name,
+         calendar_row.lesson_document = lesson.lesson_document,
+         calendar_row.evg_banner = lesson.evg_banner,
+         calendar_row.evg_stream = lesson.evg_stream,
+         calendar_row.lesson_link = lesson.lesson_link,
+         calendar_row.lesson_baitap = lesson.lesson_baitap,
+         calendar_row.lesson_tomtat = lesson.lesson_tomtat,
+         calendar_row.lesson_phuongphap = lesson.lesson_phuongphap,
+         calendar_row.lesson_luuy = lesson.lesson_luuy,
+         calendar_row.lesson_ketqua = lesson.lesson_ketqua,
+         calendar_row.updated_at = CURRENT_TIMESTAMP
+     WHERE lesson.id = ?`, lessonId);
+};
 const buildWhere = (query) => {
     const clauses = ['status = ?'];
     const values = [query.status ?? 1];
@@ -130,8 +148,12 @@ const updateLesson = async (id, payload) => {
     const entries = Object.entries(payload);
     const setSql = entries.map(([key]) => `${key} = ?`).join(', ');
     const values = entries.map(([, value]) => value ?? null);
-    await prisma_1.default.$executeRawUnsafe(`UPDATE lessons SET ${setSql}, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?`, ...values, id);
-    return (0, exports.findLessonById)(id);
+    return prisma_1.default.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`UPDATE lessons SET ${setSql}, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?`, ...values, id);
+        await syncCalendarFromLesson(tx, id);
+        const rows = await tx.$queryRawUnsafe('SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1', id);
+        return rows[0] ?? null;
+    });
 };
 exports.updateLesson = updateLesson;
 const bulkUpdateLessons = async (ids, payload) => {
@@ -139,8 +161,12 @@ const bulkUpdateLessons = async (ids, payload) => {
     const setSql = entries.map(([key]) => `${key} = ?`).join(', ');
     const values = entries.map(([, value]) => value ?? null);
     const placeholders = ids.map(() => '?').join(', ');
-    await prisma_1.default.$executeRawUnsafe(`UPDATE lessons SET ${setSql}, updated_at = CURRENT_TIMESTAMP(3) WHERE id IN (${placeholders}) AND status <> 0`, ...values, ...ids);
-    return prisma_1.default.$queryRawUnsafe(`SELECT * FROM lessons WHERE id IN (${placeholders}) ORDER BY grade ASC, subject_code ASC, learn_number ASC`, ...ids);
+    return prisma_1.default.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`UPDATE lessons SET ${setSql}, updated_at = CURRENT_TIMESTAMP(3) WHERE id IN (${placeholders}) AND status <> 0`, ...values, ...ids);
+        for (const id of ids)
+            await syncCalendarFromLesson(tx, id);
+        return tx.$queryRawUnsafe(`SELECT * FROM lessons WHERE id IN (${placeholders}) ORDER BY grade ASC, subject_code ASC, learn_number ASC`, ...ids);
+    });
 };
 exports.bulkUpdateLessons = bulkUpdateLessons;
 const reorderLessonsInGroup = async (grade, subjectCode, orderedIds) => {
@@ -150,6 +176,7 @@ const reorderLessonsInGroup = async (grade, subjectCode, orderedIds) => {
         }
         for (let index = 0; index < orderedIds.length; index += 1) {
             await tx.$executeRawUnsafe('UPDATE lessons SET learn_number = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND grade = ? AND subject_code = ? AND status <> 0', index + 1, orderedIds[index], grade, subjectCode);
+            await syncCalendarFromLesson(tx, orderedIds[index]);
         }
     });
     return (0, exports.findLessonsByGroup)(grade, subjectCode);
@@ -195,6 +222,7 @@ const importLessons = async (rows, mode) => {
               lesson_phuongphap = ?, lesson_luuy = ?, lesson_ketqua = ?, status = ?,
               updated_at = CURRENT_TIMESTAMP(3)
             WHERE id = ?`, row.subject_name, row.lesson_name, row.lesson_document ?? null, row.evg_banner ?? null, row.evg_stream ?? null, row.lesson_link ?? null, row.lesson_baitap ?? null, row.lesson_tomtat ?? null, row.lesson_phuongphap ?? null, row.lesson_luuy ?? null, row.lesson_ketqua ?? null, row.status ?? 1, existing.id);
+                    await syncCalendarFromLesson(tx, BigInt(existing.id));
                 }
                 updated += 1;
                 continue;
@@ -219,9 +247,18 @@ const importLessons = async (rows, mode) => {
     };
 };
 exports.importLessons = importLessons;
-const softDeleteLesson = async (id) => {
-    await prisma_1.default.$executeRawUnsafe('UPDATE lessons SET status = 0, learn_number = -CAST(id AS SIGNED), updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?', id);
-    return prisma_1.default.$queryRawUnsafe('SELECT * FROM lessons WHERE id = ? LIMIT 1', id)
-        .then((rows) => rows[0] ?? null);
+const deleteLessonIfUnscheduled = async (id) => {
+    return prisma_1.default.$transaction(async (tx) => {
+        const lessons = await tx.$queryRawUnsafe('SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1 FOR UPDATE', id);
+        const lesson = lessons[0] ?? null;
+        if (!lesson)
+            return { lesson: null, scheduledCount: 0 };
+        const counts = await tx.$queryRawUnsafe('SELECT COUNT(*) AS total FROM calendar WHERE session_id = ?', id);
+        const scheduledCount = Number(counts[0]?.total ?? 0);
+        if (scheduledCount > 0)
+            return { lesson, scheduledCount };
+        await tx.$executeRawUnsafe('DELETE FROM lessons WHERE id = ?', id);
+        return { lesson, scheduledCount: 0 };
+    });
 };
-exports.softDeleteLesson = softDeleteLesson;
+exports.deleteLessonIfUnscheduled = deleteLessonIfUnscheduled;

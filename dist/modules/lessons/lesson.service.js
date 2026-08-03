@@ -73,10 +73,13 @@ const updateExistingLesson = async (id, payload) => {
 };
 exports.updateExistingLesson = updateExistingLesson;
 const deleteExistingLesson = async (id) => {
-    const current = await (0, lesson_repository_1.findLessonById)(id);
-    if (!current)
-        throw new ApiError_1.default('Lesson not found', 404);
-    return (0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.softDeleteLesson)(id));
+    const result = await (0, lesson_repository_1.deleteLessonIfUnscheduled)(id);
+    if (!result.lesson)
+        throw new ApiError_1.default('Bài học không tồn tại hoặc đã bị xóa', 404);
+    if (result.scheduledCount > 0) {
+        throw new ApiError_1.default(`Không thể xóa bài học vì đang được gán cho ${result.scheduledCount} lịch học`, 409);
+    }
+    return (0, serializer_1.serializeBigInt)(result.lesson);
 };
 exports.deleteExistingLesson = deleteExistingLesson;
 const bulkUpdateExistingLessons = async ({ ids, data }) => {

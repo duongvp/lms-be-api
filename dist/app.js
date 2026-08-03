@@ -15,6 +15,7 @@ const package_course_routes_1 = __importDefault(require("./modules/package-cours
 const teacher_profiles_1 = require("./modules/teacher-profiles");
 const ApiError_1 = __importDefault(require("./utils/ApiError"));
 const app = (0, express_1.default)();
+app.set('json replacer', (_key, value) => (typeof value === 'bigint' ? value.toString() : value));
 const allowedCorsOrigins = new Set((process.env.CORS_ORIGINS
     || 'https://lms-fe-ten.vercel.app,http://localhost:3000,http://127.0.0.1:3000')
     .split(',')

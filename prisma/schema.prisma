@@ -10,6 +10,7 @@ datasource db {
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model calendar {
   id                Int                   @id @default(autoincrement()) @db.UnsignedInt
+  session_id        BigInt?
   code              String                @db.VarChar(30)
   learn_number      Int
   subject           String?               @db.VarChar(100)
@@ -37,6 +38,7 @@ model calendar {
   updated_at        DateTime?             @default(now()) @db.Timestamp(0)
 
   @@unique([key], map: "uq_calendar_key")
+  @@index([session_id], map: "idx_calendar_session_id")
   @@index([code, learn_number], map: "idx_calendar_code_learn")
   @@index([code, learn_number, start_time, end_time], map: "idx_calendar_code_time")
   @@index([system_type], map: "idx_calendar_system")

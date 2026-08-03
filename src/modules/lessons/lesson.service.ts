@@ -12,7 +12,7 @@ import {
   findLessonsByGroup,
   importLessons,
   reorderLessonsInGroup,
-  softDeleteLesson,
+  deleteLessonIfUnscheduled,
   updateLesson,
 } from './lesson.repository';
 import { normalizeSubject, SUBJECT_OPTIONS } from './lesson.constants';
@@ -98,9 +98,15 @@ export const updateExistingLesson = async (id: bigint, payload: Partial<LessonPa
 };
 
 export const deleteExistingLesson = async (id: bigint) => {
-  const current = await findLessonById(id);
-  if (!current) throw new ApiError('Lesson not found', 404);
-  return serializeBigInt(await softDeleteLesson(id));
+  const result = await deleteLessonIfUnscheduled(id);
+  if (!result.lesson) throw new ApiError('Bài học không tồn tại hoặc đã bị xóa', 404);
+  if (result.scheduledCount > 0) {
+    throw new ApiError(
+      `Không thể xóa bài học vì đang được gán cho ${result.scheduledCount} lịch học`,
+      409
+    );
+  }
+  return serializeBigInt(result.lesson);
 };
 
 export const bulkUpdateExistingLessons = async ({ ids, data }: LessonBulkUpdatePayload) => {

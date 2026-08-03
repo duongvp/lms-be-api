@@ -80,6 +80,7 @@ const generateKey = (systemType, startTime, code, learnNumber, lessonCount) => {
     return `${sysCode}_${schoolYear}_${code}_${learnNumber}${sessionSuffix}`;
 };
 const COPY_SESSION_FIELDS = [
+    'session_id',
     'code',
     'learn_number',
     'subject',
@@ -120,12 +121,26 @@ const normalizeTeachingAssignments = async (client, data) => {
     const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
     if (!hasTeacher && !hasAssistants)
         return data;
-    const teacher = hasTeacher ? String(data.teacher || '').trim() : undefined;
+    let teacher = hasTeacher ? String(data.teacher || '').trim() : undefined;
     const assistants = hasAssistants
         ? parseAssistantTeachers(data.assistant_teacher)
         : [];
     if (teacher && teacher.length > 150) {
         throw new Error('Tên giáo viên không được vượt quá 150 ký tự');
+    }
+    if (teacher) {
+        const teacherProfiles = await client.$queryRaw(client_1.Prisma.sql `
+      SELECT username, display_name
+      FROM teacher_profiles
+      WHERE username = ${teacher}
+        AND teacher_type = 1
+        AND status = 1
+      LIMIT 1
+    `);
+        const teacherProfile = teacherProfiles[0];
+        if (teacherProfile) {
+            teacher = String(teacherProfile.display_name || teacherProfile.username).trim();
+        }
     }
     // calendar.teacher is free text/display_name, not a teacher_profile username.
     // Only assistants are account assignments and need profile validation.
@@ -156,21 +171,26 @@ const hydrateAssistantTeachers = async (client, records) => {
     if (!ids.length)
         return records;
     const rows = await client.$queryRaw(client_1.Prisma.sql `
-    SELECT id, assistant_teacher
+    SELECT id, assistant_teacher, session_id
     FROM calendar
     WHERE id IN (${client_1.Prisma.join(ids)})
   `);
-    const byId = new Map(rows.map((row) => [Number(row.id), row.assistant_teacher]));
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
     records.forEach((record) => {
-        record.assistant_teacher = byId.get(Number(record.id)) ?? null;
+        const metadata = byId.get(Number(record.id));
+        record.assistant_teacher = metadata?.assistant_teacher ?? null;
+        record.session_id = metadata?.session_id ?? null;
     });
     return records;
 };
 const createCalendarRecord = async (client, data) => {
     const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
     const assistantTeacher = data.assistant_teacher ?? null;
+    const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'session_id');
+    const sessionId = data.session_id ?? null;
     const prismaData = { ...data };
     delete prismaData.assistant_teacher;
+    delete prismaData.session_id;
     const created = await client.calendar.create({ data: prismaData });
     if (hasAssistants) {
         await client.$executeRaw `
@@ -179,13 +199,25 @@ const createCalendarRecord = async (client, data) => {
       WHERE id = ${created.id}
     `;
     }
-    return { ...created, assistant_teacher: hasAssistants ? assistantTeacher : null };
+    if (hasSessionId) {
+        await client.$executeRaw `
+      UPDATE calendar
+      SET session_id = ${sessionId}
+      WHERE id = ${created.id}
+    `;
+    }
+    const result = { ...created };
+    await hydrateAssistantTeachers(client, [result]);
+    return result;
 };
 const updateCalendarRecord = async (client, id, data) => {
     const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
     const assistantTeacher = data.assistant_teacher ?? null;
+    const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'session_id');
+    const sessionId = data.session_id ?? null;
     const prismaData = { ...data };
     delete prismaData.assistant_teacher;
+    delete prismaData.session_id;
     const updated = await client.calendar.update({ where: { id }, data: prismaData });
     if (hasAssistants) {
         await client.$executeRaw `
@@ -194,9 +226,15 @@ const updateCalendarRecord = async (client, id, data) => {
       WHERE id = ${id}
     `;
     }
-    const result = { ...updated, assistant_teacher: assistantTeacher };
-    if (!hasAssistants)
-        await hydrateAssistantTeachers(client, [result]);
+    if (hasSessionId) {
+        await client.$executeRaw `
+      UPDATE calendar
+      SET session_id = ${sessionId}
+      WHERE id = ${id}
+    `;
+    }
+    const result = { ...updated };
+    await hydrateAssistantTeachers(client, [result]);
     return result;
 };
 const normalizeRoom = (data) => {
@@ -208,7 +246,7 @@ const normalizeRoom = (data) => {
 };
 const hydrateLessonData = async (tx, input) => {
     const data = { ...input };
-    const lessonId = data.lesson_id;
+    const sessionId = data.session_id ?? data.sessionId ?? data.lesson_id;
     const customLessonName = typeof data.lesson_name === 'string'
         ? data.lesson_name.trim()
         : '';
@@ -216,28 +254,31 @@ const hydrateLessonData = async (tx, input) => {
         throw new Error("lesson_name không được vượt quá 400 ký tự");
     }
     delete data.lesson_id;
+    delete data.sessionId;
     delete data.package_lesson_mappings;
     delete data.grade;
     delete data.subject_code;
     delete data.subject_name;
-    // Các client cũ không gửi lesson_id vẫn tiếp tục dùng payload calendar hiện tại.
-    if (lessonId === undefined || lessonId === null || lessonId === '') {
+    // Các client cũ chưa gửi session_id vẫn tiếp tục dùng payload calendar hiện tại.
+    if (sessionId === undefined || sessionId === null || sessionId === '') {
+        delete data.session_id;
         return data;
     }
-    let parsedLessonId;
+    let parsedSessionId;
     try {
-        parsedLessonId = BigInt(lessonId);
+        parsedSessionId = BigInt(sessionId);
     }
     catch {
-        throw new Error("lesson_id không hợp lệ");
+        throw new Error("session_id không hợp lệ");
     }
-    const lessons = await tx.$queryRawUnsafe('SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1', parsedLessonId);
+    const lessons = await tx.$queryRawUnsafe('SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1 FOR SHARE', parsedSessionId);
     const lesson = lessons[0];
     if (!lesson) {
         throw new Error("Bài học không tồn tại hoặc đã ngừng hoạt động");
     }
     return {
         ...data,
+        session_id: parsedSessionId,
         learn_number: lesson.learn_number,
         subject: lesson.subject_name,
         lesson_name: customLessonName || lesson.lesson_name,
@@ -898,6 +939,11 @@ const updateSchedule = async (id, data, updateMode, changeActor) => {
     if (updateMode && updateMode !== 'current') {
         return await (0, exports.rescheduleSession)(id, { ...data, mode: updateMode }, changeActor);
     }
+    if (data.sessionId !== undefined
+        || data.session_id !== undefined
+        || data.lesson_id !== undefined) {
+        data = await hydrateLessonData(prisma, data);
+    }
     normalizeRoom(data);
     await normalizeTeachingAssignments(prisma, data);
     delete data.key;
@@ -1003,7 +1049,7 @@ const getCalendar = async (query) => {
     const keyword = normalizeString(query.keyword);
     const code = normalizeString(query.code);
     const exactCode = normalizeString(query.code_exact);
-    const teacher = normalizeString(query.teacher);
+    let teacher = normalizeString(query.teacher);
     const subject = normalizeString(query.subject);
     const classroom = normalizeString(query.classroom);
     const systemType = normalizeString(query.system_type);
@@ -1017,6 +1063,19 @@ const getCalendar = async (query) => {
     const requestedSortOrders = (normalizeString(query.sort_order) || '')
         .split(',')
         .map((order) => normalizeSortOrder(order));
+    if (teacher) {
+        const teacherProfiles = await prisma.$queryRaw(client_1.Prisma.sql `
+      SELECT display_name
+      FROM teacher_profiles
+      WHERE username = ${teacher}
+        AND teacher_type = 1
+        AND status = 1
+      LIMIT 1
+    `);
+        if (teacherProfiles[0]?.display_name) {
+            teacher = teacherProfiles[0].display_name.trim();
+        }
+    }
     if (systemType && !CALENDAR_SYSTEM_TYPES.includes(systemType)) {
         throw new Error('system_type không hợp lệ');
     }

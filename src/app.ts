@@ -12,6 +12,9 @@ import ApiError from "./utils/ApiError";
 
 
 const app = express();
+app.set('json replacer', (_key: string, value: unknown) => (
+    typeof value === 'bigint' ? value.toString() : value
+));
 const allowedCorsOrigins = new Set(
     (process.env.CORS_ORIGINS
         || 'https://lms-fe-ten.vercel.app,http://localhost:3000,http://127.0.0.1:3000')

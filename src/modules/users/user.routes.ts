@@ -4,6 +4,15 @@ import { authMiddleware } from '../auth'; // giả định đường dẫn đún
 
 const router = Router();
 const { authenticate, authorize, authorizeFields } = authMiddleware;
+const authorizeAdmin = (req: any, res: any, next: any) => {
+    if (!req.user?.roles?.includes('admin')) {
+        return res.status(403).json({
+            success: false,
+            message: 'Chỉ tài khoản admin được phép tạo tài khoản quản trị',
+        });
+    }
+    next();
+};
 const authorizeRoleAssignment = (req: any, res: any, next: any) => {
     if (
         req.body?.roleIds !== undefined
@@ -39,6 +48,7 @@ router.use(authenticate);
  *         description: Thành công
  */
 router.get('/', authorize(['users.view']), userController.getAllUsers);
+router.post('/', authorize(['users.create']), authorizeAdmin, userController.createUser);
 
 /**
  * @swagger

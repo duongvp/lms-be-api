@@ -38,6 +38,7 @@ const XLSX = __importStar(require("xlsx"));
 const LESSON_BASIC_COLUMNS = [
     { key: 'grade', header: 'Khối' },
     { key: 'subject_name', header: 'Môn học' },
+    { key: 'subject_code', header: 'Mã môn học' },
     { key: 'learn_number', header: 'Số thứ tự bài' },
     { key: 'lesson_name', header: 'Tên bài học' },
 ];
@@ -67,6 +68,10 @@ const HEADER_ALIASES = {
     'môn học': 'subject_name',
     'mon hoc': 'subject_name',
     subject_name: 'subject_name',
+    'mã môn học': 'subject_code',
+    'ma mon hoc': 'subject_code',
+    'subject code': 'subject_code',
+    subject_code: 'subject_code',
     'learn number': 'learn_number',
     learn_number: 'learn_number',
     'số thứ tự bài': 'learn_number',
@@ -288,6 +293,7 @@ const buildLessonTemplateBuffer = (format) => {
     const example = [{
             grade: 6,
             subject_name: 'Toán',
+            subject_code: 'toan-6-2027',
             learn_number: '',
             lesson_name: 'Bài học mẫu',
             lesson_document: JSON.stringify([

@@ -15,6 +15,7 @@ const upload = multer({
 router.use(authenticate);
 router.get('/', authorize(['lessons.view']), lessonController.list);
 router.get('/options/subjects', authorize(['lessons.view']), lessonController.subjects);
+router.get('/options/programs', authorize(['lessons.view']), lessonController.programs);
 router.patch(
   '/bulk',
   authorize(['lessons.update']),

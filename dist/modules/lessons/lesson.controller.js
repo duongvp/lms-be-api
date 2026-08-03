@@ -27,6 +27,14 @@ const subjects = async (_req, res) => {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
     }
 };
+const programs = async (_req, res) => {
+    try {
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, lesson_service_1.getLessonPrograms)());
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
+    }
+};
 const detail = async (req, res) => {
     try {
         const id = (0, lesson_validation_1.validateLessonId)(req.params.id);
@@ -145,6 +153,7 @@ const remove = async (req, res) => {
 exports.default = {
     list,
     subjects,
+    programs,
     detail,
     create,
     update,

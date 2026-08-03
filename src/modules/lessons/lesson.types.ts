@@ -37,7 +37,6 @@ export interface LessonBulkUpdatePayload {
 
 export interface LessonReorderPayload {
   grade: number;
-  subject_name: string;
   subject_code: string;
   mode: 'insert' | 'swap';
   ordered_ids: bigint[];

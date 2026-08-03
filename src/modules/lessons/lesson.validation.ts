@@ -1,5 +1,4 @@
 import ApiError from '../../utils/ApiError';
-import { resolveSubject, resolveSubjectCode } from './lesson.constants';
 import {
   LessonBulkUpdatePayload,
   LessonExportQuery,
@@ -184,10 +183,10 @@ export const validateLessonPayload = (body: any, isUpdate = false): Partial<Less
 
   if (!isUpdate || body.grade !== undefined) payload.grade = requiredInteger(body.grade, 'grade');
   if (!isUpdate || body.subject_name !== undefined) {
-    const subjectName = requiredString(body.subject_name, 'subject_name', 100);
-    const subject = resolveSubject(subjectName);
-    payload.subject_name = subject?.subject_name ?? subjectName;
-    payload.subject_code = subject?.subject_code ?? '';
+    payload.subject_name = requiredString(body.subject_name, 'subject_name', 100);
+  }
+  if (!isUpdate || body.subject_code !== undefined) {
+    payload.subject_code = requiredString(body.subject_code, 'subject_code', 100);
   }
   if (body.learn_number !== undefined) payload.learn_number = requiredInteger(body.learn_number, 'learn_number');
   if (!isUpdate || body.lesson_name !== undefined) payload.lesson_name = requiredString(body.lesson_name, 'lesson_name', 400);
@@ -240,8 +239,7 @@ export const validateLessonReorderPayload = (body: any): LessonReorderPayload =>
   const grade = requiredInteger(body.grade, 'grade');
   if (grade < 1 || grade > 12) throw new ApiError('grade phải nằm trong khoảng 1-12', 400);
 
-  const subjectName = requiredString(body.subject_name, 'subject_name', 100);
-  const subjectCode = resolveSubjectCode(subjectName) ?? '';
+  const subjectCode = requiredString(body.subject_code, 'subject_code', 100);
 
   const orderedIds = validateLessonIds(body.ordered_ids);
   const mode = stringOrUndefined(body.mode) ?? 'insert';
@@ -251,7 +249,6 @@ export const validateLessonReorderPayload = (body: any): LessonReorderPayload =>
 
   return {
     grade,
-    subject_name: subjectName,
     subject_code: subjectCode,
     mode,
     ordered_ids: orderedIds,
@@ -273,8 +270,9 @@ export const validateLessonImportRows = (rows: Record<string, unknown>[]) => {
 
     const subjectName = valueToString(row.subject_name);
     if (!subjectName) addError('subject_name', 'Vui lòng cung cấp Subject');
-    const subject = subjectName ? resolveSubject(subjectName) : undefined;
-    if (subjectName && !subject) addError('subject_name', 'Subject không hợp lệ');
+    const subjectCode = valueToString(row.subject_code);
+    if (!subjectCode) addError('subject_code', 'Vui lòng cung cấp Subject Code');
+    if (subjectCode && subjectCode.length > 100) addError('subject_code', 'Subject Code không được vượt quá 100 ký tự');
 
     const learnNumber = optionalInteger(row.learn_number, 'learn_number');
     if (learnNumber !== undefined && learnNumber <= 0) addError('learn_number', 'Learn Number phải lớn hơn 0');
@@ -297,8 +295,8 @@ export const validateLessonImportRows = (rows: Record<string, unknown>[]) => {
       addError('lesson_document', error.message || 'Lesson Document không hợp lệ');
     }
 
-    if (grade !== undefined && subject && learnNumber !== undefined) {
-      const key = `${grade}|${subject.subject_code}|${learnNumber}`;
+    if (grade !== undefined && subjectCode && learnNumber !== undefined) {
+      const key = `${grade}|${subjectCode}|${learnNumber}`;
       if (seenKeys.has(key)) addError('learn_number', 'Trùng Grade + Subject + Learn Number trong file import');
       seenKeys.add(key);
     }
@@ -308,7 +306,7 @@ export const validateLessonImportRows = (rows: Record<string, unknown>[]) => {
       grade >= 1 &&
       grade <= 12 &&
       subjectName &&
-      subject &&
+      subjectCode &&
       lessonName &&
       lessonName.length <= 400 &&
       lessonDocumentValid &&
@@ -319,8 +317,8 @@ export const validateLessonImportRows = (rows: Record<string, unknown>[]) => {
       validRows.push({
         row_number: rowNumber,
         grade,
-        subject_code: subject.subject_code,
-        subject_name: subject.subject_name,
+        subject_code: subjectCode,
+        subject_name: subjectName,
         learn_number: learnNumber,
         lesson_name: lessonName,
         lesson_document: lessonDocument,

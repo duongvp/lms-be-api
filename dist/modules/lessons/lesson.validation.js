@@ -5,7 +5,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.validateLessonImportRows = exports.validateLessonReorderPayload = exports.validateLessonBulkUpdatePayload = exports.validateLessonPayload = exports.validateLessonId = exports.validateLessonExportQuery = exports.validateLessonListQuery = void 0;
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
-const lesson_constants_1 = require("./lesson.constants");
 const SORTABLE_FIELDS = new Set([
     'id',
     'grade',
@@ -171,10 +170,10 @@ const validateLessonPayload = (body, isUpdate = false) => {
     if (!isUpdate || body.grade !== undefined)
         payload.grade = requiredInteger(body.grade, 'grade');
     if (!isUpdate || body.subject_name !== undefined) {
-        const subjectName = requiredString(body.subject_name, 'subject_name', 100);
-        const subject = (0, lesson_constants_1.resolveSubject)(subjectName);
-        payload.subject_name = subject?.subject_name ?? subjectName;
-        payload.subject_code = subject?.subject_code ?? '';
+        payload.subject_name = requiredString(body.subject_name, 'subject_name', 100);
+    }
+    if (!isUpdate || body.subject_code !== undefined) {
+        payload.subject_code = requiredString(body.subject_code, 'subject_code', 100);
     }
     if (body.learn_number !== undefined)
         payload.learn_number = requiredInteger(body.learn_number, 'learn_number');
@@ -231,8 +230,7 @@ const validateLessonReorderPayload = (body) => {
     const grade = requiredInteger(body.grade, 'grade');
     if (grade < 1 || grade > 12)
         throw new ApiError_1.default('grade phải nằm trong khoảng 1-12', 400);
-    const subjectName = requiredString(body.subject_name, 'subject_name', 100);
-    const subjectCode = (0, lesson_constants_1.resolveSubjectCode)(subjectName) ?? '';
+    const subjectCode = requiredString(body.subject_code, 'subject_code', 100);
     const orderedIds = validateLessonIds(body.ordered_ids);
     const mode = stringOrUndefined(body.mode) ?? 'insert';
     if (mode !== 'insert' && mode !== 'swap') {
@@ -240,7 +238,6 @@ const validateLessonReorderPayload = (body) => {
     }
     return {
         grade,
-        subject_name: subjectName,
         subject_code: subjectCode,
         mode,
         ordered_ids: orderedIds,
@@ -262,9 +259,11 @@ const validateLessonImportRows = (rows) => {
         const subjectName = valueToString(row.subject_name);
         if (!subjectName)
             addError('subject_name', 'Vui lòng cung cấp Subject');
-        const subject = subjectName ? (0, lesson_constants_1.resolveSubject)(subjectName) : undefined;
-        if (subjectName && !subject)
-            addError('subject_name', 'Subject không hợp lệ');
+        const subjectCode = valueToString(row.subject_code);
+        if (!subjectCode)
+            addError('subject_code', 'Vui lòng cung cấp Subject Code');
+        if (subjectCode && subjectCode.length > 100)
+            addError('subject_code', 'Subject Code không được vượt quá 100 ký tự');
         const learnNumber = optionalInteger(row.learn_number, 'learn_number');
         if (learnNumber !== undefined && learnNumber <= 0)
             addError('learn_number', 'Learn Number phải lớn hơn 0');
@@ -287,8 +286,8 @@ const validateLessonImportRows = (rows) => {
             lessonDocumentValid = false;
             addError('lesson_document', error.message || 'Lesson Document không hợp lệ');
         }
-        if (grade !== undefined && subject && learnNumber !== undefined) {
-            const key = `${grade}|${subject.subject_code}|${learnNumber}`;
+        if (grade !== undefined && subjectCode && learnNumber !== undefined) {
+            const key = `${grade}|${subjectCode}|${learnNumber}`;
             if (seenKeys.has(key))
                 addError('learn_number', 'Trùng Grade + Subject + Learn Number trong file import');
             seenKeys.add(key);
@@ -297,7 +296,7 @@ const validateLessonImportRows = (rows) => {
             grade >= 1 &&
             grade <= 12 &&
             subjectName &&
-            subject &&
+            subjectCode &&
             lessonName &&
             lessonName.length <= 400 &&
             lessonDocumentValid &&
@@ -307,8 +306,8 @@ const validateLessonImportRows = (rows) => {
             validRows.push({
                 row_number: rowNumber,
                 grade,
-                subject_code: subject.subject_code,
-                subject_name: subject.subject_name,
+                subject_code: subjectCode,
+                subject_name: subjectName,
                 learn_number: learnNumber,
                 lesson_name: lessonName,
                 lesson_document: lessonDocument,

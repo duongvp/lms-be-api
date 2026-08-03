@@ -121,10 +121,32 @@ const verifyCredentials = async (username, password) => {
     return verifyHocmaiCredentials(username, password);
 };
 const login = async (username, password, rememberMe = false) => {
-    const authenticatedUser = await verifyCredentials(username, password);
-    const user = await prisma.users.findFirst({
-        where: { username: authenticatedUser.username },
+    const findAuthorizedUser = (authorizedUsername) => prisma.users.findFirst({
+        where: {
+            username: authorizedUsername,
+            userRoles: {
+                some: { role: { isActive: true } },
+            },
+        },
+        orderBy: { id: 'asc' },
     });
+    const provider = (process.env.AUTH_PROVIDER || 'hocmai').trim().toLowerCase();
+    let user = await findAuthorizedUser(username);
+    let authenticatedUser;
+    if (provider === 'hocmai') {
+        authenticatedUser = await verifyCredentials(username, password);
+        user = await findAuthorizedUser(authenticatedUser.username);
+    }
+    else {
+        const temporaryPassword = process.env.ADMIN_DEFAULT_PASSWORD || '1';
+        if (!user || !safeEqual(password, temporaryPassword)) {
+            throw new ApiError_1.default('Tên đăng nhập hoặc mật khẩu không đúng', 401);
+        }
+        authenticatedUser = {
+            username: user.username,
+            fullName: user.name,
+        };
+    }
     if (!user) {
         throw new ApiError_1.default('Tài khoản không có quyền truy cập hệ thống quản trị', 403);
     }

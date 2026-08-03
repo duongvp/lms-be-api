@@ -80,6 +80,21 @@ export const findLessonSubjectOptions = async () => {
   );
 };
 
+export const findLessonProgramOptions = async () => {
+  return prisma.$queryRawUnsafe<Array<{
+    grade: number;
+    subject_name: string;
+    subject_code: string;
+  }>>(
+    `SELECT DISTINCT grade, subject_name, subject_code
+     FROM lessons
+     WHERE status <> 0
+       AND subject_code IS NOT NULL
+       AND TRIM(subject_code) <> ''
+     ORDER BY subject_name ASC, grade ASC, subject_code ASC`
+  );
+};
+
 export const findLessonsForExport = async (query: LessonExportQuery) => {
   if (query.ids?.length) {
     const placeholders = query.ids.map(() => '?').join(', ');

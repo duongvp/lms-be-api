@@ -18,6 +18,7 @@ const upload = (0, multer_1.default)({
 router.use(authenticate);
 router.get('/', authorize(['lessons.view']), lesson_controller_1.default.list);
 router.get('/options/subjects', authorize(['lessons.view']), lesson_controller_1.default.subjects);
+router.get('/options/programs', authorize(['lessons.view']), lesson_controller_1.default.programs);
 router.patch('/bulk', authorize(['lessons.update']), authorizeFields('lessons', (req) => Object.keys(req.body?.data || {})), lesson_controller_1.default.bulkUpdate);
 router.patch('/reorder', authorize(['lessons.update']), authorizeFields('lessons', () => ['learn_number']), lesson_controller_1.default.reorder);
 router.get('/export', authorize(['lessons.export']), lesson_controller_1.default.exportFile);

@@ -3,46 +3,163 @@ import ApiError from '../../utils/ApiError';
 
 const prisma = new PrismaClient();
 
+type UserListQuery = {
+    page: number;
+    limit: number;
+    keyword?: string;
+};
+
+type CreateAdminUserInput = {
+    username: string;
+    name: string;
+    email?: string | null;
+    phone?: string | null;
+    roleIds: number[];
+};
+
+const serializeUser = (user: any) => ({
+    id: user.id,
+    username: user.username,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    code: user.code,
+    learn_number: user.learn_number,
+    class_id: user.class_id,
+    room_id: user.room_id,
+    islearn: user.islearn,
+    created_at: user.created_at,
+    updated_at: user.updated_at,
+    is_active: true,
+    roles: user.userRoles.map((ur: any) => ({
+        role_id: Number(ur.role.id),
+        role_code: ur.role.code,
+        role_name: ur.role.name,
+    })),
+});
+
 const UserService = {
-    async getAllUsers() {
+    async createAdminUser(input: CreateAdminUserInput) {
+        const username = String(input.username || '').trim();
+        const name = String(input.name || '').trim();
+        const email = String(input.email || '').trim() || null;
+        const phone = String(input.phone || '').trim() || null;
+        const roleIds = Array.from(new Set(input.roleIds.map(Number)));
+
+        if (!username || username.length > 100) {
+            throw new ApiError('Tên đăng nhập không hợp lệ', 400);
+        }
+        if (!name || name.length > 150) {
+            throw new ApiError('Tên người dùng không hợp lệ', 400);
+        }
+        if (email && (email.length > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+            throw new ApiError('Email không hợp lệ', 400);
+        }
+        if (phone && phone.length > 20) {
+            throw new ApiError('Số điện thoại không được vượt quá 20 ký tự', 400);
+        }
+        if (!roleIds.length || roleIds.some((roleId) => !Number.isInteger(roleId) || roleId <= 0)) {
+            throw new ApiError('Vui lòng chọn ít nhất một vai trò hợp lệ', 400);
+        }
+
+        const userId = await prisma.$transaction(async (tx) => {
+            const roles = await tx.roles.findMany({
+                where: {
+                    id: { in: roleIds.map((roleId) => BigInt(roleId)) },
+                    isActive: true,
+                },
+                select: { id: true },
+            });
+            if (roles.length !== roleIds.length) {
+                throw new ApiError('Có vai trò không tồn tại hoặc đã ngừng hoạt động', 400);
+            }
+
+            let user = await tx.users.findFirst({
+                where: { username },
+                orderBy: [
+                    { code: 'asc' },
+                    { learn_number: 'asc' },
+                    { id: 'asc' },
+                ],
+                include: { userRoles: true },
+            });
+
+            if (user?.userRoles.length) {
+                throw new ApiError('Tài khoản này đã được gán vai trò quản trị', 400);
+            }
+
+            if (!user) {
+                user = await tx.users.create({
+                    data: {
+                        username,
+                        name,
+                        email,
+                        phone,
+                        code: '',
+                        learn_number: 0,
+                        islearn: 0,
+                    },
+                    include: { userRoles: true },
+                });
+            }
+
+            await tx.userRoles.createMany({
+                data: roleIds.map((roleId) => ({
+                    userId: user!.id,
+                    roleId: BigInt(roleId),
+                })),
+                skipDuplicates: true,
+            });
+
+            return user.id;
+        });
+
+        return this.getUserById(userId);
+    },
+
+    async getAllUsers({ page, limit, keyword }: UserListQuery) {
         try {
-            const users = await prisma.users.findMany({
-                include: {
-                    userRoles: {
-                        include: {
-                            role: {
-                                select: {
-                                    id: true,
-                                    code: true,
-                                    name: true,
+            const where: Prisma.usersWhereInput = {
+                userRoles: { some: {} },
+                ...(keyword
+                    ? {
+                    OR: [
+                        { username: { contains: keyword } },
+                        { name: { contains: keyword } },
+                        { email: { contains: keyword } },
+                    ],
+                    }
+                    : {}),
+            };
+            const [users, total] = await Promise.all([
+                prisma.users.findMany({
+                    where,
+                    skip: (page - 1) * limit,
+                    take: limit,
+                    include: {
+                        userRoles: {
+                            include: {
+                                role: {
+                                    select: {
+                                        id: true,
+                                        code: true,
+                                        name: true,
+                                    },
                                 },
                             },
                         },
                     },
-                },
-                orderBy: { id: 'asc' },
-            });
+                    orderBy: { id: 'asc' },
+                }),
+                prisma.users.count({ where }),
+            ]);
 
-            return users.map((user) => ({
-                id: user.id,
-                username: user.username,
-                name: user.name,
-                email: user.email,
-                phone: user.phone,
-                code: user.code,
-                learn_number: user.learn_number,
-                class_id: user.class_id,
-                room_id: user.room_id,
-                islearn: user.islearn,
-                created_at: user.created_at,
-                updated_at: user.updated_at,
-                is_active: true,
-                roles: user.userRoles.map((ur) => ({
-                    role_id: Number(ur.role.id),   // BigInt -> number
-                    role_code: ur.role.code,
-                    role_name: ur.role.name,
-                })),
-            }));
+            return {
+                data: users.map(serializeUser),
+                total,
+                page,
+                limit,
+            };
         } catch (error) {
             throw new ApiError('Failed to fetch users', 500);
         }
@@ -71,25 +188,7 @@ const UserService = {
                 throw new ApiError('User not found', 404);
             }
 
-            return {
-                id: user.id,
-                username: user.username,
-                name: user.name,
-                email: user.email,
-                phone: user.phone,
-                code: user.code,
-                learn_number: user.learn_number,
-                class_id: user.class_id,
-                room_id: user.room_id,
-                islearn: user.islearn,
-                created_at: user.created_at,
-                updated_at: user.updated_at,
-                roles: user.userRoles.map((ur) => ({
-                    role_id: Number(ur.role.id),
-                    role_code: ur.role.code,
-                    role_name: ur.role.name,
-                })),
-            };
+            return serializeUser(user);
         } catch (error) {
             if (error instanceof ApiError) throw error;
             throw new ApiError('Failed to fetch user', 500);

@@ -8,6 +8,15 @@ const user_controller_1 = __importDefault(require("./user.controller"));
 const auth_1 = require("../auth"); // giả định đường dẫn đúng
 const router = (0, express_1.Router)();
 const { authenticate, authorize, authorizeFields } = auth_1.authMiddleware;
+const authorizeAdmin = (req, res, next) => {
+    if (!req.user?.roles?.includes('admin')) {
+        return res.status(403).json({
+            success: false,
+            message: 'Chỉ tài khoản admin được phép tạo tài khoản quản trị',
+        });
+    }
+    next();
+};
 const authorizeRoleAssignment = (req, res, next) => {
     if (req.body?.roleIds !== undefined
         && !req.user?.roles?.includes('admin')) {
@@ -38,6 +47,7 @@ router.use(authenticate);
  *         description: Thành công
  */
 router.get('/', authorize(['users.view']), user_controller_1.default.getAllUsers);
+router.post('/', authorize(['users.create']), authorizeAdmin, user_controller_1.default.createUser);
 /**
  * @swagger
  * /api/users/{id}:

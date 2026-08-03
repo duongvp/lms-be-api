@@ -68,6 +68,18 @@ export const findLessons = async (query: LessonListQuery) => {
   };
 };
 
+export const findLessonSubjectOptions = async () => {
+  return prisma.$queryRawUnsafe<Array<{ subject_name: string; subject_code: string }>>(
+    `SELECT subject_name, MIN(subject_code) AS subject_code
+     FROM lessons
+     WHERE status <> 0
+       AND subject_name IS NOT NULL
+       AND TRIM(subject_name) <> ''
+     GROUP BY subject_name
+     ORDER BY subject_name ASC`
+  );
+};
+
 export const findLessonsForExport = async (query: LessonExportQuery) => {
   if (query.ids?.length) {
     const placeholders = query.ids.map(() => '?').join(', ');

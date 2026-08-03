@@ -7,6 +7,7 @@ import {
   exportLessons,
   getLessonImportTemplate,
   getLessonDetail,
+  getLessonSubjects,
   getLessons,
   importLessonRows,
   reorderExistingLessons,
@@ -38,6 +39,14 @@ const list = async (req: Request, res: Response) => {
       result.data as any[]
     );
     return SuccessResponse(res, 'Success', { ...result, data });
+  } catch (error: any) {
+    return ErrorResponse(res, error.message, error.statusCode || 400);
+  }
+};
+
+const subjects = async (_req: Request, res: Response) => {
+  try {
+    return SuccessResponse(res, 'Success', await getLessonSubjects());
   } catch (error: any) {
     return ErrorResponse(res, error.message, error.statusCode || 400);
   }
@@ -168,6 +177,7 @@ const remove = async (req: Request, res: Response) => {
 
 export default {
   list,
+  subjects,
   detail,
   create,
   update,

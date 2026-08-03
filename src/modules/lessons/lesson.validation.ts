@@ -186,9 +186,8 @@ export const validateLessonPayload = (body: any, isUpdate = false): Partial<Less
   if (!isUpdate || body.subject_name !== undefined) {
     const subjectName = requiredString(body.subject_name, 'subject_name', 100);
     const subject = resolveSubject(subjectName);
-    if (!subject) throw new ApiError('Môn học không hợp lệ', 400);
-    payload.subject_name = subject.subject_name;
-    payload.subject_code = subject.subject_code;
+    payload.subject_name = subject?.subject_name ?? subjectName;
+    payload.subject_code = subject?.subject_code ?? '';
   }
   if (body.learn_number !== undefined) payload.learn_number = requiredInteger(body.learn_number, 'learn_number');
   if (!isUpdate || body.lesson_name !== undefined) payload.lesson_name = requiredString(body.lesson_name, 'lesson_name', 400);
@@ -242,8 +241,7 @@ export const validateLessonReorderPayload = (body: any): LessonReorderPayload =>
   if (grade < 1 || grade > 12) throw new ApiError('grade phải nằm trong khoảng 1-12', 400);
 
   const subjectName = requiredString(body.subject_name, 'subject_name', 100);
-  const subjectCode = resolveSubjectCode(subjectName);
-  if (!subjectCode) throw new ApiError('Môn học không hợp lệ', 400);
+  const subjectCode = resolveSubjectCode(subjectName) ?? '';
 
   const orderedIds = validateLessonIds(body.ordered_ids);
   const mode = stringOrUndefined(body.mode) ?? 'insert';

@@ -357,6 +357,17 @@ const ensureNotBeforeDate = (value: Date, minDate: Date, message: string) => {
   }
 };
 
+const ensureAfterStartOnSameDate = (value: Date, previousStart: Date) => {
+  if (
+    startOfDay(value).getTime() === startOfDay(previousStart).getTime()
+    && value <= previousStart
+  ) {
+    throw new Error(
+      `Nếu chọn ngày cuối khóa, giờ bắt đầu phải sau ${String(previousStart.getHours()).padStart(2, '0')}:${String(previousStart.getMinutes()).padStart(2, '0')}`
+    );
+  }
+};
+
 export const isSessionModifiable = (session: any, now = new Date()) => {
   if (Number(session.lesson_status) === 1) return false;
 
@@ -944,14 +955,16 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any) => {
       code: current.code,
       system_type: current.system_type,
     },
-    orderBy: [{ end_time: 'desc' }, { id: 'desc' }],
-    select: { end_time: true },
+    orderBy: [{ start_time: 'desc' }, { id: 'desc' }],
+    select: { start_time: true },
   });
+  const lastCourseStart = lastCourseSession?.start_time ?? current.start_time;
   ensureNotBeforeDate(
     startTime,
-    lastCourseSession?.end_time ?? current.end_time,
+    lastCourseStart,
     "Ngày buổi mới không được trước ngày kết thúc khóa"
   );
+  ensureAfterStartOnSameDate(startTime, lastCourseStart);
 
   const followings = await tx.calendar.findMany({
     where: {

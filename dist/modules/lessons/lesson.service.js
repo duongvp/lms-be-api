@@ -3,16 +3,51 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importLessonRows = exports.validateLessonImportSequence = exports.getLessonImportTemplate = exports.exportLessons = exports.reorderExistingLessons = exports.bulkUpdateExistingLessons = exports.deleteExistingLesson = exports.updateExistingLesson = exports.createNewLesson = exports.getLessonDetail = exports.getLessons = void 0;
+exports.importLessonRows = exports.validateLessonImportSequence = exports.getLessonImportTemplate = exports.exportLessons = exports.reorderExistingLessons = exports.bulkUpdateExistingLessons = exports.deleteExistingLesson = exports.updateExistingLesson = exports.createNewLesson = exports.getLessonDetail = exports.getLessonSubjects = exports.getLessons = void 0;
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const serializer_1 = require("../../lib/serializer");
 const lesson_repository_1 = require("./lesson.repository");
+const lesson_constants_1 = require("./lesson.constants");
 const lesson_io_1 = require("./lesson.io");
 const getLessons = async (query) => {
     const result = await (0, lesson_repository_1.findLessons)(query);
     return (0, serializer_1.serializeBigInt)(result);
 };
 exports.getLessons = getLessons;
+const getLessonSubjects = async () => {
+    const databaseSubjects = await (0, lesson_repository_1.findLessonSubjectOptions)();
+    const seen = new Set();
+    return [...lesson_constants_1.SUBJECT_OPTIONS, ...databaseSubjects]
+        .filter((subject) => {
+        const key = (0, lesson_constants_1.normalizeSubject)(subject.subject_name);
+        if (!key || seen.has(key))
+            return false;
+        seen.add(key);
+        return true;
+    })
+        .map((subject) => ({
+        subject_name: String(subject.subject_name).trim(),
+        subject_code: String(subject.subject_code).trim(),
+    }));
+};
+exports.getLessonSubjects = getLessonSubjects;
+const resolveDatabaseSubject = async (subjectName) => {
+    const normalizedName = (0, lesson_constants_1.normalizeSubject)(subjectName);
+    const subject = (await (0, exports.getLessonSubjects)()).find((item) => ((0, lesson_constants_1.normalizeSubject)(item.subject_name) === normalizedName));
+    if (!subject)
+        throw new ApiError_1.default('Môn học không tồn tại trong danh sách bài học', 400);
+    return subject;
+};
+const resolvePayloadSubject = async (payload) => {
+    if (!payload.subject_name || payload.subject_code)
+        return payload;
+    const subject = await resolveDatabaseSubject(payload.subject_name);
+    return {
+        ...payload,
+        subject_name: subject.subject_name,
+        subject_code: subject.subject_code,
+    };
+};
 const getLessonDetail = async (id) => {
     const lesson = await (0, lesson_repository_1.findLessonById)(id);
     if (!lesson)
@@ -21,6 +56,7 @@ const getLessonDetail = async (id) => {
 };
 exports.getLessonDetail = getLessonDetail;
 const createNewLesson = async (payload) => {
+    payload = await resolvePayloadSubject(payload);
     if (payload.learn_number !== undefined) {
         const existing = await (0, lesson_repository_1.findLessonByIdentity)(payload.grade, payload.subject_code, payload.learn_number);
         if (existing) {
@@ -39,6 +75,7 @@ const createNewLesson = async (payload) => {
 };
 exports.createNewLesson = createNewLesson;
 const updateExistingLesson = async (id, payload) => {
+    payload = await resolvePayloadSubject(payload);
     const current = await (0, lesson_repository_1.findLessonById)(id);
     if (!current)
         throw new ApiError_1.default('Lesson not found', 404);
@@ -60,6 +97,7 @@ const deleteExistingLesson = async (id) => {
 };
 exports.deleteExistingLesson = deleteExistingLesson;
 const bulkUpdateExistingLessons = async ({ ids, data }) => {
+    data = await resolvePayloadSubject(data);
     const lessons = await Promise.all(ids.map((id) => (0, lesson_repository_1.findLessonById)(id)));
     if (lessons.some((lesson) => !lesson)) {
         throw new ApiError_1.default('Có bài học không tồn tại hoặc đã bị xóa', 404);
@@ -68,6 +106,7 @@ const bulkUpdateExistingLessons = async ({ ids, data }) => {
 };
 exports.bulkUpdateExistingLessons = bulkUpdateExistingLessons;
 const reorderExistingLessons = async (payload) => {
+    payload = await resolvePayloadSubject(payload);
     const lessons = await (0, lesson_repository_1.findLessonsByGroup)(payload.grade, payload.subject_code);
     const activeIds = lessons.map((lesson) => String(lesson.id));
     const orderedIds = payload.ordered_ids.map((id) => String(id));

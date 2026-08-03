@@ -12,7 +12,7 @@ export const SUBJECT_OPTIONS = [
   { subject_name: 'Công nghệ', subject_code: 'CONGNGHE' },
 ];
 
-const normalizeSubject = (value: string) => value
+export const normalizeSubject = (value: string) => value
   .trim()
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '')

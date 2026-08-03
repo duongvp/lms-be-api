@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.softDeleteLesson = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.findLessons = void 0;
+exports.softDeleteLesson = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.findLessonSubjectOptions = exports.findLessons = void 0;
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const buildWhere = (query) => {
     const clauses = ['status = ?'];
@@ -59,6 +59,16 @@ const findLessons = async (query) => {
     };
 };
 exports.findLessons = findLessons;
+const findLessonSubjectOptions = async () => {
+    return prisma_1.default.$queryRawUnsafe(`SELECT subject_name, MIN(subject_code) AS subject_code
+     FROM lessons
+     WHERE status <> 0
+       AND subject_name IS NOT NULL
+       AND TRIM(subject_name) <> ''
+     GROUP BY subject_name
+     ORDER BY subject_name ASC`);
+};
+exports.findLessonSubjectOptions = findLessonSubjectOptions;
 const findLessonsForExport = async (query) => {
     if (query.ids?.length) {
         const placeholders = query.ids.map(() => '?').join(', ');

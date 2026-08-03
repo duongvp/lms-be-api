@@ -173,10 +173,8 @@ const validateLessonPayload = (body, isUpdate = false) => {
     if (!isUpdate || body.subject_name !== undefined) {
         const subjectName = requiredString(body.subject_name, 'subject_name', 100);
         const subject = (0, lesson_constants_1.resolveSubject)(subjectName);
-        if (!subject)
-            throw new ApiError_1.default('Môn học không hợp lệ', 400);
-        payload.subject_name = subject.subject_name;
-        payload.subject_code = subject.subject_code;
+        payload.subject_name = subject?.subject_name ?? subjectName;
+        payload.subject_code = subject?.subject_code ?? '';
     }
     if (body.learn_number !== undefined)
         payload.learn_number = requiredInteger(body.learn_number, 'learn_number');
@@ -234,9 +232,7 @@ const validateLessonReorderPayload = (body) => {
     if (grade < 1 || grade > 12)
         throw new ApiError_1.default('grade phải nằm trong khoảng 1-12', 400);
     const subjectName = requiredString(body.subject_name, 'subject_name', 100);
-    const subjectCode = (0, lesson_constants_1.resolveSubjectCode)(subjectName);
-    if (!subjectCode)
-        throw new ApiError_1.default('Môn học không hợp lệ', 400);
+    const subjectCode = (0, lesson_constants_1.resolveSubjectCode)(subjectName) ?? '';
     const orderedIds = validateLessonIds(body.ordered_ids);
     const mode = stringOrUndefined(body.mode) ?? 'insert';
     if (mode !== 'insert' && mode !== 'swap') {

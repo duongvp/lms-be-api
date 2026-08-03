@@ -5,6 +5,7 @@ import {
   createLesson,
   findLessonByIdentity,
   findLessonById,
+  findLessonSubjectOptions,
   findLessons,
   findLessonsForExport,
   findLessonsByGroup,
@@ -13,6 +14,7 @@ import {
   softDeleteLesson,
   updateLesson,
 } from './lesson.repository';
+import { normalizeSubject, SUBJECT_OPTIONS } from './lesson.constants';
 import {
   LessonBulkUpdatePayload,
   LessonExportQuery,
@@ -34,6 +36,42 @@ export const getLessons = async (query: LessonListQuery) => {
   return serializeBigInt(result);
 };
 
+export const getLessonSubjects = async () => {
+  const databaseSubjects = await findLessonSubjectOptions();
+  const seen = new Set<string>();
+
+  return [...SUBJECT_OPTIONS, ...databaseSubjects]
+    .filter((subject) => {
+      const key = normalizeSubject(subject.subject_name);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((subject) => ({
+      subject_name: String(subject.subject_name).trim(),
+      subject_code: String(subject.subject_code).trim(),
+    }));
+};
+
+const resolveDatabaseSubject = async (subjectName: string) => {
+  const normalizedName = normalizeSubject(subjectName);
+  const subject = (await getLessonSubjects()).find((item) => (
+    normalizeSubject(item.subject_name) === normalizedName
+  ));
+  if (!subject) throw new ApiError('Môn học không tồn tại trong danh sách bài học', 400);
+  return subject;
+};
+
+const resolvePayloadSubject = async <T extends Partial<LessonPayload>>(payload: T): Promise<T> => {
+  if (!payload.subject_name || payload.subject_code) return payload;
+  const subject = await resolveDatabaseSubject(payload.subject_name);
+  return {
+    ...payload,
+    subject_name: subject.subject_name,
+    subject_code: subject.subject_code,
+  };
+};
+
 export const getLessonDetail = async (id: bigint) => {
   const lesson = await findLessonById(id);
   if (!lesson) throw new ApiError('Lesson not found', 404);
@@ -41,6 +79,7 @@ export const getLessonDetail = async (id: bigint) => {
 };
 
 export const createNewLesson = async (payload: LessonPayload) => {
+  payload = await resolvePayloadSubject(payload);
   if (payload.learn_number !== undefined) {
     const existing = await findLessonByIdentity(payload.grade, payload.subject_code, payload.learn_number);
     if (existing) {
@@ -59,6 +98,7 @@ export const createNewLesson = async (payload: LessonPayload) => {
 };
 
 export const updateExistingLesson = async (id: bigint, payload: Partial<LessonPayload>) => {
+  payload = await resolvePayloadSubject(payload);
   const current = await findLessonById(id);
   if (!current) throw new ApiError('Lesson not found', 404);
 
@@ -80,6 +120,7 @@ export const deleteExistingLesson = async (id: bigint) => {
 };
 
 export const bulkUpdateExistingLessons = async ({ ids, data }: LessonBulkUpdatePayload) => {
+  data = await resolvePayloadSubject(data);
   const lessons = await Promise.all(ids.map((id) => findLessonById(id)));
   if (lessons.some((lesson) => !lesson)) {
     throw new ApiError('Có bài học không tồn tại hoặc đã bị xóa', 404);
@@ -89,6 +130,7 @@ export const bulkUpdateExistingLessons = async ({ ids, data }: LessonBulkUpdateP
 };
 
 export const reorderExistingLessons = async (payload: LessonReorderPayload) => {
+  payload = await resolvePayloadSubject(payload);
   const lessons = await findLessonsByGroup(payload.grade, payload.subject_code);
   const activeIds = lessons.map((lesson) => String(lesson.id));
   const orderedIds = payload.ordered_ids.map((id) => String(id));

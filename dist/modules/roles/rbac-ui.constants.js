@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.RBAC_MENU_LABELS = exports.RBAC_FIELD_MODULE_CODES = exports.RBAC_MENU_MODULE_CODES = exports.RBAC_MENU_MODULES = void 0;
 exports.RBAC_MENU_MODULES = [
     { code: 'lessons', label: 'Quản lý nội dung' },
+    { code: 'quiz', label: 'Quản lý câu hỏi' },
     { code: 'calendar', label: 'Quản lý lịch học' },
     { code: 'teacher_profile', label: 'Giáo viên & Trợ giảng' },
     { code: 'users', label: 'Quản trị viên' },

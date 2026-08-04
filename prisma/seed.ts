@@ -21,7 +21,7 @@ async function main() {
     { code: 'users', name: 'Quản lý người dùng' },
     { code: 'calendar', name: 'Lịch học' },
     { code: 'lessons', name: 'Nội dung bài học' },
-    { code: 'quiz', name: 'Bài kiểm tra' },
+    { code: 'quiz', name: 'Quản lý câu hỏi' },
     { code: 'logs', name: 'Nhật ký truy cập' },
     { code: 'stream', name: 'Livestream' },
     { code: 'teacher', name: 'Giáo viên' },
@@ -90,14 +90,19 @@ async function main() {
 
     // Quiz
     { moduleCode: 'quiz', fieldCode: 'id', fieldLabel: 'ID', fieldType: 'number', sortOrder: 1 },
-    { moduleCode: 'quiz', fieldCode: 'quiz_id', fieldLabel: 'Mã bài kiểm tra', fieldType: 'text', sortOrder: 2 },
+    { moduleCode: 'quiz', fieldCode: 'quiz_id', fieldLabel: 'Mã câu hỏi', fieldType: 'text', sortOrder: 2 },
     { moduleCode: 'quiz', fieldCode: 'code', fieldLabel: 'Mã lớp', fieldType: 'text', sortOrder: 3 },
     { moduleCode: 'quiz', fieldCode: 'learn_number', fieldLabel: 'Buổi học', fieldType: 'number', sortOrder: 4 },
-    { moduleCode: 'quiz', fieldCode: 'quiz_name', fieldLabel: 'Tên bài kiểm tra', fieldType: 'text', sortOrder: 5 },
-    { moduleCode: 'quiz', fieldCode: 'quiz_type', fieldLabel: 'Loại', fieldType: 'number', sortOrder: 6 },
-    { moduleCode: 'quiz', fieldCode: 'score_type', fieldLabel: 'Cách tính điểm', fieldType: 'number', sortOrder: 7 },
-    { moduleCode: 'quiz', fieldCode: 'ans_duration', fieldLabel: 'Thời gian làm bài (phút)', fieldType: 'number', sortOrder: 8 },
-    { moduleCode: 'quiz', fieldCode: 'quiz_status', fieldLabel: 'Trạng thái', fieldType: 'text', sortOrder: 9 },
+    { moduleCode: 'quiz', fieldCode: 'quiz_name', fieldLabel: 'Nội dung câu hỏi', fieldType: 'text', sortOrder: 5 },
+    { moduleCode: 'quiz', fieldCode: 'quiz_type', fieldLabel: 'Loại câu hỏi', fieldType: 'number', sortOrder: 6 },
+    { moduleCode: 'quiz', fieldCode: 'ans', fieldLabel: 'Đáp án', fieldType: 'json', sortOrder: 7 },
+    { moduleCode: 'quiz', fieldCode: 'score_type', fieldLabel: 'Cách tính điểm', fieldType: 'number', sortOrder: 8 },
+    { moduleCode: 'quiz', fieldCode: 'ans_duration', fieldLabel: 'Thời gian trả lời (giây)', fieldType: 'number', sortOrder: 9 },
+    { moduleCode: 'quiz', fieldCode: 'quiz_status', fieldLabel: 'Trạng thái', fieldType: 'select', sortOrder: 10 },
+    { moduleCode: 'quiz', fieldCode: 'quiz_index', fieldLabel: 'Thứ tự', fieldType: 'number', sortOrder: 11 },
+    { moduleCode: 'quiz', fieldCode: 'creator', fieldLabel: 'Người tạo', fieldType: 'text', sortOrder: 12 },
+    { moduleCode: 'quiz', fieldCode: 'created_at', fieldLabel: 'Ngày tạo', fieldType: 'datetime', sortOrder: 13 },
+    { moduleCode: 'quiz', fieldCode: 'updated_at', fieldLabel: 'Ngày cập nhật', fieldType: 'datetime', sortOrder: 14 },
 
     // Logs
     { moduleCode: 'logs', fieldCode: 'id', fieldLabel: 'ID', fieldType: 'number', sortOrder: 1 },
@@ -147,7 +152,11 @@ async function main() {
       where: {
         moduleId_fieldCode: { moduleId, fieldCode: field.fieldCode },
       },
-      update: {},
+      update: {
+        fieldLabel: field.fieldLabel,
+        fieldType: field.fieldType,
+        sortOrder: field.sortOrder,
+      },
       create: {
         moduleId,
         fieldCode: field.fieldCode,

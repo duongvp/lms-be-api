@@ -13,9 +13,12 @@ const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const prisma = new client_1.PrismaClient();
 const getRequiredSecret = (name) => {
     const value = process.env[name];
-    if (!value || value.length < 32) {
-        throw new ApiError_1.default(`${name} must be configured with at least 32 characters`, 503);
+    if (!value) {
+        throw new ApiError_1.default(`${name} is not configured`, 503);
     }
+    // if (!value || value.length < 32) {
+    //     throw new ApiError(`${name} must be configured with at least 32 characters`, 503);
+    // }
     return value;
 };
 const getTokenTtl = (name, fallback) => {

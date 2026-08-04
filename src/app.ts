@@ -8,6 +8,7 @@ import { moduleRoutes } from "./modules/modules";
 import { lessonRoutes } from "./modules/lessons";
 import packageCourseRoutes from "./modules/package-courses/package-course.routes";
 import { teacherProfileRoutes } from "./modules/teacher-profiles";
+import { quizRoutes } from "./modules/quizzes";
 import ApiError from "./utils/ApiError";
 
 
@@ -47,6 +48,7 @@ app.use("/api/modules", moduleRoutes);
 app.use("/api/lessons", lessonRoutes);
 app.use("/api/package-courses", packageCourseRoutes);
 app.use("/api/teacher-profiles", teacherProfileRoutes);
+app.use("/api/quizzes", quizRoutes);
 app.use("/livestreams", livestreamRoute);
 app.use("/api/auth", authRoutes)
 

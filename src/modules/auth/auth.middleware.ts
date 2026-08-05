@@ -104,6 +104,7 @@ const authenticate = async (
         }
       });
     });
+    const isAdmin = roles.some(role => role.code === 'admin');
 
     // Gắn user vào request
     req.user = {
@@ -112,7 +113,7 @@ const authenticate = async (
       username: user.username,
       roleIds: roles.map(r => r.id.toString()),
       roles: roles.map(r => r.code),
-      permissions: Array.from(permissionsMap.keys())
+      permissions: isAdmin ? ['*'] : Array.from(permissionsMap.keys())
     };
 
     next();
@@ -138,11 +139,13 @@ const authorize = (requiredPermissions: string[] = []) => {
 
       if (requiredPermissions.length > 0) {
         const userPerms = req.user.permissions || [];
-        const hasPermission = requiredPermissions.some(p => userPerms.includes(p));
+        const hasPermission = userPerms.includes('*')
+          || requiredPermissions.some(p => userPerms.includes(p));
 
         // Hoặc kiểm tra role nếu mảng required có chứa role cụ thể (ví dụ: 'admin')
         const userRoles = req.user.roles || [];
-        const hasRole = requiredPermissions.some(r => userRoles.includes(r));
+        const hasRole = userRoles.includes('admin')
+          || requiredPermissions.some(r => userRoles.includes(r));
 
         if (!hasPermission && !hasRole) {
           res.status(403).json({ success: false, message: 'Insufficient permissions' });

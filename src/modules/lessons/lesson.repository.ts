@@ -1,7 +1,9 @@
 import prisma from '../../lib/prisma';
 import { LessonExportQuery, LessonImportMode, LessonImportResult, LessonImportRow, LessonListQuery, LessonPayload } from './lesson.types';
 
-const syncCalendarFromLesson = async (tx: any, lessonId: bigint) => {
+const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => {
+  if (lessonIds.length === 0) return;
+  const placeholders = lessonIds.map(() => '?').join(', ');
   await tx.$executeRawUnsafe(
     `UPDATE calendar AS calendar_row
      INNER JOIN lessons AS lesson ON lesson.id = calendar_row.session_id
@@ -18,10 +20,13 @@ const syncCalendarFromLesson = async (tx: any, lessonId: bigint) => {
          calendar_row.lesson_luuy = lesson.lesson_luuy,
          calendar_row.lesson_ketqua = lesson.lesson_ketqua,
          calendar_row.updated_at = CURRENT_TIMESTAMP
-     WHERE lesson.id = ?`,
-    lessonId
+     WHERE lesson.id IN (${placeholders})`,
+    ...lessonIds
   );
 };
+
+const syncCalendarFromLesson = async (tx: any, lessonId: bigint) =>
+  syncCalendarsFromLessons(tx, [lessonId]);
 
 const buildWhere = (query: LessonListQuery) => {
   const clauses: string[] = ['status = ?'];
@@ -258,29 +263,48 @@ export const bulkUpdateLessons = async (ids: bigint[], payload: Partial<LessonPa
 export const reorderLessonsInGroup = async (
   grade: number,
   subjectCode: string,
-  orderedIds: bigint[]
+  orderedIds: bigint[],
+  learnNumbers: number[]
 ) => {
-  await prisma.$transaction(async (tx) => {
-    for (let index = 0; index < orderedIds.length; index += 1) {
-      await tx.$executeRawUnsafe(
-        'UPDATE lessons SET learn_number = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND grade = ? AND subject_code = ? AND status <> 0',
-        -(index + 1),
-        orderedIds[index],
-        grade,
-        subjectCode
-      );
-    }
+  if (orderedIds.length !== learnNumbers.length) {
+    throw new Error('Số lượng bài học và số thứ tự không khớp');
+  }
 
-    for (let index = 0; index < orderedIds.length; index += 1) {
-      await tx.$executeRawUnsafe(
-        'UPDATE lessons SET learn_number = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND grade = ? AND subject_code = ? AND status <> 0',
-        index + 1,
-        orderedIds[index],
-        grade,
-        subjectCode
-      );
-      await syncCalendarFromLesson(tx, orderedIds[index]);
-    }
+  await prisma.$transaction(async (tx) => {
+    const idPlaceholders = orderedIds.map(() => '?').join(', ');
+
+    // Tạm chuyển toàn bộ số hiện tại sang âm trong một câu lệnh để tránh
+    // vi phạm unique (grade, subject_code, learn_number) khi hoán đổi.
+    await tx.$executeRawUnsafe(
+      `UPDATE lessons
+       SET learn_number = -learn_number, updated_at = CURRENT_TIMESTAMP(3)
+       WHERE id IN (${idPlaceholders})
+         AND grade = ? AND subject_code = ? AND status <> 0`,
+      ...orderedIds,
+      grade,
+      subjectCode
+    );
+
+    const cases = orderedIds.map(() => 'WHEN ? THEN ?').join(' ');
+    const caseValues = orderedIds.flatMap((id, index) => [id, learnNumbers[index]]);
+    await tx.$executeRawUnsafe(
+      `UPDATE lessons
+       SET learn_number = CASE id ${cases} ELSE learn_number END,
+           updated_at = CURRENT_TIMESTAMP(3)
+       WHERE id IN (${idPlaceholders})
+         AND grade = ? AND subject_code = ? AND status <> 0`,
+      ...caseValues,
+      ...orderedIds,
+      grade,
+      subjectCode
+    );
+
+    // Một UPDATE JOIN vẫn kích hoạt trigger theo từng calendar row nhưng
+    // tránh N lượt round-trip khiến interactive transaction hết hạn.
+    await syncCalendarsFromLessons(tx, orderedIds);
+  }, {
+    maxWait: 5_000,
+    timeout: 30_000,
   });
 
   return findLessonsByGroup(grade, subjectCode);

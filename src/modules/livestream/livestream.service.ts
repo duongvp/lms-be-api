@@ -6,6 +6,10 @@ import {
   withManualHocmaiQueue,
 } from './hocmai-sync-queue.service';
 import { ResolvedCalendarImportRow } from './calendar-import.types';
+import {
+  enqueueCalendarTeamsNotification,
+  enqueueManyCalendarTeamsNotifications,
+} from '../teams-notifications';
 
 const prisma = new PrismaClient();
 
@@ -798,7 +802,7 @@ const checkConflict = async ({
 
 
 // 1.1. Thêm từng lịch
-export const createSingle = async (data: any) => {
+export const createSingle = async (data: any, changeActor?: CalendarChangeActor) => {
   const resolvedMappings = await resolvePackageLessonMappings(
     data?.package_lesson_mappings
   );
@@ -817,12 +821,17 @@ export const createSingle = async (data: any) => {
 
     const calendar = await createCalendarRecord(tx, calendarData);
     await createPackageLessonMappingForCalendar(tx, calendar, resolvedMappings);
+    await enqueueCalendarTeamsNotification(tx, {
+      eventType: 'created',
+      after: calendar,
+      actor: changeActor,
+    });
     return calendar;
   }));
 };
 
 // 1.2. Thêm nhiều lịch
-export const createBulk = async (config: any) => {
+export const createBulk = async (config: any, changeActor?: CalendarChangeActor) => {
   // We assume frontend sends fully constructed objects in an array "calendars"
   const { calendars } = config;
   if (!calendars || !Array.isArray(calendars)) {
@@ -865,6 +874,11 @@ export const createBulk = async (config: any) => {
           calendar,
           resolvedMappingsByIndex[index]
         );
+        await enqueueCalendarTeamsNotification(tx, {
+          eventType: 'created',
+          after: calendar,
+          actor: changeActor,
+        });
         createdCalendars.push(calendar);
       } catch (error: any) {
         const lessonLabel = cal.lesson_name ? ` (${cal.lesson_name})` : '';
@@ -877,7 +891,8 @@ export const createBulk = async (config: any) => {
 };
 
 export const createValidatedCalendarImport = async (
-  rows: ResolvedCalendarImportRow[]
+  rows: ResolvedCalendarImportRow[],
+  changeActor?: CalendarChangeActor
 ) => {
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error('Không có lịch hợp lệ để import');
@@ -906,6 +921,11 @@ export const createValidatedCalendarImport = async (
         });
         const calendar = await createCalendarRecord(tx, calendarData);
         await createPackageLessonMappingForCalendar(tx, calendar, row.mappings);
+        await enqueueCalendarTeamsNotification(tx, {
+          eventType: 'created',
+          after: calendar,
+          actor: changeActor,
+        });
         createdCalendars.push(calendar);
       } catch (error: any) {
         throw new Error(
@@ -1170,6 +1190,55 @@ export const rescheduleSession = async (
 
     await enqueueRescheduleSync(tx, action, result, operationId);
 
+    if (action === 'cancel') {
+      await enqueueCalendarTeamsNotification(tx, {
+        eventType: 'cancelled',
+        before: current,
+        after: result,
+        actor,
+        operationId,
+      });
+    } else if (action === 'makeup') {
+      await enqueueManyCalendarTeamsNotifications(tx, [
+        {
+          eventType: 'cancelled',
+          before: current,
+          after: result.canceled_session,
+          actor,
+          operationId,
+        },
+        {
+          eventType: 'created',
+          after: result.created_session,
+          actor,
+          operationId,
+        },
+      ]);
+    } else {
+      await enqueueManyCalendarTeamsNotifications(tx, [
+        {
+          eventType: 'cancelled',
+          before: current,
+          after: result.canceled_session,
+          actor,
+          operationId,
+        },
+        ...(result.shifted_sessions || []).map((session: any, index: number) => ({
+          eventType: 'updated' as const,
+          before: beforeFollowingSessions[index],
+          after: session,
+          actor,
+          operationId,
+        })),
+        {
+          eventType: 'created' as const,
+          after: result.created_session,
+          actor,
+          operationId,
+        },
+      ]);
+    }
+
     return result;
   })));
 };
@@ -1224,7 +1293,16 @@ export const updateSchedule = async (
     });
   }
 
-  return await withCalendarTriggerErrorHint(() => updateCalendarRecord(prisma, id, data));
+  return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
+    const updated = await updateCalendarRecord(tx, id, data);
+    await enqueueCalendarTeamsNotification(tx, {
+      eventType: 'updated',
+      before: current,
+      after: updated,
+      actor: changeActor,
+    });
+    return updated;
+  }));
 };
 
 // 2.3 Nghỉ không dời
@@ -1234,7 +1312,10 @@ export const cancelSession = async (
   changeActor?: CalendarChangeActor
 ) => rescheduleSession(id, { ...payload, mode: 'cancel' }, changeActor);
 
-export const deleteSession = async (id: number) =>
+export const deleteSession = async (
+  id: number,
+  changeActor?: CalendarChangeActor
+) =>
   withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
     const current = await tx.calendar.findUnique({ where: { id } });
     if (!current) throw new Error("Not found");
@@ -1246,7 +1327,13 @@ export const deleteSession = async (id: number) =>
       });
     }
 
-    return tx.calendar.delete({ where: { id } });
+    const deleted = await tx.calendar.delete({ where: { id } });
+    await enqueueCalendarTeamsNotification(tx, {
+      eventType: 'deleted',
+      before: current,
+      actor: changeActor,
+    });
+    return deleted;
   }));
 
 const CALENDAR_SYSTEM_TYPES = ['topclass', 'event', 'phaken', 'topuni'];
@@ -1525,7 +1612,10 @@ export const getCalendarRowsForExport = async (rawIds?: unknown) => {
 
 
 // Sửa nhiều lịch (Bulk Update)
-export const updateBulk = async (config: any) => {
+export const updateBulk = async (
+  config: any,
+  changeActor?: CalendarChangeActor
+) => {
   const { ids, config_mode, update_data } = config;
 
   if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -1596,6 +1686,12 @@ export const updateBulk = async (config: any) => {
             start_time: newStart,
             end_time: newEnd,
           });
+          await enqueueCalendarTeamsNotification(tx, {
+            eventType: 'updated',
+            before: current,
+            after: updated,
+            actor: changeActor,
+          });
           results.push(updated);
         }
         return results;
@@ -1610,11 +1706,18 @@ export const updateBulk = async (config: any) => {
         where: { id: { in: normalizedIds } },
       });
       sessions.forEach(assertCanUpdateSession);
-
-      return tx.calendar.updateMany({
-        where: { id: { in: normalizedIds } },
-        data: dataToUpdate,
-      });
+      const results = [];
+      for (const current of sessions) {
+        const updated = await updateCalendarRecord(tx, current.id, dataToUpdate);
+        await enqueueCalendarTeamsNotification(tx, {
+          eventType: 'updated',
+          before: current,
+          after: updated,
+          actor: changeActor,
+        });
+        results.push(updated);
+      }
+      return results;
     });
   }
 
@@ -1674,6 +1777,12 @@ export const updateBulk = async (config: any) => {
         });
 
         const updated = await updateCalendarRecord(tx, id, dataToUpdate);
+        await enqueueCalendarTeamsNotification(tx, {
+          eventType: 'updated',
+          before: current,
+          after: updated,
+          actor: changeActor,
+        });
         results.push(updated);
       }
       return results;

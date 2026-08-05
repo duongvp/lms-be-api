@@ -69,6 +69,27 @@ model calendar_change_logs {
   @@index([created_at], map: "idx_calendar_change_created")
 }
 
+model teams_notification_outbox {
+  id              BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  event_key       String    @db.VarChar(191)
+  destination     String    @db.VarChar(100)
+  event_type      String    @db.VarChar(30)
+  calendar_id     Int?      @db.UnsignedInt
+  payload         Json
+  status          Int       @default(0) @db.TinyInt
+  attempts        Int       @default(0)
+  next_attempt_at DateTime  @default(now()) @db.DateTime(3)
+  locked_at       DateTime? @db.DateTime(3)
+  sent_at         DateTime? @db.DateTime(3)
+  last_error      String?   @db.Text
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+  updated_at      DateTime  @default(now()) @updatedAt @db.DateTime(3)
+
+  @@unique([event_key, destination], map: "uq_teams_notification_event_destination")
+  @@index([status, next_attempt_at], map: "idx_teams_notification_dispatch")
+  @@index([calendar_id, created_at], map: "idx_teams_notification_calendar")
+}
+
 model lessons {
   id                BigInt   @id @default(autoincrement())
   grade             Int

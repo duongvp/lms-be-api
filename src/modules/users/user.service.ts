@@ -1,5 +1,7 @@
 import { PrismaClient, Prisma } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import ApiError from '../../utils/ApiError';
+import { getVietnamWallClockDate } from '../../utils/dateTime';
 
 const prisma = new PrismaClient();
 
@@ -62,57 +64,66 @@ const UserService = {
             throw new ApiError('Vui lòng chọn ít nhất một vai trò hợp lệ', 400);
         }
 
-        const userId = await prisma.$transaction(async (tx) => {
-            const roles = await tx.roles.findMany({
-                where: {
-                    id: { in: roleIds.map((roleId) => BigInt(roleId)) },
-                    isActive: true,
-                },
-                select: { id: true },
-            });
-            if (roles.length !== roleIds.length) {
-                throw new ApiError('Có vai trò không tồn tại hoặc đã ngừng hoạt động', 400);
-            }
+        let userId: number;
+        try {
+            userId = await prisma.$transaction(async (tx) => {
+                // Username có thể lặp trong bảng users theo code/learn_number.
+                // Chỉ chặn khi đã có bất kỳ user cùng username được gán role.
+                const assignedUser = await tx.userRoles.findFirst({
+                    where: { user: { username } },
+                    select: { userId: true },
+                });
+                if (assignedUser) {
+                    throw new ApiError('Tên đăng nhập đã được gán vai trò quản trị', 409);
+                }
 
-            let user = await tx.users.findFirst({
-                where: { username },
-                orderBy: [
-                    { code: 'asc' },
-                    { learn_number: 'asc' },
-                    { id: 'asc' },
-                ],
-                include: { userRoles: true },
-            });
+                const roles = await tx.roles.findMany({
+                    where: {
+                        id: { in: roleIds.map((roleId) => BigInt(roleId)) },
+                        isActive: true,
+                    },
+                    select: { id: true },
+                });
+                if (roles.length !== roleIds.length) {
+                    throw new ApiError('Có vai trò không tồn tại hoặc đã ngừng hoạt động', 400);
+                }
 
-            if (user?.userRoles.length) {
-                throw new ApiError('Tài khoản này đã được gán vai trò quản trị', 400);
-            }
-
-            if (!user) {
-                user = await tx.users.create({
+                // Luôn tạo một dòng quản trị độc lập. Code kỹ thuật riêng giúp
+                // không trùng khóa ghép và không đụng tới dòng học viên/gói bán.
+                const user = await tx.users.create({
                     data: {
                         username,
                         name,
                         email,
                         phone,
-                        code: '',
+                        code: `LMS_ADMIN_${randomUUID()}`,
                         learn_number: 0,
                         islearn: 0,
+                        created_at: getVietnamWallClockDate(),
+                        updated_at: getVietnamWallClockDate(),
                     },
-                    include: { userRoles: true },
                 });
-            }
 
-            await tx.userRoles.createMany({
-                data: roleIds.map((roleId) => ({
-                    userId: user!.id,
-                    roleId: BigInt(roleId),
-                })),
-                skipDuplicates: true,
+                await tx.userRoles.createMany({
+                    data: roleIds.map((roleId) => ({
+                        userId: user.id,
+                        roleId: BigInt(roleId),
+                    })),
+                    skipDuplicates: true,
+                });
+
+                return user.id;
             });
-
-            return user.id;
-        });
+        } catch (error) {
+            if (error instanceof ApiError) throw error;
+            if (
+                error instanceof Prisma.PrismaClientKnownRequestError
+                && error.code === 'P2002'
+            ) {
+                throw new ApiError('Không thể tạo người dùng do trùng khóa username/code/learn_number', 409);
+            }
+            throw error;
+        }
 
         return this.getUserById(userId);
     },
@@ -210,18 +221,26 @@ const UserService = {
             if (data.name !== undefined) updateData.name = data.name;
             if (data.email !== undefined) updateData.email = data.email;
             if (data.phone !== undefined) updateData.phone = data.phone;
-            // Username có thể cần unique, ta kiểm tra nếu có thay đổi
+            // Username được phép trùng trong users, nhưng không được trùng với
+            // một tài khoản quản trị khác đã có user_roles.
             if (data.username !== undefined && data.username !== existingUser.username) {
-                const duplicate = await prisma.users.findFirst({
-                    where: { username: data.username, id: { not: userId } },
+                const duplicate = await prisma.userRoles.findFirst({
+                    where: {
+                        userId: { not: userId },
+                        user: { username: data.username },
+                    },
                 });
-                if (duplicate) throw new ApiError('Username already exists', 400);
+                if (duplicate) {
+                    throw new ApiError('Tên đăng nhập đã được gán vai trò quản trị', 409);
+                }
                 updateData.username = data.username;
             }
             // Cập nhật các trường khác nếu có (islearn, class_id, room_id...)
             if (data.islearn !== undefined) updateData.islearn = data.islearn;
             if (data.class_id !== undefined) updateData.class_id = data.class_id;
             if (data.room_id !== undefined) updateData.room_id = data.room_id;
+            // users.updated_at chưa khai báo @updatedAt trong Prisma schema.
+            updateData.updated_at = getVietnamWallClockDate();
 
             // Cập nhật thông tin cơ bản
             const updatedUser = await prisma.users.update({
@@ -259,8 +278,50 @@ const UserService = {
         }
     },
 
-    // Tạm thời bỏ delete và toggle status do schema chưa có cột is_deleted/is_active
-    // Bạn có thể thêm vào schema nếu cần
+    async deleteAdminUser(userId: number, actorUserId: number) {
+        if (!Number.isInteger(userId) || userId <= 0) {
+            throw new ApiError('Người dùng không hợp lệ', 400);
+        }
+        if (userId === actorUserId) {
+            throw new ApiError('Không thể xóa tài khoản đang đăng nhập', 400);
+        }
+
+        return prisma.$transaction(async (tx) => {
+            const user = await tx.users.findUnique({
+                where: { id: userId },
+                select: {
+                    id: true,
+                    username: true,
+                    code: true,
+                    _count: { select: { userRoles: true } },
+                },
+            });
+            if (!user || user._count.userRoles === 0) {
+                throw new ApiError('Tài khoản quản trị không tồn tại', 404);
+            }
+
+            // Thu hồi toàn bộ phiên trước khi gỡ quyền/xóa tài khoản.
+            await tx.auth_sessions.deleteMany({ where: { user_id: userId } });
+            await tx.userRoles.deleteMany({ where: { userId } });
+
+            // Chỉ hard-delete dòng do màn quản trị tạo. Với dữ liệu cũ từng gán
+            // role vào dòng học viên, chỉ gỡ role để không ảnh hưởng gói bán.
+            const deletedUserRecord = user.code.startsWith('LMS_ADMIN_');
+            if (deletedUserRecord) {
+                await tx.users.delete({ where: { id: userId } });
+            }
+
+            return {
+                success: true,
+                deletedUserRecord,
+                message: deletedUserRecord
+                    ? `Đã xóa tài khoản '${user.username}'`
+                    : `Đã gỡ quyền quản trị của tài khoản '${user.username}'`,
+            };
+        });
+    },
+
+    // Chưa hỗ trợ toggle trạng thái do schema không có cột is_active.
 };
 
 export default UserService;

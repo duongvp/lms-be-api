@@ -5,7 +5,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteLessonIfUnscheduled = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = void 0;
 const prisma_1 = __importDefault(require("../../lib/prisma"));
-const syncCalendarFromLesson = async (tx, lessonId) => {
+const syncCalendarsFromLessons = async (tx, lessonIds) => {
+    if (lessonIds.length === 0)
+        return;
+    const placeholders = lessonIds.map(() => '?').join(', ');
     await tx.$executeRawUnsafe(`UPDATE calendar AS calendar_row
      INNER JOIN lessons AS lesson ON lesson.id = calendar_row.session_id
      SET calendar_row.learn_number = lesson.learn_number,
@@ -21,8 +24,9 @@ const syncCalendarFromLesson = async (tx, lessonId) => {
          calendar_row.lesson_luuy = lesson.lesson_luuy,
          calendar_row.lesson_ketqua = lesson.lesson_ketqua,
          calendar_row.updated_at = CURRENT_TIMESTAMP
-     WHERE lesson.id = ?`, lessonId);
+     WHERE lesson.id IN (${placeholders})`, ...lessonIds);
 };
+const syncCalendarFromLesson = async (tx, lessonId) => syncCalendarsFromLessons(tx, [lessonId]);
 const buildWhere = (query) => {
     const clauses = ['status = ?'];
     const values = [query.status ?? 1];
@@ -169,15 +173,31 @@ const bulkUpdateLessons = async (ids, payload) => {
     });
 };
 exports.bulkUpdateLessons = bulkUpdateLessons;
-const reorderLessonsInGroup = async (grade, subjectCode, orderedIds) => {
+const reorderLessonsInGroup = async (grade, subjectCode, orderedIds, learnNumbers) => {
+    if (orderedIds.length !== learnNumbers.length) {
+        throw new Error('Số lượng bài học và số thứ tự không khớp');
+    }
     await prisma_1.default.$transaction(async (tx) => {
-        for (let index = 0; index < orderedIds.length; index += 1) {
-            await tx.$executeRawUnsafe('UPDATE lessons SET learn_number = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND grade = ? AND subject_code = ? AND status <> 0', -(index + 1), orderedIds[index], grade, subjectCode);
-        }
-        for (let index = 0; index < orderedIds.length; index += 1) {
-            await tx.$executeRawUnsafe('UPDATE lessons SET learn_number = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND grade = ? AND subject_code = ? AND status <> 0', index + 1, orderedIds[index], grade, subjectCode);
-            await syncCalendarFromLesson(tx, orderedIds[index]);
-        }
+        const idPlaceholders = orderedIds.map(() => '?').join(', ');
+        // Tạm chuyển toàn bộ số hiện tại sang âm trong một câu lệnh để tránh
+        // vi phạm unique (grade, subject_code, learn_number) khi hoán đổi.
+        await tx.$executeRawUnsafe(`UPDATE lessons
+       SET learn_number = -learn_number, updated_at = CURRENT_TIMESTAMP(3)
+       WHERE id IN (${idPlaceholders})
+         AND grade = ? AND subject_code = ? AND status <> 0`, ...orderedIds, grade, subjectCode);
+        const cases = orderedIds.map(() => 'WHEN ? THEN ?').join(' ');
+        const caseValues = orderedIds.flatMap((id, index) => [id, learnNumbers[index]]);
+        await tx.$executeRawUnsafe(`UPDATE lessons
+       SET learn_number = CASE id ${cases} ELSE learn_number END,
+           updated_at = CURRENT_TIMESTAMP(3)
+       WHERE id IN (${idPlaceholders})
+         AND grade = ? AND subject_code = ? AND status <> 0`, ...caseValues, ...orderedIds, grade, subjectCode);
+        // Một UPDATE JOIN vẫn kích hoạt trigger theo từng calendar row nhưng
+        // tránh N lượt round-trip khiến interactive transaction hết hạn.
+        await syncCalendarsFromLessons(tx, orderedIds);
+    }, {
+        maxWait: 5_000,
+        timeout: 30_000,
     });
     return (0, exports.findLessonsByGroup)(grade, subjectCode);
 };

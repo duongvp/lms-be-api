@@ -18,7 +18,7 @@ const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => 
 export const createSingle = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     console.log(req.body);
-    const result = await livestreamService.createSingle(req.body);
+    const result = await livestreamService.createSingle(req.body, getChangeActor(req));
     res.status(201).json({ success: true, data: result });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
@@ -27,7 +27,7 @@ export const createSingle = async (req: Request, res: Response, next: NextFuncti
 
 export const createBulk = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const result = await livestreamService.createBulk(req.body);
+    const result = await livestreamService.createBulk(req.body, getChangeActor(req));
     res.status(201).json({ success: true, data: result });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
@@ -37,7 +37,7 @@ export const createBulk = async (req: Request, res: Response, next: NextFunction
 // Hàm mới: Cập nhật nhiều lịch học cùng lúc (Bulk Update)
 export const updateBulk = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const result = await livestreamService.updateBulk(req.body);
+    const result = await livestreamService.updateBulk(req.body, getChangeActor(req));
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
@@ -91,7 +91,7 @@ export const cancelSession = async (req: Request, res: Response, next: NextFunct
 export const deleteSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { id } = req.params;
-    const result = await livestreamService.deleteSession(Number(id));
+    const result = await livestreamService.deleteSession(Number(id), getChangeActor(req));
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
@@ -175,7 +175,7 @@ export const importFile = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    const result = await importCalendarFromSheet(importRows);
+    const result = await importCalendarFromSheet(importRows, getChangeActor(req));
     if (result.status === 'validation_error') {
       res.status(400).json({
         success: false,

@@ -86,6 +86,22 @@ export const updateExistingLesson = async (id: bigint, payload: Partial<LessonPa
   const current = await findLessonById(id);
   if (!current) throw new ApiError('Lesson not found', 404);
 
+  if (payload.grade !== undefined && Number(payload.grade) !== Number(current.grade)) {
+    throw new ApiError('Không thể thay đổi khối khi cập nhật bài học', 400);
+  }
+  if (
+    payload.subject_name !== undefined
+    && String(payload.subject_name).trim() !== String(current.subject_name).trim()
+  ) {
+    throw new ApiError('Không thể thay đổi môn học khi cập nhật bài học', 400);
+  }
+  if (
+    payload.subject_code !== undefined
+    && String(payload.subject_code).trim() !== String(current.subject_code).trim()
+  ) {
+    throw new ApiError('Không thể thay đổi mã môn học hoặc năm học khi cập nhật bài học', 400);
+  }
+
   const grade = payload.grade ?? current.grade;
   const subjectCode = payload.subject_code ?? current.subject_code;
   const learnNumber = payload.learn_number ?? current.learn_number;
@@ -133,7 +149,12 @@ export const reorderExistingLessons = async (payload: LessonReorderPayload) => {
     throw new ApiError('Danh sách sắp xếp không hợp lệ', 400);
   }
 
-  return serializeBigInt(await reorderLessonsInGroup(payload.grade, payload.subject_code, payload.ordered_ids));
+  return serializeBigInt(await reorderLessonsInGroup(
+    payload.grade,
+    payload.subject_code,
+    payload.ordered_ids,
+    lessons.map((lesson) => Number(lesson.learn_number))
+  ));
 };
 
 export const exportLessons = async (query: LessonExportQuery) => {

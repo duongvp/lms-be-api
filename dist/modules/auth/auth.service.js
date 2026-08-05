@@ -64,7 +64,12 @@ const loadUserAccess = async (userId) => {
         },
     });
     const roles = userRoles.map((item) => item.role);
-    const permissionCodes = Array.from(new Set(roles.flatMap((role) => role.rolePermissions.map((item) => item.permission.code))));
+    // Admin là superuser theo nghiệp vụ. Trả wildcard để quyền admin không bị
+    // thiếu khi hệ thống bổ sung permission mới nhưng dữ liệu gán quyền cũ
+    // chưa kịp đồng bộ.
+    const permissionCodes = roles.some((role) => role.code === 'admin')
+        ? ['*']
+        : Array.from(new Set(roles.flatMap((role) => role.rolePermissions.map((item) => item.permission.code))));
     return { user, roles, permissionCodes };
 };
 const generateTokens = (userId, sessionId, rememberMe) => {
@@ -111,7 +116,7 @@ const verifyCredentials = async (username, password) => {
     const provider = (process.env.AUTH_PROVIDER || 'hocmai').trim().toLowerCase();
     if (provider === 'mock') {
         const mockUsername = process.env.MOCK_AUTH_USERNAME || 'admin';
-        const mockPassword = process.env.MOCK_AUTH_PASSWORD || '1';
+        const mockPassword = process.env.MOCK_AUTH_PASSWORD || 'Hocmai@123';
         if (!safeEqual(username, mockUsername)
             || !safeEqual(password, mockPassword)) {
             throw new ApiError_1.default('Tên đăng nhập hoặc mật khẩu không đúng', 401);

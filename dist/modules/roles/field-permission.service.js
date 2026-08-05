@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
+const dateTime_1 = require("../../utils/dateTime");
 const rbac_ui_constants_1 = require("./rbac-ui.constants");
 const prisma = new client_1.PrismaClient();
 const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -159,7 +160,10 @@ const FieldPermissionService = {
         }
         const updatedRole = await prisma.roles.update({
             where: { id: BigInt(roleId) },
-            data: { fieldPolicy: normalizedPolicy },
+            data: {
+                fieldPolicy: normalizedPolicy,
+                updatedAt: (0, dateTime_1.getVietnamWallClockDate)(),
+            },
             select: {
                 id: true,
                 code: true,

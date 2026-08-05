@@ -48,7 +48,7 @@ const getChangeActor = (req) => ({
 const createSingle = async (req, res, next) => {
     try {
         console.log(req.body);
-        const result = await livestreamService.createSingle(req.body);
+        const result = await livestreamService.createSingle(req.body, getChangeActor(req));
         res.status(201).json({ success: true, data: result });
     }
     catch (err) {
@@ -58,7 +58,7 @@ const createSingle = async (req, res, next) => {
 exports.createSingle = createSingle;
 const createBulk = async (req, res, next) => {
     try {
-        const result = await livestreamService.createBulk(req.body);
+        const result = await livestreamService.createBulk(req.body, getChangeActor(req));
         res.status(201).json({ success: true, data: result });
     }
     catch (err) {
@@ -69,7 +69,7 @@ exports.createBulk = createBulk;
 // Hàm mới: Cập nhật nhiều lịch học cùng lúc (Bulk Update)
 const updateBulk = async (req, res, next) => {
     try {
-        const result = await livestreamService.updateBulk(req.body);
+        const result = await livestreamService.updateBulk(req.body, getChangeActor(req));
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
@@ -114,7 +114,7 @@ exports.cancelSession = cancelSession;
 const deleteSession = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const result = await livestreamService.deleteSession(Number(id));
+        const result = await livestreamService.deleteSession(Number(id), getChangeActor(req));
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
@@ -190,7 +190,7 @@ const importFile = async (req, res) => {
             });
             return;
         }
-        const result = await (0, calendar_import_service_1.importCalendarFromSheet)(importRows);
+        const result = await (0, calendar_import_service_1.importCalendarFromSheet)(importRows, getChangeActor(req));
         if (result.status === 'validation_error') {
             res.status(400).json({
                 success: false,

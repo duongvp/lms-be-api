@@ -268,7 +268,7 @@ const validateDatabaseDuplicates = async (rows) => {
     });
     return errors;
 };
-const importCalendarFromSheet = async (inputRows) => {
+const importCalendarFromSheet = async (inputRows, changeActor) => {
     const packageResolution = await resolveMissingPackages(inputRows);
     const rows = packageResolution.rows;
     const pairs = (0, exports.buildUniquePackageCoursePairs)(rows);
@@ -314,7 +314,7 @@ const importCalendarFromSheet = async (inputRows) => {
             errors,
         };
     }
-    const created = await (0, livestream_service_1.createValidatedCalendarImport)(validation.resolvedRows);
+    const created = await (0, livestream_service_1.createValidatedCalendarImport)(validation.resolvedRows, changeActor);
     return {
         status: 'success',
         summary: {

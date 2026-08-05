@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import ApiError from '../../utils/ApiError';
+import { getVietnamWallClockDate } from '../../utils/dateTime';
 import { RBAC_FIELD_MODULE_CODES } from './rbac-ui.constants';
 
 const prisma = new PrismaClient();
@@ -209,7 +210,10 @@ const FieldPermissionService = {
 
         const updatedRole = await prisma.roles.update({
             where: { id: BigInt(roleId) },
-            data: { fieldPolicy: normalizedPolicy },
+            data: {
+                fieldPolicy: normalizedPolicy,
+                updatedAt: getVietnamWallClockDate(),
+            },
             select: {
                 id: true,
                 code: true,

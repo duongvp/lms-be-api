@@ -105,5 +105,5 @@ router.get('/:id', authorize(['users.view']), user_controller_1.default.getUserB
  *         description: Cập nhật thành công
  */
 router.put('/:id', authorize(['users.update']), authorizeRoleAssignment, authorizeFields('users', (req) => Object.keys(req.body || {}).filter((field) => field !== 'roleIds')), user_controller_1.default.updateUser);
-// Các route delete, toggle có thể thêm sau khi bổ sung schema
+router.delete('/:id', authorize(['users.delete']), authorizeAdmin, user_controller_1.default.deleteUser);
 exports.default = router;

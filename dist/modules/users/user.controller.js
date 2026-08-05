@@ -55,14 +55,19 @@ const updateUser = async (req, res) => {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
-// Giữ lại các hàm khác nếu cần, nhưng comment do schema chưa hỗ trợ
-// const deleteUser = ...
-// const toggleUserStatus = ...
+const deleteUser = async (req, res) => {
+    try {
+        const result = await user_service_1.default.deleteAdminUser(Number(req.params.id), Number(req.user?.userId));
+        return (0, apiResponse_1.SuccessResponse)(res, result.message, result);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
+    }
+};
 exports.default = {
     createUser,
     getAllUsers,
     getUserById,
     updateUser,
-    // deleteUser,
-    // toggleUserStatus,
+    deleteUser,
 };

@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const field_permission_service_1 = __importDefault(require("./field-permission.service"));
+const dateTime_1 = require("../../utils/dateTime");
 const rbac_ui_constants_1 = require("./rbac-ui.constants");
 const prisma = new client_1.PrismaClient();
 const ACTION_LABELS = {
@@ -123,6 +124,8 @@ const RoleService = {
                         name: name,
                         description: roleData.description || null,
                         fieldPolicy,
+                        createdAt: (0, dateTime_1.getVietnamWallClockDate)(),
+                        updatedAt: (0, dateTime_1.getVietnamWallClockDate)(),
                         rolePermissions: {
                             create: validPermissions.map(p => ({
                                 permissionId: p.id
@@ -169,6 +172,7 @@ const RoleService = {
                 }
                 const name = roleData.role_name || roleData.name;
                 const updateData = {};
+                updateData.updatedAt = (0, dateTime_1.getVietnamWallClockDate)();
                 if (name)
                     updateData.name = name;
                 if (roleData.description !== undefined)
@@ -238,37 +242,24 @@ const RoleService = {
             return await prisma.$transaction(async (tx) => {
                 const role = await tx.roles.findUnique({
                     where: { id },
-                    include: { userRoles: true }
+                    select: {
+                        id: true,
+                        name: true,
+                        _count: { select: { userRoles: true } },
+                    },
                 });
                 if (!role) {
-                    throw new ApiError_1.default('Role not found', 404);
+                    throw new ApiError_1.default('Vai trò không tồn tại', 404);
                 }
-                if (role.userRoles && role.userRoles.length > 0) {
-                    const userIds = role.userRoles.map(ur => ur.userId);
-                    // We assume users table has is_deleted or we fallback if it doesn't.
-                    // For safety, let's just use queryRaw because schema might not have users fully defined here.
-                    const activeUsers = await tx.$queryRawUnsafe(`SELECT COUNT(*) as count FROM users WHERE id IN (?) AND is_deleted = 0`, userIds);
-                    const count = Number(activeUsers[0]?.count || 0);
-                    if (count > 0) {
-                        throw new ApiError_1.default('Cannot delete role that is assigned to active users', 400);
-                    }
-                    // Soft delete
-                    await tx.roles.update({
-                        where: { id },
-                        data: { isActive: false }
-                    });
-                    return {
-                        success: true,
-                        message: `Soft deleted role '${role.name}' because it's assigned to deleted users`
-                    };
+                if (role._count.userRoles > 0) {
+                    throw new ApiError_1.default(`Không thể xóa vai trò '${role.name}' vì đang được gán cho ${role._count.userRoles} người dùng`, 409);
                 }
-                // Hard delete
                 await tx.roles.delete({
                     where: { id }
                 });
                 return {
                     success: true,
-                    message: `Deleted role '${role.name}'`
+                    message: `Đã xóa vai trò '${role.name}'`
                 };
             });
         }

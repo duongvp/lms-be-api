@@ -65,7 +65,11 @@ const containsTeachingAssignment = (value) => {
 const authorizeTeachingAssignment = (permission) => (req, res, next) => {
     if (!containsTeachingAssignment(req.body))
         return next();
-    if (req.user?.permissions?.includes(permission))
+    const permissions = req.user?.permissions || [];
+    const roles = req.user?.roles || [];
+    if (permissions.includes('*')
+        || permissions.includes(permission)
+        || roles.includes('admin'))
         return next();
     return res.status(403).json({
         success: false,

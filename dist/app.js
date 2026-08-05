@@ -14,6 +14,7 @@ const lessons_1 = require("./modules/lessons");
 const package_course_routes_1 = __importDefault(require("./modules/package-courses/package-course.routes"));
 const teacher_profiles_1 = require("./modules/teacher-profiles");
 const quizzes_1 = require("./modules/quizzes");
+const dashboard_1 = require("./modules/dashboard");
 const ApiError_1 = __importDefault(require("./utils/ApiError"));
 const app = (0, express_1.default)();
 app.set('json replacer', (_key, value) => (typeof value === 'bigint' ? value.toString() : value));
@@ -42,6 +43,7 @@ app.use("/api/lessons", lessons_1.lessonRoutes);
 app.use("/api/package-courses", package_course_routes_1.default);
 app.use("/api/teacher-profiles", teacher_profiles_1.teacherProfileRoutes);
 app.use("/api/quizzes", quizzes_1.quizRoutes);
+app.use("/api/dashboard", dashboard_1.dashboardRoutes);
 app.use("/livestreams", livestream_1.livestreamRoute);
 app.use("/api/auth", auth_1.authRoutes);
 app.use((_req, _res, next) => {

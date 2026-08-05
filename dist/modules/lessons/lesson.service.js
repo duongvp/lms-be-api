@@ -62,6 +62,17 @@ const updateExistingLesson = async (id, payload) => {
     const current = await (0, lesson_repository_1.findLessonById)(id);
     if (!current)
         throw new ApiError_1.default('Lesson not found', 404);
+    if (payload.grade !== undefined && Number(payload.grade) !== Number(current.grade)) {
+        throw new ApiError_1.default('Không thể thay đổi khối khi cập nhật bài học', 400);
+    }
+    if (payload.subject_name !== undefined
+        && String(payload.subject_name).trim() !== String(current.subject_name).trim()) {
+        throw new ApiError_1.default('Không thể thay đổi môn học khi cập nhật bài học', 400);
+    }
+    if (payload.subject_code !== undefined
+        && String(payload.subject_code).trim() !== String(current.subject_code).trim()) {
+        throw new ApiError_1.default('Không thể thay đổi mã môn học hoặc năm học khi cập nhật bài học', 400);
+    }
     const grade = payload.grade ?? current.grade;
     const subjectCode = payload.subject_code ?? current.subject_code;
     const learnNumber = payload.learn_number ?? current.learn_number;
@@ -102,7 +113,7 @@ const reorderExistingLessons = async (payload) => {
     if (activeIdSet.size !== orderedIdSet.size || orderedIds.some((id) => !activeIdSet.has(id))) {
         throw new ApiError_1.default('Danh sách sắp xếp không hợp lệ', 400);
     }
-    return (0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.reorderLessonsInGroup)(payload.grade, payload.subject_code, payload.ordered_ids));
+    return (0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.reorderLessonsInGroup)(payload.grade, payload.subject_code, payload.ordered_ids, lessons.map((lesson) => Number(lesson.learn_number))));
 };
 exports.reorderExistingLessons = reorderExistingLessons;
 const exportLessons = async (query) => {

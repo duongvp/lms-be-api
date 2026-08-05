@@ -117,6 +117,11 @@ router.put(
     userController.updateUser
 );
 
-// Các route delete, toggle có thể thêm sau khi bổ sung schema
+router.delete(
+    '/:id',
+    authorize(['users.delete']),
+    authorizeAdmin,
+    userController.deleteUser
+);
 
 export default router;

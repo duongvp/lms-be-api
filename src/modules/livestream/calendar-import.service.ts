@@ -361,7 +361,10 @@ const validateDatabaseDuplicates = async (
   return errors;
 };
 
-export const importCalendarFromSheet = async (inputRows: CalendarImportRow[]) => {
+export const importCalendarFromSheet = async (
+  inputRows: CalendarImportRow[],
+  changeActor?: { userId: number; username: string }
+) => {
   const packageResolution = await resolveMissingPackages(inputRows);
   const rows = packageResolution.rows;
   const pairs = buildUniquePackageCoursePairs(rows);
@@ -414,7 +417,10 @@ export const importCalendarFromSheet = async (inputRows: CalendarImportRow[]) =>
     };
   }
 
-  const created = await createValidatedCalendarImport(validation.resolvedRows);
+  const created = await createValidatedCalendarImport(
+    validation.resolvedRows,
+    changeActor
+  );
   return {
     status: 'success' as const,
     summary: {

@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import ApiError from '../../utils/ApiError';
 import FieldPermissionService from './field-permission.service';
+import { getVietnamWallClockDate } from '../../utils/dateTime';
 import {
     RBAC_FIELD_MODULE_CODES,
     RBAC_MENU_LABELS,
@@ -133,6 +134,8 @@ const RoleService = {
                         name: name,
                         description: roleData.description || null,
                         fieldPolicy,
+                        createdAt: getVietnamWallClockDate(),
+                        updatedAt: getVietnamWallClockDate(),
                         rolePermissions: {
                             create: validPermissions.map(p => ({
                                 permissionId: p.id
@@ -181,6 +184,7 @@ const RoleService = {
 
                 const name = roleData.role_name || roleData.name;
                 const updateData: any = {};
+                updateData.updatedAt = getVietnamWallClockDate();
                 if (name) updateData.name = name;
                 if (roleData.description !== undefined) updateData.description = roleData.description;
                 if (roleData.fieldPolicy !== undefined) {
@@ -253,49 +257,31 @@ const RoleService = {
             return await prisma.$transaction(async (tx) => {
                 const role = await tx.roles.findUnique({
                     where: { id },
-                    include: { userRoles: true }
+                    select: {
+                        id: true,
+                        name: true,
+                        _count: { select: { userRoles: true } },
+                    },
                 });
 
                 if (!role) {
-                    throw new ApiError('Role not found', 404);
+                    throw new ApiError('Vai trò không tồn tại', 404);
                 }
 
-                if (role.userRoles && role.userRoles.length > 0) {
-                    const userIds = role.userRoles.map(ur => ur.userId);
-
-                    // We assume users table has is_deleted or we fallback if it doesn't.
-                    // For safety, let's just use queryRaw because schema might not have users fully defined here.
-                    const activeUsers: any = await tx.$queryRawUnsafe(
-                        `SELECT COUNT(*) as count FROM users WHERE id IN (?) AND is_deleted = 0`,
-                        userIds
+                if (role._count.userRoles > 0) {
+                    throw new ApiError(
+                        `Không thể xóa vai trò '${role.name}' vì đang được gán cho ${role._count.userRoles} người dùng`,
+                        409
                     );
-
-                    const count = Number(activeUsers[0]?.count || 0);
-
-                    if (count > 0) {
-                        throw new ApiError('Cannot delete role that is assigned to active users', 400);
-                    }
-
-                    // Soft delete
-                    await tx.roles.update({
-                        where: { id },
-                        data: { isActive: false }
-                    });
-
-                    return {
-                        success: true,
-                        message: `Soft deleted role '${role.name}' because it's assigned to deleted users`
-                    };
                 }
 
-                // Hard delete
                 await tx.roles.delete({
                     where: { id }
                 });
 
                 return {
                     success: true,
-                    message: `Deleted role '${role.name}'`
+                    message: `Đã xóa vai trò '${role.name}'`
                 };
             });
         } catch (error: any) {

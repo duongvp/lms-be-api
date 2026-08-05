@@ -7,8 +7,7 @@ const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => {
   await tx.$executeRawUnsafe(
     `UPDATE calendar AS calendar_row
      INNER JOIN lessons AS lesson ON lesson.id = calendar_row.session_id
-     SET calendar_row.learn_number = lesson.learn_number,
-         calendar_row.subject = lesson.subject_name,
+     SET calendar_row.subject = lesson.subject_name,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.lesson_document = lesson.lesson_document,
          calendar_row.evg_banner = lesson.evg_banner,
@@ -22,6 +21,53 @@ const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => {
          calendar_row.updated_at = CURRENT_TIMESTAMP
      WHERE lesson.id IN (${placeholders})`,
     ...lessonIds
+  );
+};
+
+/**
+ * Khi sắp xếp nội dung, learn_number của calendar đại diện cho slot lịch và
+ * phải đứng yên. Nội dung bài mới được gắn vào slot cùng learn_number; tuyệt
+ * đối không di chuyển start/end time hoặc phân công giảng dạy theo lesson id.
+ */
+const syncCalendarSlotsAfterLessonReorder = async (
+  tx: any,
+  grade: number,
+  subjectCode: string,
+  lessonIds: bigint[],
+  learnNumbers: number[]
+) => {
+  if (lessonIds.length === 0 || learnNumbers.length === 0) return;
+  const lessonPlaceholders = lessonIds.map(() => '?').join(', ');
+  const learnNumberPlaceholders = learnNumbers.map(() => '?').join(', ');
+
+  await tx.$executeRawUnsafe(
+    `UPDATE calendar AS calendar_row
+     INNER JOIN lessons AS lesson
+       ON lesson.grade = ?
+      AND lesson.subject_code = ?
+      AND lesson.learn_number = calendar_row.learn_number
+      AND lesson.status <> 0
+      AND lesson.id IN (${lessonPlaceholders})
+     SET calendar_row.session_id = lesson.id,
+         calendar_row.subject = lesson.subject_name,
+         calendar_row.lesson_name = lesson.lesson_name,
+         calendar_row.lesson_document = lesson.lesson_document,
+         calendar_row.evg_banner = lesson.evg_banner,
+         calendar_row.evg_stream = lesson.evg_stream,
+         calendar_row.lesson_link = lesson.lesson_link,
+         calendar_row.lesson_baitap = lesson.lesson_baitap,
+         calendar_row.lesson_tomtat = lesson.lesson_tomtat,
+         calendar_row.lesson_phuongphap = lesson.lesson_phuongphap,
+         calendar_row.lesson_luuy = lesson.lesson_luuy,
+         calendar_row.lesson_ketqua = lesson.lesson_ketqua,
+         calendar_row.updated_at = CURRENT_TIMESTAMP
+     WHERE calendar_row.code = ?
+       AND calendar_row.learn_number IN (${learnNumberPlaceholders})`,
+    grade,
+    subjectCode,
+    ...lessonIds,
+    subjectCode,
+    ...learnNumbers
   );
 };
 
@@ -299,9 +345,15 @@ export const reorderLessonsInGroup = async (
       subjectCode
     );
 
-    // Một UPDATE JOIN vẫn kích hoạt trigger theo từng calendar row nhưng
-    // tránh N lượt round-trip khiến interactive transaction hết hạn.
-    await syncCalendarsFromLessons(tx, orderedIds);
+    // Calendar giữ nguyên slot (learn_number, thời gian, giáo viên, trợ giảng),
+    // chỉ nhận lại session_id và nội dung của lesson sau khi sắp xếp.
+    await syncCalendarSlotsAfterLessonReorder(
+      tx,
+      grade,
+      subjectCode,
+      orderedIds,
+      learnNumbers
+    );
   }, {
     maxWait: 5_000,
     timeout: 30_000,

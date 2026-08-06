@@ -10,6 +10,7 @@ import {
   enqueueCalendarTeamsNotification,
   enqueueManyCalendarTeamsNotifications,
 } from '../teams-notifications';
+import { getVietnamWallClockDate } from '../../utils/dateTime';
 
 const prisma = new PrismaClient();
 
@@ -1401,7 +1402,7 @@ export const getCalendar = async (query: any) => {
   const subject = normalizeString(query.subject);
   const classroom = normalizeString(query.classroom);
   const systemType = normalizeString(query.system_type);
-  const lessonStatus = normalizeNumber(query.lesson_status, 'lesson_status');
+  const timeStatus = normalizeString(query.time_status);
   const startTime = normalizeDate(query.start_time, 'start_time');
   const endTime = normalizeDate(query.end_time, 'end_time');
   const sortFields = (normalizeString(query.sort_by) || '')
@@ -1430,8 +1431,8 @@ export const getCalendar = async (query: any) => {
     throw new Error('system_type không hợp lệ');
   }
 
-  if (lessonStatus !== undefined && ![0, 1, 2].includes(lessonStatus)) {
-    throw new Error('lesson_status không hợp lệ');
+  if (timeStatus && !['upcoming', 'ongoing', 'completed'].includes(timeStatus)) {
+    throw new Error('time_status không hợp lệ');
   }
 
   if (startTime && endTime && startTime > endTime) {
@@ -1459,12 +1460,23 @@ export const getCalendar = async (query: any) => {
   if (subject) where.subject = { contains: subject };
   if (classroom) where.channel_name = { contains: classroom };
   if (systemType) where.system_type = systemType as any;
-  if (lessonStatus !== undefined) where.lesson_status = lessonStatus;
   if (startTime || endTime) {
     where.start_time = {
       ...(startTime ? { gte: startTime } : {}),
       ...(endTime ? { lte: endTime } : {}),
     };
+  }
+  if (timeStatus) {
+    const now = getVietnamWallClockDate();
+    const timeConditions: Prisma.calendarWhereInput[] = timeStatus === 'upcoming'
+      ? [{ start_time: { gt: now } }]
+      : timeStatus === 'completed'
+        ? [{ end_time: { lt: now } }]
+        : [
+            { start_time: { lte: now } },
+            { end_time: { gte: now } },
+          ];
+    where.AND = timeConditions;
   }
 
   const orderBy: Prisma.calendarOrderByWithRelationInput[] = sortFields.length

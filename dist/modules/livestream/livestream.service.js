@@ -9,6 +9,7 @@ const client_1 = require("@prisma/client");
 const package_course_sheet_service_1 = require("../../integrations/package-course-sheet.service");
 const hocmai_sync_queue_service_1 = require("./hocmai-sync-queue.service");
 const teams_notifications_1 = require("../teams-notifications");
+const dateTime_1 = require("../../utils/dateTime");
 const prisma = new client_1.PrismaClient();
 const normalizeChangeReason = (payload) => {
     const reason = String(payload?.reason ?? payload?.change_reason ?? '').trim();
@@ -1134,7 +1135,7 @@ const getCalendar = async (query) => {
     const subject = normalizeString(query.subject);
     const classroom = normalizeString(query.classroom);
     const systemType = normalizeString(query.system_type);
-    const lessonStatus = normalizeNumber(query.lesson_status, 'lesson_status');
+    const timeStatus = normalizeString(query.time_status);
     const startTime = normalizeDate(query.start_time, 'start_time');
     const endTime = normalizeDate(query.end_time, 'end_time');
     const sortFields = (normalizeString(query.sort_by) || '')
@@ -1160,8 +1161,8 @@ const getCalendar = async (query) => {
     if (systemType && !CALENDAR_SYSTEM_TYPES.includes(systemType)) {
         throw new Error('system_type không hợp lệ');
     }
-    if (lessonStatus !== undefined && ![0, 1, 2].includes(lessonStatus)) {
-        throw new Error('lesson_status không hợp lệ');
+    if (timeStatus && !['upcoming', 'ongoing', 'completed'].includes(timeStatus)) {
+        throw new Error('time_status không hợp lệ');
     }
     if (startTime && endTime && startTime > endTime) {
         throw new Error('Khoảng thời gian không hợp lệ');
@@ -1191,13 +1192,23 @@ const getCalendar = async (query) => {
         where.channel_name = { contains: classroom };
     if (systemType)
         where.system_type = systemType;
-    if (lessonStatus !== undefined)
-        where.lesson_status = lessonStatus;
     if (startTime || endTime) {
         where.start_time = {
             ...(startTime ? { gte: startTime } : {}),
             ...(endTime ? { lte: endTime } : {}),
         };
+    }
+    if (timeStatus) {
+        const now = (0, dateTime_1.getVietnamWallClockDate)();
+        const timeConditions = timeStatus === 'upcoming'
+            ? [{ start_time: { gt: now } }]
+            : timeStatus === 'completed'
+                ? [{ end_time: { lt: now } }]
+                : [
+                    { start_time: { lte: now } },
+                    { end_time: { gte: now } },
+                ];
+        where.AND = timeConditions;
     }
     const orderBy = sortFields.length
         ? sortFields.map((field, index) => ({

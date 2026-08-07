@@ -1965,7 +1965,7 @@ export const updateBulk = async (
       || dataToUpdate.channel_name
     ) {
       return await prisma.$transaction(async (tx) => {
-        const results = [];
+        const results: any[] = [];
         const applyUpdates = async () => {
           for (const idStr of ids) {
             const id = Number(idStr);
@@ -2036,7 +2036,7 @@ export const updateBulk = async (
         where: { id: { in: normalizedIds } },
       });
       sessions.forEach(assertCanUpdateSession);
-      const results = [];
+      const results: any[] = [];
       const applyUpdates = async () => {
         for (const current of sessions) {
           const updated = await updateCalendarRecord(tx, current.id, dataToUpdate);
@@ -2080,7 +2080,7 @@ export const updateBulk = async (
     }
 
     return await prisma.$transaction(async (tx) => {
-      const results = [];
+      const results: any[] = [];
       const applyUpdates = async () => {
         for (const item of update_data) {
           const id = Number(item.id);

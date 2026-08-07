@@ -102,6 +102,9 @@ router.get('/', authorize(['calendar.view']), livestreamController.getCalendar);
 router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
 router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
 router.post('/import', authorize(['calendar.import']), upload.single('file'), livestreamController.importFile);
+router.post('/mapping/preview', authorize(['calendar.update']), livestreamController.previewMappingUpdates);
+router.put('/mapping', authorize(['calendar.update']), livestreamController.updateMappings);
+router.post('/mapping/import/preview', authorize(['calendar.import', 'calendar.update']), upload.single('file'), livestreamController.previewMappingImport);
 router.post('/single', authorize(['calendar.create']), authorizeTeachingAssignment('calendar.teacher.assign'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))), livestreamController.createSingle);
 router.post('/bulk', authorize(['calendar.create']), authorizeTeachingAssignment('calendar.teacher.assign'), authorizeFields('calendar', (req) => normalizeCalendarFields((req.body?.calendars || []).flatMap((item) => Object.keys(item || {})))), livestreamController.createBulk);
 // Thêm dòng này (Bắt buộc phải đặt trước các route có param /:id)

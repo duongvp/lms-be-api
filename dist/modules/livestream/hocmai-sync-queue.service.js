@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.enqueueRescheduleSync = exports.withManualHocmaiQueue = void 0;
+exports.enqueueRescheduleSync = exports.withManualHocmaiQueue = exports.enqueueCalendarSync = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const MANUAL_QUEUE_SESSION_VARIABLE = '@lms_manual_hocmai_queue';
 const parseDocuments = (value) => {
@@ -117,6 +117,7 @@ const enqueueCalendar = async (tx, operationId, sequenceNo, action, session) => 
         },
     });
 };
+exports.enqueueCalendarSync = enqueueCalendar;
 /**
  * Các trigger calendar vẫn tạo queue cho CRUD thông thường. Riêng nghiệp vụ
  * dời lịch cần một outbox có thứ tự nên trigger được tạm bỏ qua trên đúng

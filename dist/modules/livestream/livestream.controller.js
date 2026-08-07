@@ -36,7 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.createBulk = exports.createSingle = void 0;
+exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const livestream_io_1 = require("./livestream.io");
@@ -134,6 +134,7 @@ const getCalendar = async (req, res, next) => {
                 // id/can_modify là metadata phục vụ thao tác, không phải cột dữ liệu.
                 id: source.id,
                 can_modify: livestreamService.isSessionModifiable(source, now),
+                package_lesson_mappings: source.package_lesson_mappings || [],
             };
         });
         res.status(200).json({
@@ -213,3 +214,38 @@ const importFile = async (req, res) => {
     }
 };
 exports.importFile = importFile;
+const previewMappingUpdates = async (req, res) => {
+    try {
+        const result = await livestreamService.previewCalendarMappingUpdates(req.body);
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.previewMappingUpdates = previewMappingUpdates;
+const updateMappings = async (req, res) => {
+    try {
+        const result = await livestreamService.updateCalendarMappings(req.body, getChangeActor(req));
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.updateMappings = updateMappings;
+const previewMappingImport = async (req, res) => {
+    try {
+        if (!req.file) {
+            res.status(400).json({ success: false, message: 'Vui lòng chọn file import' });
+            return;
+        }
+        const updates = (0, livestream_io_1.parseCalendarMappingImportFile)(req.file.buffer, req.file.originalname);
+        const result = await livestreamService.previewCalendarMappingUpdates({ updates });
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.previewMappingImport = previewMappingImport;

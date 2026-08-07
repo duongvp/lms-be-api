@@ -245,6 +245,113 @@ export const parseCalendarImportFile = (buffer: Buffer, originalName: string) =>
   }));
 };
 
+const MAPPING_HEADER_ALIASES: Record<string, string> = {
+  id: 'id',
+  'calendar id': 'id',
+  'id lich hoc': 'id',
+  key: 'key',
+  'c key': 'key',
+  'session key': 'key',
+  sessionid: 'key',
+  'session id': 'key',
+  'ma lop': 'code',
+  'ma khoa hoc': 'code',
+  'ma buoi hoc': 'code',
+  code: 'code',
+  'buoi hoc': 'learn_number',
+  'so buoi': 'learn_number',
+  'learn number': 'learn_number',
+  learn_number: 'learn_number',
+};
+
+const mapMappingImportHeader = (value: unknown) => {
+  const header = normalizeHeader(value);
+  if (MAPPING_HEADER_ALIASES[header]) return MAPPING_HEADER_ALIASES[header];
+  if (header.startsWith('id package')) return 'package_ids';
+  if (header.startsWith('id course')) return 'course_ids';
+  if (header.startsWith('id bai giang')) return 'lesson_ids';
+  if (header.startsWith('lesson id')) return 'lesson_ids';
+  if (header.startsWith('course id')) return 'course_ids';
+  if (header.startsWith('package id')) return 'package_ids';
+  return undefined;
+};
+
+const parseMappingIds = (value: unknown) => Array.from(new Set(
+  String(value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+));
+
+export const parseCalendarMappingImportFile = (buffer: Buffer, originalName: string) => {
+  const extension = originalName.split('.').pop()?.toLowerCase();
+  if (extension !== 'xlsx' && extension !== 'csv') {
+    throw new Error('Chỉ hỗ trợ file .xlsx hoặc .csv');
+  }
+
+  const matrix = extension === 'csv'
+    ? parseCsvRows(buffer)
+    : (() => {
+        const workbook = XLSX.read(buffer, { type: 'buffer', raw: false });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        if (!sheet) return [] as unknown[][];
+        return XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+          header: 1,
+          defval: '',
+          blankrows: true,
+          raw: false,
+          range: getWorksheetImportRange(sheet),
+        });
+      })();
+
+  const header = matrix
+    .slice(0, 50)
+    .map((row, index) => ({
+      index,
+      mappedHeaders: row.map(mapMappingImportHeader),
+    }))
+    .find((candidate) => {
+      const keys = new Set(candidate.mappedHeaders.filter(Boolean));
+      return keys.has('course_ids')
+        && keys.has('lesson_ids')
+        && (keys.has('id') || keys.has('key') || (keys.has('code') && keys.has('learn_number')));
+    });
+
+  if (!header) {
+    throw new Error('File mapping cần có ID/key hoặc Mã lớp + Buổi học, kèm ID course và ID Bài giảng.');
+  }
+
+  return matrix
+    .slice(header.index + 1)
+    .map((values, offset) => {
+      const row: Record<string, unknown> = { row: header.index + offset + 2 };
+      header.mappedHeaders.forEach((mappedKey, columnIndex) => {
+        if (mappedKey) row[mappedKey] = values[columnIndex] ?? '';
+      });
+      const courseIds = parseMappingIds(row.course_ids);
+      const lessonIds = parseMappingIds(row.lesson_ids);
+      const packageIds = parseMappingIds(row.package_ids);
+      return {
+        row: Number(row.row),
+        id: String(row.id ?? '').trim() || undefined,
+        key: String(row.key ?? '').trim() || undefined,
+        code: String(row.code ?? '').trim() || undefined,
+        learn_number: String(row.learn_number ?? '').trim() || undefined,
+        package_lesson_mappings: courseIds.map((courseId) => ({
+          course_id: courseId,
+          lesson_ids: lessonIds,
+          package_ids: packageIds,
+        })),
+      };
+    })
+    .filter((row) => (
+      row.id || row.key || row.code || row.learn_number
+      || row.package_lesson_mappings.some((mapping) => (
+        mapping.course_id || mapping.lesson_ids.length || mapping.package_ids.length
+      ))
+    ));
+};
+
 const requiredText = (value: unknown, field: string) => {
   const text = String(value ?? '').trim();
   if (!text) throw new Error(`${field} không được để trống`);

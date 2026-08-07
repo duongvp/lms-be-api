@@ -77,6 +77,22 @@ router.post(
   livestreamController.importFile
 );
 router.post(
+  '/mapping/preview',
+  authorize(['calendar.update']),
+  livestreamController.previewMappingUpdates
+);
+router.put(
+  '/mapping',
+  authorize(['calendar.update']),
+  livestreamController.updateMappings
+);
+router.post(
+  '/mapping/import/preview',
+  authorize(['calendar.import', 'calendar.update']),
+  upload.single('file'),
+  livestreamController.previewMappingImport
+);
+router.post(
   '/single',
   authorize(['calendar.create']),
   authorizeTeachingAssignment('calendar.teacher.assign'),

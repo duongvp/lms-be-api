@@ -12,6 +12,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed": "tsx prisma/seed.ts",
     "db:quiz-rbac": "tsx prisma/scripts/syncQuizRbac.ts",
+    "db:room-config-rbac": "tsx prisma/scripts/syncRoomConfigRbac.ts",
     "db:calendar-triggers": "tsx prisma/scripts/syncCalendarTriggers.ts"
   },
   "keywords": [],

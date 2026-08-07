@@ -5,6 +5,7 @@ import {
   buildCalendarFile,
   buildCalendarTemplate,
   getCalendarFileContentType,
+  parseCalendarMappingImportFile,
   parseCalendarImportFile,
   validateCalendarImportRows,
 } from './livestream.io';
@@ -114,6 +115,7 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
         // id/can_modify là metadata phục vụ thao tác, không phải cột dữ liệu.
         id: source.id,
         can_modify: livestreamService.isSessionModifiable(source, now),
+        package_lesson_mappings: source.package_lesson_mappings || [],
       };
     });
     res.status(200).json({
@@ -193,6 +195,41 @@ export const importFile = async (req: Request, res: Response): Promise<void> => 
       message: 'Import lịch học thành công',
       data: result,
     });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const previewMappingUpdates = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await livestreamService.previewCalendarMappingUpdates(req.body);
+    res.status(200).json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const updateMappings = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await livestreamService.updateCalendarMappings(
+      req.body,
+      getChangeActor(req)
+    );
+    res.status(200).json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const previewMappingImport = async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ success: false, message: 'Vui lòng chọn file import' });
+      return;
+    }
+    const updates = parseCalendarMappingImportFile(req.file.buffer, req.file.originalname);
+    const result = await livestreamService.previewCalendarMappingUpdates({ updates });
+    res.status(200).json({ success: true, data: result });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
   }

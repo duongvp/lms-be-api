@@ -155,6 +155,8 @@ const enqueueCalendar = async (
   });
 };
 
+export const enqueueCalendarSync = enqueueCalendar;
+
 /**
  * Các trigger calendar vẫn tạo queue cho CRUD thông thường. Riêng nghiệp vụ
  * dời lịch cần một outbox có thứ tự nên trigger được tạm bỏ qua trên đúng

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { resolvePackagesByCourseId } from '../../integrations/package-course-sheet.service';
 import {
+  enqueueCalendarSync,
   enqueueRescheduleSync,
   withManualHocmaiQueue,
 } from './hocmai-sync-queue.service';
@@ -670,6 +671,76 @@ const resolvePackageLessonMappings = async (rawMappings: any) => {
   return mappings;
 };
 
+const normalizePackageLessonMappingsForUpdate = async (rawMappings: any) => {
+  if (!Array.isArray(rawMappings) || rawMappings.length === 0) {
+    throw new Error("Vui lòng khai báo ít nhất một Package/Course/Lesson");
+  }
+
+  const normalized: Array<{
+    package_id: string;
+    course_id: string;
+    lesson_id: string;
+  }> = [];
+  const identities = new Set<string>();
+
+  for (const mapping of rawMappings) {
+    const courseId = String(mapping?.course_id ?? '').trim();
+    const rawLessonIds = Array.isArray(mapping?.lesson_ids)
+      ? mapping.lesson_ids
+      : Array.isArray(mapping?.lesson_id)
+        ? mapping.lesson_id
+        : [mapping?.lesson_id];
+    const lessonIds = Array.from(new Set<string>(
+      rawLessonIds
+        .map((lessonId: unknown) => String(lessonId ?? '').trim())
+        .filter(Boolean)
+    ));
+    const rawPackageIds = Array.isArray(mapping?.package_ids)
+      ? mapping.package_ids
+      : Array.isArray(mapping?.package_id)
+        ? mapping.package_id
+        : [mapping?.package_id];
+    const packageIds = Array.from(new Set<string>(
+      rawPackageIds
+        .map((packageId: unknown) => String(packageId ?? '').trim())
+        .filter(Boolean)
+    ));
+
+    if (!courseId) throw new Error("Course ID không được để trống");
+    if (courseId.length > 50) throw new Error("Course ID vượt quá 50 ký tự");
+    if (!lessonIds.length) throw new Error("Lesson ID không được để trống");
+    if (lessonIds.some((lessonId) => !/^\d+$/.test(lessonId) || lessonId.length > 50)) {
+      throw new Error("Lesson ID không hợp lệ");
+    }
+    if (packageIds.some((packageId) => !/^\d+$/.test(packageId) || packageId.length > 50)) {
+      throw new Error("Package ID không hợp lệ");
+    }
+
+    const resolvedPackages = packageIds.length
+      ? packageIds.map((packageId) => ({ package_id: packageId, course_id: courseId }))
+      : await resolvePackagesByCourseId(courseId);
+
+    if (!resolvedPackages.length) {
+      throw new Error(`Không xác định được Package ID cho Course ${courseId}`);
+    }
+
+    for (const packageCourse of resolvedPackages) {
+      for (const lessonId of lessonIds) {
+        const identity = `${packageCourse.package_id}::${courseId}::${lessonId}`;
+        if (identities.has(identity)) continue;
+        identities.add(identity);
+        normalized.push({
+          package_id: packageCourse.package_id,
+          course_id: courseId,
+          lesson_id: lessonId,
+        });
+      }
+    }
+  }
+
+  return normalized;
+};
+
 const createPackageLessonMappingForCalendar = async (
   tx: Prisma.TransactionClient,
   calendar: any,
@@ -697,6 +768,59 @@ const createPackageLessonMappingForCalendar = async (
         learn_number = VALUES(learn_number)
     `;
   }
+};
+
+const replacePackageLessonMappingForCalendar = async (
+  tx: Prisma.TransactionClient,
+  calendar: any,
+  mappings: Array<{
+    package_id: string;
+    course_id: string;
+    lesson_id: string;
+  }>
+) => {
+  const key = String(calendar?.key || '').trim();
+  if (!key) {
+    throw new Error(`Buổi ${calendar?.id || ''}: Lịch học không có key để cập nhật mapping`);
+  }
+
+  await tx.package_lesson_mapping.deleteMany({ where: { key } });
+  await createPackageLessonMappingForCalendar(tx, calendar, mappings);
+  await tx.calendar.update({
+    where: { id: Number(calendar.id) },
+    data: { updated_at: new Date() },
+  });
+};
+
+const mappingLabel = (mappings: Array<{
+  package_id?: string | null;
+  course_id?: string | null;
+  lesson_id?: string | null;
+}>) => mappings
+  .map((mapping) => [
+    mapping.package_id ? `Package ${mapping.package_id}` : undefined,
+    mapping.course_id ? `Course ${mapping.course_id}` : undefined,
+    mapping.lesson_id ? `Lesson ${mapping.lesson_id}` : undefined,
+  ].filter(Boolean).join(' → '))
+  .join('; ');
+
+const loadMappingsByKeys = async (
+  client: any,
+  keys: string[]
+) => {
+  if (!keys.length) return new Map<string, any[]>();
+  const mappings = await client.package_lesson_mapping.findMany({
+    where: { key: { in: keys } },
+    orderBy: [{ id: 'asc' }],
+  });
+  const byKey = new Map<string, any[]>();
+  mappings.forEach((mapping: any) => {
+    if (!mapping.key) return;
+    const rows = byKey.get(mapping.key) ?? [];
+    rows.push(mapping);
+    byKey.set(mapping.key, rows);
+  });
+  return byKey;
 };
 
 const generateUniqueCanceledKey = async (
@@ -1255,6 +1379,12 @@ export const updateSchedule = async (
     return await rescheduleSession(id, { ...data, mode: updateMode }, changeActor);
   }
 
+  const rawMappingUpdate = data?.package_lesson_mappings;
+  const hasMappingUpdate = Array.isArray(rawMappingUpdate);
+  const resolvedMappingUpdate = hasMappingUpdate
+    ? await normalizePackageLessonMappingsForUpdate(rawMappingUpdate)
+    : undefined;
+
   if (
     data.sessionId !== undefined
     || data.session_id !== undefined
@@ -1264,6 +1394,7 @@ export const updateSchedule = async (
   }
   normalizeRoom(data);
   await normalizeTeachingAssignments(prisma, data);
+  delete data.package_lesson_mappings;
   delete data.key;
   delete data.new_session;
 
@@ -1295,14 +1426,24 @@ export const updateSchedule = async (
   }
 
   return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
-    const updated = await updateCalendarRecord(tx, id, data);
-    await enqueueCalendarTeamsNotification(tx, {
-      eventType: 'updated',
-      before: current,
-      after: updated,
-      actor: changeActor,
-    });
-    return updated;
+    const operation = async () => {
+      const updated = await updateCalendarRecord(tx, id, data);
+      if (resolvedMappingUpdate) {
+        await replacePackageLessonMappingForCalendar(tx, updated, resolvedMappingUpdate);
+        await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
+      }
+      await enqueueCalendarTeamsNotification(tx, {
+        eventType: 'updated',
+        before: current,
+        after: updated,
+        actor: changeActor,
+      });
+      return updated;
+    };
+
+    return resolvedMappingUpdate
+      ? withManualHocmaiQueue(tx, operation)
+      : operation();
   }));
 };
 
@@ -1495,8 +1636,20 @@ export const getCalendar = async (query: any) => {
     }),
   ]);
   await hydrateAssistantTeachers(prisma, data);
+  const mappingKeys = data
+    .map((record) => record.key)
+    .filter((key): key is string => Boolean(key));
+  const mappingsByKey = await loadMappingsByKeys(prisma, mappingKeys);
 
-  return { total, page, limit, data };
+  return {
+    total,
+    page,
+    limit,
+    data: data.map((record) => ({
+      ...record,
+      package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
+    })),
+  };
 };
 
 export const getCalendarRowsForExport = async (rawIds?: unknown) => {
@@ -1622,6 +1775,157 @@ export const getCalendarRowsForExport = async (rawIds?: unknown) => {
   });
 };
 
+type CalendarMappingUpdateInput = {
+  row?: number;
+  id?: string | number;
+  key?: string;
+  code?: string;
+  learn_number?: string | number;
+  package_lesson_mappings?: any[];
+};
+
+const normalizeCalendarMappingUpdates = (updates: any): CalendarMappingUpdateInput[] => {
+  if (!Array.isArray(updates) || updates.length === 0) {
+    throw new Error("Danh sách mapping cập nhật không được rỗng");
+  }
+  return updates.map((item, index) => ({
+    row: Number(item?.row ?? index + 1),
+    id: item?.id,
+    key: String(item?.key ?? '').trim() || undefined,
+    code: String(item?.code ?? '').trim() || undefined,
+    learn_number: item?.learn_number,
+    package_lesson_mappings: item?.package_lesson_mappings,
+  }));
+};
+
+const findCalendarForMappingUpdate = async (
+  client: any,
+  input: CalendarMappingUpdateInput
+) => {
+  const id = Number(input.id);
+  if (Number.isInteger(id) && id > 0) {
+    return client.calendar.findUnique({ where: { id } });
+  }
+
+  if (input.key) {
+    return client.calendar.findFirst({ where: { key: input.key } });
+  }
+
+  const learnNumber = Number(input.learn_number);
+  if (input.code && Number.isInteger(learnNumber) && learnNumber > 0) {
+    const rows = await client.calendar.findMany({
+      where: { code: input.code, learn_number: learnNumber },
+      orderBy: { id: 'asc' },
+      take: 2,
+    });
+    if (rows.length > 1) {
+      throw new Error(`Dòng ${input.row}: Có nhiều lịch trùng ${input.code} / Buổi ${learnNumber}, vui lòng dùng ID hoặc key`);
+    }
+    return rows[0] || null;
+  }
+
+  throw new Error(`Dòng ${input.row}: Vui lòng cung cấp ID/key hoặc Mã lớp + Buổi học`);
+};
+
+const buildMappingUpdatePlan = async (updates: CalendarMappingUpdateInput[]) => {
+  const plan = [];
+  const seenCalendarIds = new Set<number>();
+  for (const update of updates) {
+    try {
+      const calendar = await findCalendarForMappingUpdate(prisma, update);
+      if (!calendar) throw new Error('Không tìm thấy lịch học cần cập nhật');
+      assertCanUpdateSession(calendar);
+      if (seenCalendarIds.has(Number(calendar.id))) {
+        throw new Error('Lịch học bị lặp trong danh sách cập nhật');
+      }
+      seenCalendarIds.add(Number(calendar.id));
+
+      const nextMappings = await normalizePackageLessonMappingsForUpdate(
+        update.package_lesson_mappings
+      );
+      const currentMappings = calendar.key
+        ? await prisma.package_lesson_mapping.findMany({
+            where: { key: calendar.key },
+            orderBy: [{ id: 'asc' }],
+          })
+        : [];
+      plan.push({
+        row: update.row,
+        calendar,
+        currentMappings,
+        nextMappings,
+      });
+    } catch (error: any) {
+      throw new Error(`Dòng ${update.row}: ${error?.message || 'Không thể kiểm tra mapping'}`);
+    }
+  }
+  return plan;
+};
+
+export const previewCalendarMappingUpdates = async (payload: any) => {
+  const updates = normalizeCalendarMappingUpdates(payload?.updates);
+  const plan = await buildMappingUpdatePlan(updates);
+  return {
+    count: plan.length,
+    updates: plan.map((item) => ({
+      row: item.row,
+      id: item.calendar.id,
+      key: item.calendar.key,
+      code: item.calendar.code,
+      learn_number: item.calendar.learn_number,
+      lesson_name: item.calendar.lesson_name,
+      current_mappings: item.currentMappings,
+      next_mappings: item.nextMappings,
+      current_label: mappingLabel(item.currentMappings),
+      next_label: mappingLabel(item.nextMappings),
+      package_lesson_mappings: item.nextMappings.map((mapping) => ({
+        package_id: mapping.package_id,
+        course_id: mapping.course_id,
+        lesson_id: mapping.lesson_id,
+      })),
+    })),
+  };
+};
+
+export const updateCalendarMappings = async (
+  payload: any,
+  changeActor?: CalendarChangeActor
+) => {
+  const updates = normalizeCalendarMappingUpdates(payload?.updates);
+  const plan = await buildMappingUpdatePlan(updates);
+  return withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
+    const operationId = crypto.randomUUID();
+    const results: any[] = [];
+    await withManualHocmaiQueue(tx, async () => {
+      for (let index = 0; index < plan.length; index += 1) {
+        const item = plan[index];
+        const calendar = await tx.calendar.findUnique({
+          where: { id: Number(item.calendar.id) },
+        });
+        if (!calendar) throw new Error(`Dòng ${item.row}: Không tìm thấy lịch học cần cập nhật`);
+        assertCanUpdateSession(calendar);
+        await replacePackageLessonMappingForCalendar(tx, calendar, item.nextMappings);
+        await enqueueCalendarSync(tx, operationId, index + 1, 'update', calendar);
+        await enqueueCalendarTeamsNotification(tx, {
+          eventType: 'updated',
+          before: calendar,
+          after: { ...calendar, package_lesson_mappings: item.nextMappings },
+          actor: changeActor,
+          operationId,
+        });
+        results.push({
+          id: calendar.id,
+          key: calendar.key,
+          code: calendar.code,
+          learn_number: calendar.learn_number,
+          package_lesson_mappings: item.nextMappings,
+        });
+      }
+    });
+    return { count: results.length, operationId, updates: results };
+  }));
+};
+
 
 // Sửa nhiều lịch (Bulk Update)
 export const updateBulk = async (
@@ -1637,6 +1941,9 @@ export const updateBulk = async (
   // 1. CẤU HÌNH CHUNG: Tất cả các lịch chọn được cập nhật bằng 1 data chung
   if (config_mode === 'common') {
     if (!update_data) throw new Error("Missing update_data for common bulk update");
+    const commonMappingUpdate = Array.isArray(update_data.package_lesson_mappings)
+      ? await normalizePackageLessonMappingsForUpdate(update_data.package_lesson_mappings)
+      : undefined;
 
     const dataToUpdate: any = {};
     if (update_data.teacher) dataToUpdate.teacher = update_data.teacher;
@@ -1659,52 +1966,63 @@ export const updateBulk = async (
     ) {
       return await prisma.$transaction(async (tx) => {
         const results = [];
-        for (const idStr of ids) {
-          const id = Number(idStr);
-          const current = await tx.calendar.findUnique({ where: { id } });
-          if (!current) continue;
-          await hydrateAssistantTeachers(tx, [current]);
-          assertCanUpdateSession(current);
+        const applyUpdates = async () => {
+          for (const idStr of ids) {
+            const id = Number(idStr);
+            const current = await tx.calendar.findUnique({ where: { id } });
+            if (!current) continue;
+            await hydrateAssistantTeachers(tx, [current]);
+            assertCanUpdateSession(current);
 
-          let newStart = current.start_time;
-          let newEnd = current.end_time;
+            let newStart = current.start_time;
+            let newEnd = current.end_time;
 
-          // Thay thế giờ/phút, giữ nguyên ngày/tháng/năm
-          if (update_data.start_time) {
-            const [hours, minutes] = update_data.start_time.split(':');
-            newStart = new Date(current.start_time);
-            newStart.setHours(Number(hours), Number(minutes), 0, 0);
+            // Thay thế giờ/phút, giữ nguyên ngày/tháng/năm
+            if (update_data.start_time) {
+              const [hours, minutes] = update_data.start_time.split(':');
+              newStart = new Date(current.start_time);
+              newStart.setHours(Number(hours), Number(minutes), 0, 0);
+            }
+
+            if (update_data.end_time) {
+              const [hours, minutes] = update_data.end_time.split(':');
+              newEnd = new Date(current.end_time);
+              newEnd.setHours(Number(hours), Number(minutes), 0, 0);
+            }
+
+            // Check conflict
+            await checkConflict({
+              teacher: dataToUpdate.teacher || current.teacher,
+              assistant_teacher: dataToUpdate.assistant_teacher ?? (current as any).assistant_teacher,
+              channel_name: dataToUpdate.channel_name || current.channel_name,
+              code: current.code,
+              start_time: newStart,
+              end_time: newEnd,
+              id
+            });
+
+            const updated = await updateCalendarRecord(tx, id, {
+              ...dataToUpdate,
+              start_time: newStart,
+              end_time: newEnd,
+            });
+            if (commonMappingUpdate) {
+              await replacePackageLessonMappingForCalendar(tx, updated, commonMappingUpdate);
+              await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
+            }
+            await enqueueCalendarTeamsNotification(tx, {
+              eventType: 'updated',
+              before: current,
+              after: updated,
+              actor: changeActor,
+            });
+            results.push(updated);
           }
-
-          if (update_data.end_time) {
-            const [hours, minutes] = update_data.end_time.split(':');
-            newEnd = new Date(current.end_time);
-            newEnd.setHours(Number(hours), Number(minutes), 0, 0);
-          }
-
-          // Check conflict
-          await checkConflict({
-            teacher: dataToUpdate.teacher || current.teacher,
-            assistant_teacher: dataToUpdate.assistant_teacher ?? (current as any).assistant_teacher,
-            channel_name: dataToUpdate.channel_name || current.channel_name,
-            code: current.code,
-            start_time: newStart,
-            end_time: newEnd,
-            id
-          });
-
-          const updated = await updateCalendarRecord(tx, id, {
-            ...dataToUpdate,
-            start_time: newStart,
-            end_time: newEnd,
-          });
-          await enqueueCalendarTeamsNotification(tx, {
-            eventType: 'updated',
-            before: current,
-            after: updated,
-            actor: changeActor,
-          });
-          results.push(updated);
+        };
+        if (commonMappingUpdate) {
+          await withManualHocmaiQueue(tx, applyUpdates);
+        } else {
+          await applyUpdates();
         }
         return results;
       });
@@ -1719,15 +2037,26 @@ export const updateBulk = async (
       });
       sessions.forEach(assertCanUpdateSession);
       const results = [];
-      for (const current of sessions) {
-        const updated = await updateCalendarRecord(tx, current.id, dataToUpdate);
-        await enqueueCalendarTeamsNotification(tx, {
-          eventType: 'updated',
-          before: current,
-          after: updated,
-          actor: changeActor,
-        });
-        results.push(updated);
+      const applyUpdates = async () => {
+        for (const current of sessions) {
+          const updated = await updateCalendarRecord(tx, current.id, dataToUpdate);
+          if (commonMappingUpdate) {
+            await replacePackageLessonMappingForCalendar(tx, updated, commonMappingUpdate);
+            await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
+          }
+          await enqueueCalendarTeamsNotification(tx, {
+            eventType: 'updated',
+            before: current,
+            after: updated,
+            actor: changeActor,
+          });
+          results.push(updated);
+        }
+      };
+      if (commonMappingUpdate) {
+        await withManualHocmaiQueue(tx, applyUpdates);
+      } else {
+        await applyUpdates();
       }
       return results;
     });
@@ -1740,62 +2069,84 @@ export const updateBulk = async (
       throw new Error("Missing or invalid update_data array for separate bulk update");
     }
 
+    const mappingUpdatesById = new Map<number, Awaited<ReturnType<typeof normalizePackageLessonMappingsForUpdate>>>();
+    for (const item of update_data) {
+      if (Array.isArray(item.package_lesson_mappings)) {
+        mappingUpdatesById.set(
+          Number(item.id),
+          await normalizePackageLessonMappingsForUpdate(item.package_lesson_mappings)
+        );
+      }
+    }
+
     return await prisma.$transaction(async (tx) => {
       const results = [];
-      for (const item of update_data) {
-        const id = Number(item.id);
-        const current = await tx.calendar.findUnique({ where: { id } });
-        if (!current) continue;
-        await hydrateAssistantTeachers(tx, [current]);
-        assertCanUpdateSession(current);
+      const applyUpdates = async () => {
+        for (const item of update_data) {
+          const id = Number(item.id);
+          const current = await tx.calendar.findUnique({ where: { id } });
+          if (!current) continue;
+          await hydrateAssistantTeachers(tx, [current]);
+          assertCanUpdateSession(current);
 
-        const dataToUpdate: any = {};
-        if (item.teacher) dataToUpdate.teacher = item.teacher;
-        if (item.assistant_teacher !== undefined) {
-          dataToUpdate.assistant_teacher = item.assistant_teacher;
+          const dataToUpdate: any = {};
+          if (item.teacher) dataToUpdate.teacher = item.teacher;
+          if (item.assistant_teacher !== undefined) {
+            dataToUpdate.assistant_teacher = item.assistant_teacher;
+          }
+          if (item.room) dataToUpdate.channel_name = item.room;
+          await normalizeTeachingAssignments(tx, dataToUpdate);
+
+          let newStart = current.start_time;
+          let newEnd = current.end_time;
+
+          if (item.start_time) {
+            const [hours, minutes] = item.start_time.split(':');
+            newStart = new Date(current.start_time);
+            newStart.setHours(Number(hours), Number(minutes), 0, 0);
+          }
+
+          if (item.end_time) {
+            const [hours, minutes] = item.end_time.split(':');
+            newEnd = new Date(current.end_time);
+            newEnd.setHours(Number(hours), Number(minutes), 0, 0);
+          }
+
+          if (item.start_time || item.end_time) {
+            dataToUpdate.start_time = newStart;
+            dataToUpdate.end_time = newEnd;
+          }
+
+          // Check conflict
+          await checkConflict({
+            teacher: dataToUpdate.teacher || current.teacher,
+            assistant_teacher: dataToUpdate.assistant_teacher ?? (current as any).assistant_teacher,
+            channel_name: dataToUpdate.channel_name || current.channel_name,
+            code: current.code,
+            start_time: newStart,
+            end_time: newEnd,
+            id
+          });
+
+          const updated = await updateCalendarRecord(tx, id, dataToUpdate);
+          const mappingUpdate = mappingUpdatesById.get(id);
+          if (mappingUpdate) {
+            await replacePackageLessonMappingForCalendar(tx, updated, mappingUpdate);
+            await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
+          }
+          await enqueueCalendarTeamsNotification(tx, {
+            eventType: 'updated',
+            before: current,
+            after: updated,
+            actor: changeActor,
+          });
+          results.push(updated);
         }
-        if (item.room) dataToUpdate.channel_name = item.room;
-        await normalizeTeachingAssignments(tx, dataToUpdate);
-
-        let newStart = current.start_time;
-        let newEnd = current.end_time;
-
-        if (item.start_time) {
-          const [hours, minutes] = item.start_time.split(':');
-          newStart = new Date(current.start_time);
-          newStart.setHours(Number(hours), Number(minutes), 0, 0);
-        }
-
-        if (item.end_time) {
-          const [hours, minutes] = item.end_time.split(':');
-          newEnd = new Date(current.end_time);
-          newEnd.setHours(Number(hours), Number(minutes), 0, 0);
-        }
-
-        if (item.start_time || item.end_time) {
-          dataToUpdate.start_time = newStart;
-          dataToUpdate.end_time = newEnd;
-        }
-
-        // Check conflict
-        await checkConflict({
-          teacher: dataToUpdate.teacher || current.teacher,
-          assistant_teacher: dataToUpdate.assistant_teacher ?? (current as any).assistant_teacher,
-          channel_name: dataToUpdate.channel_name || current.channel_name,
-          code: current.code,
-          start_time: newStart,
-          end_time: newEnd,
-          id
-        });
-
-        const updated = await updateCalendarRecord(tx, id, dataToUpdate);
-        await enqueueCalendarTeamsNotification(tx, {
-          eventType: 'updated',
-          before: current,
-          after: updated,
-          actor: changeActor,
-        });
-        results.push(updated);
+      };
+      if (mappingUpdatesById.size > 0) {
+        await withManualHocmaiQueue(tx, applyUpdates);
+      } else {
+        await applyUpdates();
       }
       return results;
     });

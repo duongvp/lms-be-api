@@ -22,9 +22,12 @@ const parseSuccessfulResponse = (payload, pair) => {
     if (!Array.isArray(course.sections)) {
         throw new HmoCourseOutlineError('HMO_INVALID_RESPONSE', `HMO thiếu danh sách Section cho Package ${pair.packageId} / Course ${pair.courseId}`);
     }
-    const lessons = course.sections.flatMap((section) => (Array.isArray(section?.lessons) ? section.lessons : [])).map((lesson) => ({
-        lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
-        name: String(lesson?.name ?? '').trim() || undefined,
+    // Theo hợp đồng HMO, `lesson_id` của lịch là ID của section trong outline.
+    // ID của các phần tử `section.lessons[]` là nội dung con và không được dùng
+    // làm external lesson_id của calendar.
+    const lessons = course.sections.map((section) => ({
+        lessonId: String(section?.id ?? section?.sectionId ?? '').trim(),
+        name: String(section?.name ?? '').trim() || undefined,
     })).filter((lesson) => lesson.lessonId);
     return {
         packageId: pair.packageId,

@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { resolvePackagesByCourseId } from '../../integrations/package-course-sheet.service';
+import { fetchHocmaiCourseOutlines } from '../../integrations/hocmai-course-outline.service';
 import {
   enqueueCalendarSync,
   enqueueRescheduleSync,
@@ -14,6 +15,8 @@ import {
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 
 const prisma = new PrismaClient();
+const hmoSectionsCache = new Map<string, { expiresAt: number; data: any[] }>();
+const HMO_SECTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export type CalendarChangeActor = {
   userId: number;
@@ -92,6 +95,33 @@ const writeCalendarChangeLog = async (
       NOW(3)
     )
   `;
+};
+
+const auditTimeChange = async (
+  tx: Prisma.TransactionClient,
+  before: any,
+  after: any,
+  changeActor?: CalendarChangeActor,
+  rawReason?: unknown
+) => {
+  const beforeStart = new Date(before.start_time).getTime();
+  const beforeEnd = new Date(before.end_time).getTime();
+  const afterStart = new Date(after.start_time).getTime();
+  const afterEnd = new Date(after.end_time).getTime();
+  if (beforeStart === afterStart && beforeEnd === afterEnd) return;
+
+  const actor = normalizeChangeActor(changeActor);
+  const reason = String(rawReason || '').trim().slice(0, 500) || 'Cập nhật thời gian lịch học';
+  await writeCalendarChangeLog(tx, {
+    action: 'time_update',
+    current: before,
+    reason,
+    actor,
+    beforeData: { start_time: before.start_time, end_time: before.end_time },
+    afterData: { start_time: after.start_time, end_time: after.end_time },
+    affectedSessions: [after],
+    newKey: after.key,
+  });
 };
 
 // Helper: Tạo key (sessionId) tự động theo quy tắc
@@ -315,7 +345,9 @@ const normalizeRoom = (data: any) => {
 
 const hydrateLessonData = async (tx: any, input: any) => {
   const data = { ...input };
-  const sessionId = data.session_id ?? data.sessionId ?? data.lesson_id;
+  // session_id references the internal `lessons.id`. External HMO lesson_id
+  // is a section ID and only belongs inside package_lesson_mappings.
+  const sessionId = data.session_id ?? data.sessionId;
   const customLessonName = typeof data.lesson_name === 'string'
     ? data.lesson_name.trim()
     : '';
@@ -613,7 +645,7 @@ const prepareCalendarCreateData = async (
 
 const resolvePackageLessonMappings = async (rawMappings: any) => {
   if (!Array.isArray(rawMappings) || rawMappings.length === 0) {
-    throw new Error("Vui lòng khai báo ít nhất một Course ID và Lesson ID");
+    return [];
   }
   if (rawMappings.length > 100) {
     throw new Error("Không được khai báo quá 100 nhóm Course/Lesson");
@@ -644,7 +676,17 @@ const resolvePackageLessonMappings = async (rawMappings: any) => {
     if (lessonIds.length > 100 || lessonIds.some((lessonId) => lessonId.length > 50)) {
       throw new Error(`Nhóm mapping ${index + 1}: Lesson ID không hợp lệ`);
     }
-    return { courseId, lessonIds };
+    const rawPackageIds = Array.isArray(mapping?.package_ids)
+      ? mapping.package_ids
+      : Array.isArray(mapping?.package_id)
+        ? mapping.package_id
+        : [mapping?.package_id];
+    const packageIds = Array.from(new Set<string>(
+      rawPackageIds
+        .map((packageId: unknown) => String(packageId ?? '').trim())
+        .filter(Boolean)
+    ));
+    return { courseId, lessonIds, packageIds };
   });
 
   const mappings: Array<{
@@ -654,7 +696,9 @@ const resolvePackageLessonMappings = async (rawMappings: any) => {
   }> = [];
   const resolvedIdentities = new Set<string>();
   for (const group of normalizedGroups) {
-    const packageCourses = await resolvePackagesByCourseId(group.courseId);
+    const packageCourses = group.packageIds.length
+      ? group.packageIds.map((packageId) => ({ package_id: packageId, course_id: group.courseId }))
+      : await resolvePackagesByCourseId(group.courseId);
     for (const packageCourse of packageCourses) {
       for (const lessonId of group.lessonIds) {
         const identity = `${packageCourse.package_id}::${lessonId}`;
@@ -672,9 +716,9 @@ const resolvePackageLessonMappings = async (rawMappings: any) => {
 };
 
 const normalizePackageLessonMappingsForUpdate = async (rawMappings: any) => {
-  if (!Array.isArray(rawMappings) || rawMappings.length === 0) {
-    throw new Error("Vui lòng khai báo ít nhất một Package/Course/Lesson");
-  }
+  if (!Array.isArray(rawMappings)) throw new Error("Mapping Lesson ID không hợp lệ");
+  // Mảng rỗng là thao tác chủ động xóa toàn bộ Lesson ID của lịch.
+  if (rawMappings.length === 0) return [];
 
   const normalized: Array<{
     package_id: string;
@@ -790,6 +834,36 @@ const replacePackageLessonMappingForCalendar = async (
     where: { id: Number(calendar.id) },
     data: { updated_at: new Date() },
   });
+};
+
+const assertMappingsBelongToCalendarLesson = async (
+  tx: Prisma.TransactionClient,
+  calendar: any,
+  mappings: Array<{ package_id: string; course_id: string; lesson_id: string }>
+) => {
+  if (!mappings.length) return;
+  if (calendar?.session_id == null) {
+    throw new Error(`Buổi ${calendar?.id || ''} chưa gắn bài học nội bộ để xác định Course ID`);
+  }
+  const lessonCourses = await tx.$queryRaw<Array<{
+    package_id: string;
+    course_id: string;
+  }>>(Prisma.sql`
+    SELECT package_id, course_id
+    FROM lesson_course_mapping
+    WHERE lesson_id = ${BigInt(calendar.session_id)}
+  `);
+  const allowed = new Set(
+    lessonCourses.map((mapping) => `${mapping.package_id}::${mapping.course_id}`)
+  );
+  const invalid = mappings.find(
+    (mapping) => !allowed.has(`${mapping.package_id}::${mapping.course_id}`)
+  );
+  if (invalid) {
+    throw new Error(
+      `Course ID ${invalid.course_id} không thuộc bài học nội bộ của buổi ${calendar.id}`
+    );
+  }
 };
 
 const mappingLabel = (mappings: Array<{
@@ -931,7 +1005,7 @@ export const createSingle = async (data: any, changeActor?: CalendarChangeActor)
   const resolvedMappings = await resolvePackageLessonMappings(
     data?.package_lesson_mappings
   );
-  return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
+  return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => withManualHocmaiQueue(tx, async () => {
     const { calendarData } = await prepareCalendarCreateData(tx, data);
 
     await checkConflict({
@@ -946,13 +1020,135 @@ export const createSingle = async (data: any, changeActor?: CalendarChangeActor)
 
     const calendar = await createCalendarRecord(tx, calendarData);
     await createPackageLessonMappingForCalendar(tx, calendar, resolvedMappings);
+    if (resolvedMappings.length) {
+      await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'create', calendar);
+    }
     await enqueueCalendarTeamsNotification(tx, {
       eventType: 'created',
       after: calendar,
       actor: changeActor,
     });
     return calendar;
+  })));
+};
+
+export const getProgramLessonsForScheduling = async (programCode: string) => {
+  const code = String(programCode || '').trim();
+  if (!code) throw new Error('Vui lòng chọn Chương trình');
+  const rows = await prisma.$queryRaw<Array<{
+    id: bigint;
+    learn_number: number;
+    lesson_name: string;
+    scheduled_count: bigint;
+    past_scheduled_count: bigint;
+  }>>(Prisma.sql`
+    SELECT lesson.id, lesson.learn_number, lesson.lesson_name,
+      (
+        SELECT COUNT(*)
+        FROM calendar AS calendar_row
+        WHERE calendar_row.code = ${code}
+          AND (
+            calendar_row.session_id = lesson.id
+            OR calendar_row.learn_number = lesson.learn_number
+          )
+      ) AS scheduled_count,
+      (
+        SELECT COUNT(*)
+        FROM calendar AS calendar_row
+        WHERE calendar_row.code = ${code}
+          AND calendar_row.start_time <= NOW()
+          AND (
+            calendar_row.session_id = lesson.id
+            OR calendar_row.learn_number = lesson.learn_number
+          )
+      ) AS past_scheduled_count
+    FROM lessons AS lesson
+    WHERE lesson.subject_code = ${code} AND lesson.status <> 0
+    ORDER BY lesson.learn_number ASC, lesson.id ASC
+  `);
+  return rows.map((row) => ({
+    ...row,
+    id: String(row.id),
+    scheduled_count: Number(row.scheduled_count),
+    past_scheduled_count: Number(row.past_scheduled_count),
   }));
+};
+
+export const getSchedulingPrograms = async () => {
+  const rows = await prisma.$queryRaw<Array<{
+    code: string;
+    subject_name: string | null;
+  }>>(Prisma.sql`
+    SELECT source.code, MAX(source.subject_name) AS subject_name
+    FROM (
+      SELECT lesson.subject_code AS code, lesson.subject_name
+      FROM lessons AS lesson
+      WHERE lesson.status <> 0
+        AND lesson.subject_code IS NOT NULL
+        AND TRIM(lesson.subject_code) <> ''
+      UNION ALL
+      SELECT calendar_row.code, calendar_row.subject AS subject_name
+      FROM calendar AS calendar_row
+      WHERE calendar_row.code IS NOT NULL
+        AND TRIM(calendar_row.code) <> ''
+    ) AS source
+    GROUP BY source.code
+    ORDER BY source.code ASC
+  `);
+  return rows.map((row) => ({
+    code: row.code,
+    subject_name: row.subject_name,
+  }));
+};
+
+export const getHocmaiSectionsForProgramLesson = async (
+  programCode: string,
+  lessonId: string
+) => {
+  const code = String(programCode || '').trim();
+  let parsedLessonId: bigint;
+  try {
+    parsedLessonId = BigInt(lessonId);
+  } catch {
+    throw new Error('Bài học không hợp lệ');
+  }
+
+  const mappings = await prisma.$queryRaw<Array<{
+    package_id: string;
+    course_id: string;
+  }>>(Prisma.sql`
+    SELECT DISTINCT mapping.package_id, mapping.course_id
+    FROM lesson_course_mapping AS mapping
+    INNER JOIN lessons AS lesson ON lesson.id = mapping.lesson_id
+    WHERE lesson.id = ${parsedLessonId}
+      AND lesson.subject_code = ${code}
+      AND lesson.status <> 0
+    ORDER BY mapping.package_id ASC, mapping.course_id ASC
+  `);
+  if (!mappings.length) return [];
+
+  const identity = mappings
+    .map((mapping) => `${mapping.package_id}:${mapping.course_id}`)
+    .join('|');
+  const cacheKey = `${code}:${lessonId}:${identity}`;
+  const cached = hmoSectionsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+  const outlines = await fetchHocmaiCourseOutlines(mappings.map((mapping) => ({
+    packageId: String(mapping.package_id),
+    courseId: String(mapping.course_id),
+  })));
+  const data = outlines.flatMap((outline) => outline.lessons.map((section) => ({
+    package_id: outline.packageId,
+    course_id: outline.courseId,
+    lesson_id: section.lessonId,
+    lesson_name: section.name,
+  })));
+  hmoSectionsCache.set(cacheKey, {
+    expiresAt: Date.now() + HMO_SECTIONS_CACHE_TTL_MS,
+    data,
+  });
+  return data;
 };
 
 // 1.2. Thêm nhiều lịch
@@ -973,7 +1169,7 @@ export const createBulk = async (config: any, changeActor?: CalendarChangeActor)
     );
   }
 
-  return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
+  return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => withManualHocmaiQueue(tx, async () => {
     const createdCalendars = [];
 
     for (let index = 0; index < calendars.length; index += 1) {
@@ -999,6 +1195,9 @@ export const createBulk = async (config: any, changeActor?: CalendarChangeActor)
           calendar,
           resolvedMappingsByIndex[index]
         );
+        if (resolvedMappingsByIndex[index].length) {
+          await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'create', calendar);
+        }
         await enqueueCalendarTeamsNotification(tx, {
           eventType: 'created',
           after: calendar,
@@ -1012,7 +1211,7 @@ export const createBulk = async (config: any, changeActor?: CalendarChangeActor)
     }
 
     return { count: createdCalendars.length, calendars: createdCalendars };
-  }));
+  })));
 };
 
 export const createValidatedCalendarImport = async (
@@ -1026,7 +1225,7 @@ export const createValidatedCalendarImport = async (
   const reservedCounts = new Map<string, Set<number>>();
   const timeout = Number(process.env.CALENDAR_IMPORT_TRANSACTION_TIMEOUT_MS || 60_000);
 
-  return withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
+  return withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => withManualHocmaiQueue(tx, async () => {
     const createdCalendars: any[] = [];
     for (const row of rows) {
       try {
@@ -1046,6 +1245,9 @@ export const createValidatedCalendarImport = async (
         });
         const calendar = await createCalendarRecord(tx, calendarData);
         await createPackageLessonMappingForCalendar(tx, calendar, row.mappings);
+        if (row.mappings.length) {
+          await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'create', calendar);
+        }
         await enqueueCalendarTeamsNotification(tx, {
           eventType: 'created',
           after: calendar,
@@ -1062,7 +1264,7 @@ export const createValidatedCalendarImport = async (
       count: createdCalendars.length,
       calendars: createdCalendars,
     };
-  }, {
+  }), {
     isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     maxWait: 10_000,
     timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 60_000,
@@ -1380,6 +1582,7 @@ export const updateSchedule = async (
   }
 
   const rawMappingUpdate = data?.package_lesson_mappings;
+  const auditReason = data?.reason ?? data?.change_reason;
   const hasMappingUpdate = Array.isArray(rawMappingUpdate);
   const resolvedMappingUpdate = hasMappingUpdate
     ? await normalizePackageLessonMappingsForUpdate(rawMappingUpdate)
@@ -1397,6 +1600,8 @@ export const updateSchedule = async (
   delete data.package_lesson_mappings;
   delete data.key;
   delete data.new_session;
+  delete data.reason;
+  delete data.change_reason;
 
   const current = await prisma.calendar.findUnique({ where: { id } });
   if (!current) throw new Error("Not found");
@@ -1428,10 +1633,11 @@ export const updateSchedule = async (
   return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
     const operation = async () => {
       const updated = await updateCalendarRecord(tx, id, data);
+      await auditTimeChange(tx, current, updated, changeActor, auditReason);
       if (resolvedMappingUpdate) {
         await replacePackageLessonMappingForCalendar(tx, updated, resolvedMappingUpdate);
-        await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
       }
+      await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
       await enqueueCalendarTeamsNotification(tx, {
         eventType: 'updated',
         before: current,
@@ -1441,9 +1647,7 @@ export const updateSchedule = async (
       return updated;
     };
 
-    return resolvedMappingUpdate
-      ? withManualHocmaiQueue(tx, operation)
-      : operation();
+    return withManualHocmaiQueue(tx, operation);
   }));
 };
 
@@ -1546,6 +1750,9 @@ export const getCalendar = async (query: any) => {
   const timeStatus = normalizeString(query.time_status);
   const startTime = normalizeDate(query.start_time, 'start_time');
   const endTime = normalizeDate(query.end_time, 'end_time');
+  if (!exactCode && !code) {
+    throw new Error('Vui lòng chọn Chương trình');
+  }
   const sortFields = (normalizeString(query.sort_by) || '')
     .split(',')
     .map((field) => field.trim())
@@ -1592,11 +1799,7 @@ export const getCalendar = async (query: any) => {
       { channel_name: { contains: keyword } },
     ];
   }
-  if (exactCode) {
-    where.code = exactCode;
-  } else if (code) {
-    where.code = { contains: code };
-  }
+  if (exactCode || code) where.code = exactCode || code;
   if (teacher) where.teacher = { contains: teacher };
   if (subject) where.subject = { contains: subject };
   if (classroom) where.channel_name = { contains: classroom };
@@ -2006,10 +2209,12 @@ export const updateBulk = async (
               start_time: newStart,
               end_time: newEnd,
             });
+            await auditTimeChange(tx, current, updated, changeActor, config?.reason ?? config?.change_reason);
             if (commonMappingUpdate) {
+              await assertMappingsBelongToCalendarLesson(tx, current, commonMappingUpdate);
               await replacePackageLessonMappingForCalendar(tx, updated, commonMappingUpdate);
-              await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
             }
+            await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
             await enqueueCalendarTeamsNotification(tx, {
               eventType: 'updated',
               before: current,
@@ -2019,11 +2224,7 @@ export const updateBulk = async (
             results.push(updated);
           }
         };
-        if (commonMappingUpdate) {
-          await withManualHocmaiQueue(tx, applyUpdates);
-        } else {
-          await applyUpdates();
-        }
+        await withManualHocmaiQueue(tx, applyUpdates);
         return results;
       });
     }
@@ -2040,10 +2241,12 @@ export const updateBulk = async (
       const applyUpdates = async () => {
         for (const current of sessions) {
           const updated = await updateCalendarRecord(tx, current.id, dataToUpdate);
+          await auditTimeChange(tx, current, updated, changeActor, config?.reason ?? config?.change_reason);
           if (commonMappingUpdate) {
+            await assertMappingsBelongToCalendarLesson(tx, current, commonMappingUpdate);
             await replacePackageLessonMappingForCalendar(tx, updated, commonMappingUpdate);
-            await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
           }
+          await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
           await enqueueCalendarTeamsNotification(tx, {
             eventType: 'updated',
             before: current,
@@ -2053,11 +2256,7 @@ export const updateBulk = async (
           results.push(updated);
         }
       };
-      if (commonMappingUpdate) {
-        await withManualHocmaiQueue(tx, applyUpdates);
-      } else {
-        await applyUpdates();
-      }
+      await withManualHocmaiQueue(tx, applyUpdates);
       return results;
     });
   }
@@ -2129,11 +2328,13 @@ export const updateBulk = async (
           });
 
           const updated = await updateCalendarRecord(tx, id, dataToUpdate);
+          await auditTimeChange(tx, current, updated, changeActor, item?.reason ?? config?.reason);
           const mappingUpdate = mappingUpdatesById.get(id);
           if (mappingUpdate) {
+            await assertMappingsBelongToCalendarLesson(tx, current, mappingUpdate);
             await replacePackageLessonMappingForCalendar(tx, updated, mappingUpdate);
-            await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
           }
+          await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
           await enqueueCalendarTeamsNotification(tx, {
             eventType: 'updated',
             before: current,
@@ -2143,11 +2344,7 @@ export const updateBulk = async (
           results.push(updated);
         }
       };
-      if (mappingUpdatesById.size > 0) {
-        await withManualHocmaiQueue(tx, applyUpdates);
-      } else {
-        await applyUpdates();
-      }
+      await withManualHocmaiQueue(tx, applyUpdates);
       return results;
     });
   }

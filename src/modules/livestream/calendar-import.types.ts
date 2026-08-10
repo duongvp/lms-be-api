@@ -46,6 +46,7 @@ export type CalendarImportRow = {
 };
 
 export type HmoCourseOutlineLesson = {
+  /** HMO section ID. Kept as lessonId to match the calendar mapping contract. */
   lessonId: string;
   name?: string;
 };

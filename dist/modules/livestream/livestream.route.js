@@ -101,12 +101,17 @@ router.use(authenticate);
 router.get('/', authorize(['calendar.view']), livestreamController.getCalendar);
 router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
 router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
+router.get('/programs', authorize(['calendar.view']), livestreamController.getPrograms);
+router.get('/programs/:code/lessons', authorize(['calendar.view']), livestreamController.getProgramLessons);
+router.get('/programs/:code/lessons/:lessonId/hmo-sections', authorize(['calendar.view']), livestreamController.getProgramLessonHocmaiSections);
 router.post('/import', authorize(['calendar.import']), upload.single('file'), livestreamController.importFile);
 router.post('/mapping/preview', authorize(['calendar.update']), livestreamController.previewMappingUpdates);
 router.put('/mapping', authorize(['calendar.update']), livestreamController.updateMappings);
 router.post('/mapping/import/preview', authorize(['calendar.import', 'calendar.update']), upload.single('file'), livestreamController.previewMappingImport);
 router.post('/single', authorize(['calendar.create']), authorizeTeachingAssignment('calendar.teacher.assign'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))), livestreamController.createSingle);
 router.post('/bulk', authorize(['calendar.create']), authorizeTeachingAssignment('calendar.teacher.assign'), authorizeFields('calendar', (req) => normalizeCalendarFields((req.body?.calendars || []).flatMap((item) => Object.keys(item || {})))), livestreamController.createBulk);
+router.post('/auto-schedule/preview', authorize(['calendar.create']), livestreamController.previewAutoSchedule);
+router.post('/auto-schedule/commit', authorize(['calendar.create']), authorizeTeachingAssignment('calendar.teacher.assign'), livestreamController.commitAutoSchedule);
 // Thêm dòng này (Bắt buộc phải đặt trước các route có param /:id)
 router.put('/bulk', authorize(['calendar.update']), authorizeTeachingAssignment('calendar.teacher.update'), authorizeFields('calendar', (req) => normalizeCalendarFields(Array.isArray(req.body?.update_data)
     ? req.body.update_data.flatMap((item) => Object.keys(item || {}))

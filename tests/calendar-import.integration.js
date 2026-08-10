@@ -37,9 +37,9 @@ const run = async () => {
           id: url.searchParams.get('course'),
           fullname: 'Integration course',
           sections: [{
-            id: '1',
+            id: lessonId,
             name: 'Integration section',
-            lessons: [{ id: lessonId, name: 'Integration lesson' }],
+            lessons: [{ id: 'child-content-id', name: 'Integration lesson' }],
           }],
         },
       },

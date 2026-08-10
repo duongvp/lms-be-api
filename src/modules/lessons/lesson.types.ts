@@ -42,6 +42,14 @@ export interface LessonReorderPayload {
   ordered_ids: bigint[];
 }
 
+export interface LessonCourseMappingPayload {
+  program_code: string;
+  action: 'add' | 'delete';
+  package_id: string;
+  course_id: string;
+  lesson_ids?: bigint[];
+}
+
 export type LessonExportFormat = 'csv' | 'xlsx';
 
 export interface LessonExportQuery extends LessonListQuery {

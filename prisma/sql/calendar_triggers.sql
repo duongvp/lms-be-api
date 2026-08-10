@@ -26,6 +26,12 @@ BEGIN
     IF COALESCE(@lms_manual_hocmai_queue, 0) = 0
        AND NEW.`key` IS NOT NULL
        AND NEW.`key` != ''
+       AND EXISTS (
+           SELECT 1 FROM package_lesson_mapping AS mapping
+           WHERE mapping.`key` = NEW.`key`
+             AND mapping.lesson_id IS NOT NULL
+             AND mapping.lesson_id != ''
+       )
     THEN
         INSERT INTO hocmai_sync_queue (c_key, action, payload, status)
         VALUES (
@@ -72,6 +78,12 @@ BEGIN
     IF COALESCE(@lms_manual_hocmai_queue, 0) = 0
        AND NEW.`key` IS NOT NULL
        AND NEW.`key` != ''
+       AND EXISTS (
+           SELECT 1 FROM package_lesson_mapping AS mapping
+           WHERE mapping.`key` = NEW.`key`
+             AND mapping.lesson_id IS NOT NULL
+             AND mapping.lesson_id != ''
+       )
        AND (
            NOT (OLD.`key` <=> NEW.`key`)
            OR NOT (OLD.code <=> NEW.code)
@@ -114,6 +126,12 @@ BEGIN
     IF COALESCE(@lms_manual_hocmai_queue, 0) = 0
        AND NEW.`key` IS NOT NULL
        AND NEW.`key` != ''
+       AND EXISTS (
+           SELECT 1 FROM package_lesson_mapping AS mapping
+           WHERE mapping.`key` = NEW.`key`
+             AND mapping.lesson_id IS NOT NULL
+             AND mapping.lesson_id != ''
+       )
        AND (
            NOT (OLD.lesson_status <=> NEW.lesson_status)
            OR NOT (OLD.lesson_noti <=> NEW.lesson_noti)

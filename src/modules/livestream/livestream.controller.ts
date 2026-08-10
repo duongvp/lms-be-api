@@ -9,6 +9,7 @@ import {
   parseCalendarImportFile,
   validateCalendarImportRows,
 } from './livestream.io';
+import { previewAutoSchedule as buildAutoSchedulePreview } from './auto-schedule.service';
 import { importCalendarFromSheet } from './calendar-import.service';
 
 const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => ({
@@ -32,6 +33,54 @@ export const createBulk = async (req: Request, res: Response, next: NextFunction
     res.status(201).json({ success: true, data: result });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const previewAutoSchedule = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    res.status(200).json({ success: true, data: buildAutoSchedulePreview(req.body) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getProgramLessons = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.getProgramLessonsForScheduling(String(req.params.code || ''));
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPrograms = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    res.status(200).json({ success: true, data: await livestreamService.getSchedulingPrograms() });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getProgramLessonHocmaiSections = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.getHocmaiSectionsForProgramLesson(
+      String(req.params.code || ''),
+      String(req.params.lessonId || '')
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const commitAutoSchedule = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const preview = buildAutoSchedulePreview(req.body);
+    const calendars = preview.calendars.map(({ auto_schedule, ...calendar }) => calendar);
+    const data = await livestreamService.createBulk({ calendars }, getChangeActor(req));
+    res.status(201).json({ success: true, data: { ...preview, calendars: data } });
+  } catch (error) {
+    next(error);
   }
 };
 
@@ -114,6 +163,7 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
         ...record,
         // id/can_modify là metadata phục vụ thao tác, không phải cột dữ liệu.
         id: source.id,
+        session_id: source.session_id == null ? null : String(source.session_id),
         can_modify: livestreamService.isSessionModifiable(source, now),
         package_lesson_mappings: source.package_lesson_mappings || [],
       };
@@ -161,6 +211,21 @@ export const importFile = async (req: Request, res: Response): Promise<void> => 
     }
     const rows = parseCalendarImportFile(req.file.buffer, req.file.originalname);
     const { importRows, errors } = validateCalendarImportRows(rows);
+    const programCode = String(req.body?.program_code || '').trim();
+    if (!programCode) {
+      res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
+      return;
+    }
+    importRows.forEach((row) => {
+      if (String(row.calendar.code) !== programCode) {
+        errors.push({
+          row: row.row,
+          field: 'Mã buổi học',
+          errorCode: 'INVALID_ROW',
+          message: `Dòng import không thuộc Chương trình ${programCode}`,
+        });
+      }
+    });
     if (errors.length) {
       const invalidRows = new Set(errors.map((error) => error.row)).size;
       res.status(400).json({

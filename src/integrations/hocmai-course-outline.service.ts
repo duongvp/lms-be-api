@@ -44,11 +44,12 @@ const parseSuccessfulResponse = (
     );
   }
 
-  const lessons = course.sections.flatMap((section: any) => (
-    Array.isArray(section?.lessons) ? section.lessons : []
-  )).map((lesson: any) => ({
-    lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
-    name: String(lesson?.name ?? '').trim() || undefined,
+  // Theo hợp đồng HMO, `lesson_id` của lịch là ID của section trong outline.
+  // ID của các phần tử `section.lessons[]` là nội dung con và không được dùng
+  // làm external lesson_id của calendar.
+  const lessons = course.sections.map((section: any) => ({
+    lessonId: String(section?.id ?? section?.sectionId ?? '').trim(),
+    name: String(section?.name ?? '').trim() || undefined,
   })).filter((lesson: any) => lesson.lessonId);
 
   return {

@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteLessonIfUnscheduled = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = void 0;
+exports.deleteLessonIfUnscheduled = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findPastScheduledLessonIds = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.updateLessonCourseMappings = exports.findLessonCourseMappings = exports.findLessonProgramByCode = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = void 0;
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const syncCalendarsFromLessons = async (tx, lessonIds) => {
     if (lessonIds.length === 0)
@@ -94,15 +94,22 @@ const findLessons = async (query) => {
     const { whereSql, values } = buildWhere(query);
     const sortBy = query.sort_by ?? 'updated_at';
     const sortOrder = query.sort_order ?? 'desc';
-    const selectSql = query.course_code
+    const programCode = query.subject_code || query.course_code;
+    const selectSql = programCode
         ? `lessons.*, (
         SELECT COUNT(*)
         FROM calendar
         WHERE calendar.code = ?
-          AND calendar.learn_number = lessons.learn_number
-      ) AS scheduled_count`
+          AND (calendar.session_id = lessons.id OR calendar.learn_number = lessons.learn_number)
+      ) AS scheduled_count, (
+        SELECT COUNT(*)
+        FROM calendar
+        WHERE calendar.code = ?
+          AND (calendar.session_id = lessons.id OR calendar.learn_number = lessons.learn_number)
+          AND calendar.start_time <= NOW()
+      ) AS past_scheduled_count`
         : 'lessons.*';
-    const selectValues = query.course_code ? [query.course_code, ...values] : values;
+    const selectValues = programCode ? [programCode, programCode, ...values] : values;
     const countRows = await prisma_1.default.$queryRawUnsafe(`SELECT COUNT(*) AS total FROM lessons ${whereSql}`, ...values);
     const data = await prisma_1.default.$queryRawUnsafe(`SELECT ${selectSql} FROM lessons ${whereSql} ORDER BY ${sortBy} ${sortOrder.toUpperCase()} LIMIT ? OFFSET ?`, ...selectValues, limit, skip);
     return {
@@ -132,6 +139,59 @@ const findLessonProgramOptions = async () => {
      ORDER BY subject_name ASC, grade ASC, subject_code ASC`);
 };
 exports.findLessonProgramOptions = findLessonProgramOptions;
+const findLessonProgramByCode = async (programCode) => {
+    const rows = await prisma_1.default.$queryRawUnsafe(`SELECT grade, subject_name, subject_code
+     FROM lessons
+     WHERE status <> 0 AND subject_code = ?
+     ORDER BY id ASC
+     LIMIT 1`, programCode);
+    return rows[0] ?? null;
+};
+exports.findLessonProgramByCode = findLessonProgramByCode;
+const findLessonCourseMappings = async (programCode) => prisma_1.default.$queryRawUnsafe(`SELECT mapping.id, mapping.lesson_id, mapping.package_id, mapping.course_id,
+            lesson.learn_number, lesson.lesson_name
+     FROM lesson_course_mapping AS mapping
+     INNER JOIN lessons AS lesson ON lesson.id = mapping.lesson_id
+     WHERE lesson.subject_code = ? AND lesson.status <> 0
+     ORDER BY lesson.learn_number ASC, mapping.package_id ASC, mapping.course_id ASC`, programCode);
+exports.findLessonCourseMappings = findLessonCourseMappings;
+const updateLessonCourseMappings = async (input) => prisma_1.default.$transaction(async (tx) => {
+    const params = [input.programCode];
+    const lessonFilter = input.lessonIds?.length
+        ? ` AND lesson.id IN (${input.lessonIds.map(() => '?').join(', ')})`
+        : '';
+    params.push(...(input.lessonIds ?? []));
+    const lessons = await tx.$queryRawUnsafe(`SELECT lesson.id
+     FROM lessons AS lesson
+     WHERE lesson.subject_code = ? AND lesson.status <> 0${lessonFilter}
+     ORDER BY lesson.learn_number ASC
+     FOR UPDATE`, ...params);
+    if (!lessons.length)
+        throw new Error('Chương trình không có bài học phù hợp');
+    const lockedIds = await tx.$queryRawUnsafe(`SELECT DISTINCT lesson.id
+     FROM lessons AS lesson
+     INNER JOIN calendar AS calendar_row
+       ON calendar_row.session_id = lesson.id
+       OR (calendar_row.code = lesson.subject_code AND calendar_row.learn_number = lesson.learn_number)
+     WHERE lesson.subject_code = ?
+       AND calendar_row.start_time <= NOW()
+       AND lesson.id IN (${lessons.map(() => '?').join(', ')})`, input.programCode, ...lessons.map((lesson) => lesson.id));
+    const locked = new Set(lockedIds.map((row) => String(row.id)));
+    const eligible = lessons.filter((lesson) => !locked.has(String(lesson.id)));
+    for (const lesson of eligible) {
+        if (input.action === 'add') {
+            await tx.$executeRawUnsafe(`INSERT INTO lesson_course_mapping (lesson_id, package_id, course_id)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`, lesson.id, input.packageId, input.courseId);
+        }
+        else {
+            await tx.$executeRawUnsafe(`DELETE FROM lesson_course_mapping
+         WHERE lesson_id = ? AND package_id = ? AND course_id = ?`, lesson.id, input.packageId, input.courseId);
+        }
+    }
+    return { affected: eligible.length, skipped_past: locked.size, total: lessons.length };
+});
+exports.updateLessonCourseMappings = updateLessonCourseMappings;
 const findLessonsForExport = async (query) => {
     if (query.ids?.length) {
         const placeholders = query.ids.map(() => '?').join(', ');
@@ -162,6 +222,22 @@ const findLessonsByGroup = async (grade, subjectCode) => {
     return prisma_1.default.$queryRawUnsafe('SELECT * FROM lessons WHERE grade = ? AND subject_code = ? AND status <> 0 ORDER BY learn_number ASC, id ASC', grade, subjectCode);
 };
 exports.findLessonsByGroup = findLessonsByGroup;
+const findPastScheduledLessonIds = async (ids, programCode) => {
+    if (!ids.length)
+        return new Set();
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = await prisma_1.default.$queryRawUnsafe(`SELECT DISTINCT lesson.id
+     FROM lessons AS lesson
+     INNER JOIN calendar AS calendar_row
+       ON (calendar_row.session_id = lesson.id
+         OR (calendar_row.code = lesson.subject_code
+           AND calendar_row.learn_number = lesson.learn_number))
+     WHERE lesson.id IN (${placeholders})
+       AND calendar_row.start_time <= NOW()
+       ${programCode ? 'AND calendar_row.code = ?' : ''}`, ...ids, ...(programCode ? [programCode] : []));
+    return new Set(rows.map((row) => String(row.id)));
+};
+exports.findPastScheduledLessonIds = findPastScheduledLessonIds;
 const createLesson = async (payload) => {
     return prisma_1.default.$transaction(async (tx) => {
         let learnNumber = payload.learn_number;

@@ -31,11 +31,11 @@ const formatChangedDate = (value: unknown) => {
   const date = asDate(value);
   return date
     ? new Intl.DateTimeFormat('vi-VN', {
-        timeZone: TIME_ZONE,
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-      }).format(date)
+      timeZone: TIME_ZONE,
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    }).format(date)
     : EMPTY_VALUE;
 };
 
@@ -43,11 +43,11 @@ const formatChangedTime = (value: unknown) => {
   const date = asDate(value);
   return date
     ? new Intl.DateTimeFormat('vi-VN', {
-        timeZone: TIME_ZONE,
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      }).format(date)
+      timeZone: TIME_ZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(date)
     : EMPTY_VALUE;
 };
 
@@ -125,19 +125,19 @@ export const buildTeamsAdaptiveCard = (payload: CalendarNotificationPayload) => 
   ];
   const changeBlocks = payload.changes.length
     ? [
-        {
-          type: 'TextBlock',
-          text: 'Thông tin thay đổi',
-          weight: 'Bolder',
-          spacing: 'Medium',
-        },
-        ...payload.changes.map((change) => ({
-          type: 'TextBlock',
-          text: `**${change.label}:** ${change.before} → ${change.after}`,
-          wrap: true,
-          spacing: 'Small',
-        })),
-      ]
+      {
+        type: 'TextBlock',
+        text: 'Thông tin thay đổi',
+        weight: 'Bolder',
+        spacing: 'Medium',
+      },
+      ...payload.changes.map((change) => ({
+        type: 'TextBlock',
+        text: `**${change.label}:** ${change.before} → ${change.after}`,
+        wrap: true,
+        spacing: 'Small',
+      })),
+    ]
     : [];
 
   return {

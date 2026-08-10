@@ -3,11 +3,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importLessonRows = exports.validateLessonImportSequence = exports.getLessonImportTemplate = exports.exportLessons = exports.reorderExistingLessons = exports.bulkUpdateExistingLessons = exports.deleteExistingLesson = exports.updateExistingLesson = exports.createNewLesson = exports.getLessonDetail = exports.getLessonPrograms = exports.getLessonSubjects = exports.getLessons = void 0;
+exports.importLessonRows = exports.validateLessonImportSequence = exports.getLessonImportTemplate = exports.exportLessons = exports.reorderExistingLessons = exports.bulkUpdateExistingLessons = exports.deleteExistingLesson = exports.updateExistingLesson = exports.createNewProgram = exports.createNewLesson = exports.getLessonDetail = exports.changeLessonCourseMappings = exports.getCourseMappingsByProgram = exports.getLessonPrograms = exports.getLessonSubjects = exports.getLessons = void 0;
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const serializer_1 = require("../../lib/serializer");
 const lesson_repository_1 = require("./lesson.repository");
 const lesson_constants_1 = require("./lesson.constants");
+const package_course_sheet_service_1 = require("../../integrations/package-course-sheet.service");
 const lesson_io_1 = require("./lesson.io");
 const getLessons = async (query) => {
     const result = await (0, lesson_repository_1.findLessons)(query);
@@ -33,6 +34,24 @@ const getLessonSubjects = async () => {
 exports.getLessonSubjects = getLessonSubjects;
 const getLessonPrograms = async () => ((0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.findLessonProgramOptions)()));
 exports.getLessonPrograms = getLessonPrograms;
+const getCourseMappingsByProgram = async (programCode) => ((0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.findLessonCourseMappings)(programCode)));
+exports.getCourseMappingsByProgram = getCourseMappingsByProgram;
+const changeLessonCourseMappings = async (payload) => {
+    if (payload.action === 'add') {
+        const sheetRows = await (0, package_course_sheet_service_1.resolvePackagesByCourseId)(payload.course_id);
+        if (!sheetRows.some((row) => row.package_id === payload.package_id)) {
+            throw new ApiError_1.default(`Package ID ${payload.package_id} không thuộc Course ID ${payload.course_id} trong PACKAGE_COURSE_SHEET_URL`, 400);
+        }
+    }
+    return (0, lesson_repository_1.updateLessonCourseMappings)({
+        programCode: payload.program_code,
+        action: payload.action,
+        packageId: payload.package_id,
+        courseId: payload.course_id,
+        lessonIds: payload.lesson_ids,
+    });
+};
+exports.changeLessonCourseMappings = changeLessonCourseMappings;
 const getLessonDetail = async (id) => {
     const lesson = await (0, lesson_repository_1.findLessonById)(id);
     if (!lesson)
@@ -58,10 +77,36 @@ const createNewLesson = async (payload) => {
     }
 };
 exports.createNewLesson = createNewLesson;
+const createNewProgram = async (payload) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(payload.subject_code)) {
+        throw new ApiError_1.default('Mã Chương trình chỉ được dùng chữ không dấu, số, dấu gạch ngang hoặc gạch dưới', 400);
+    }
+    const existingProgram = await (0, lesson_repository_1.findLessonProgramByCode)(payload.subject_code);
+    if (existingProgram) {
+        throw new ApiError_1.default(`Chương trình ${payload.subject_code} đã tồn tại`, 409);
+    }
+    const firstLesson = await (0, exports.createNewLesson)({
+        ...payload,
+        learn_number: 1,
+    });
+    return {
+        grade: payload.grade,
+        subject_code: payload.subject_code,
+        subject_name: payload.subject_name,
+        first_lesson: firstLesson,
+    };
+};
+exports.createNewProgram = createNewProgram;
 const updateExistingLesson = async (id, payload) => {
     const current = await (0, lesson_repository_1.findLessonById)(id);
     if (!current)
         throw new ApiError_1.default('Lesson not found', 404);
+    if (payload.learn_number !== undefined && Number(payload.learn_number) !== Number(current.learn_number)) {
+        const lockedIds = await (0, lesson_repository_1.findPastScheduledLessonIds)([id], String(current.subject_code));
+        if (lockedIds.has(String(id))) {
+            throw new ApiError_1.default('Không thể đổi thứ tự bài học đã diễn ra trong quá khứ', 409);
+        }
+    }
     if (payload.grade !== undefined && Number(payload.grade) !== Number(current.grade)) {
         throw new ApiError_1.default('Không thể thay đổi khối khi cập nhật bài học', 400);
     }
@@ -113,7 +158,15 @@ const reorderExistingLessons = async (payload) => {
     if (activeIdSet.size !== orderedIdSet.size || orderedIds.some((id) => !activeIdSet.has(id))) {
         throw new ApiError_1.default('Danh sách sắp xếp không hợp lệ', 400);
     }
-    return (0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.reorderLessonsInGroup)(payload.grade, payload.subject_code, payload.ordered_ids, lessons.map((lesson) => Number(lesson.learn_number))));
+    const learnNumbers = lessons.map((lesson) => Number(lesson.learn_number));
+    const lockedIds = await (0, lesson_repository_1.findPastScheduledLessonIds)(payload.ordered_ids, payload.subject_code);
+    const lessonById = new Map(lessons.map((lesson) => [String(lesson.id), lesson]));
+    const movedLockedLesson = orderedIds.some((id, index) => (lockedIds.has(id)
+        && Number(lessonById.get(id)?.learn_number) !== learnNumbers[index]));
+    if (movedLockedLesson) {
+        throw new ApiError_1.default('Không thể sắp xếp lại bài học đã diễn ra trong quá khứ', 409);
+    }
+    return (0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.reorderLessonsInGroup)(payload.grade, payload.subject_code, payload.ordered_ids, learnNumbers));
 };
 exports.reorderExistingLessons = reorderExistingLessons;
 const exportLessons = async (query) => {

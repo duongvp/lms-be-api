@@ -36,10 +36,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.createBulk = exports.createSingle = void 0;
+exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const livestream_io_1 = require("./livestream.io");
+const auto_schedule_service_1 = require("./auto-schedule.service");
 const calendar_import_service_1 = require("./calendar-import.service");
 const getChangeActor = (req) => ({
     userId: Number(req.user?.userId),
@@ -66,6 +67,56 @@ const createBulk = async (req, res, next) => {
     }
 };
 exports.createBulk = createBulk;
+const previewAutoSchedule = async (req, res, next) => {
+    try {
+        res.status(200).json({ success: true, data: (0, auto_schedule_service_1.previewAutoSchedule)(req.body) });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.previewAutoSchedule = previewAutoSchedule;
+const getProgramLessons = async (req, res, next) => {
+    try {
+        const data = await livestreamService.getProgramLessonsForScheduling(String(req.params.code || ''));
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getProgramLessons = getProgramLessons;
+const getPrograms = async (_req, res, next) => {
+    try {
+        res.status(200).json({ success: true, data: await livestreamService.getSchedulingPrograms() });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getPrograms = getPrograms;
+const getProgramLessonHocmaiSections = async (req, res, next) => {
+    try {
+        const data = await livestreamService.getHocmaiSectionsForProgramLesson(String(req.params.code || ''), String(req.params.lessonId || ''));
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getProgramLessonHocmaiSections = getProgramLessonHocmaiSections;
+const commitAutoSchedule = async (req, res, next) => {
+    try {
+        const preview = (0, auto_schedule_service_1.previewAutoSchedule)(req.body);
+        const calendars = preview.calendars.map(({ auto_schedule, ...calendar }) => calendar);
+        const data = await livestreamService.createBulk({ calendars }, getChangeActor(req));
+        res.status(201).json({ success: true, data: { ...preview, calendars: data } });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.commitAutoSchedule = commitAutoSchedule;
 // Hàm mới: Cập nhật nhiều lịch học cùng lúc (Bulk Update)
 const updateBulk = async (req, res, next) => {
     try {
@@ -133,6 +184,7 @@ const getCalendar = async (req, res, next) => {
                 ...record,
                 // id/can_modify là metadata phục vụ thao tác, không phải cột dữ liệu.
                 id: source.id,
+                session_id: source.session_id == null ? null : String(source.session_id),
                 can_modify: livestreamService.isSessionModifiable(source, now),
                 package_lesson_mappings: source.package_lesson_mappings || [],
             };
@@ -176,6 +228,21 @@ const importFile = async (req, res) => {
         }
         const rows = (0, livestream_io_1.parseCalendarImportFile)(req.file.buffer, req.file.originalname);
         const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
+        const programCode = String(req.body?.program_code || '').trim();
+        if (!programCode) {
+            res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
+            return;
+        }
+        importRows.forEach((row) => {
+            if (String(row.calendar.code) !== programCode) {
+                errors.push({
+                    row: row.row,
+                    field: 'Mã buổi học',
+                    errorCode: 'INVALID_ROW',
+                    message: `Dòng import không thuộc Chương trình ${programCode}`,
+                });
+            }
+        });
         if (errors.length) {
             const invalidRows = new Set(errors.map((error) => error.row)).size;
             res.status(400).json({

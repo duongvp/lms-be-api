@@ -6,7 +6,7 @@ const router = Router();
 router.use(authMiddleware.authenticate);
 router.get(
   '/',
-  authMiddleware.authorize(['calendar.view', 'calendar.create']),
+  authMiddleware.authorize(['calendar.view', 'calendar.create', 'lessons.view']),
   packageCourseController.list
 );
 

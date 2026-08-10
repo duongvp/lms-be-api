@@ -73,6 +73,9 @@ const enqueueStatus = async (tx, operationId, sequenceNo, session) => {
     const key = String(calendar.key || '');
     if (!key)
         throw new Error('Lịch học không có key để tạo queue HMO');
+    const mappings = await loadPackagesForKey(tx, key);
+    if (!mappings.length)
+        return false;
     await insertQueue(tx, {
         operationId,
         sequenceNo,
@@ -85,6 +88,7 @@ const enqueueStatus = async (tx, operationId, sequenceNo, session) => {
             target: 'https://hocmai.vn',
         },
     });
+    return true;
 };
 const enqueueCalendar = async (tx, operationId, sequenceNo, action, session) => {
     const calendar = await loadCalendarForSync(tx, Number(session.id));
@@ -92,6 +96,10 @@ const enqueueCalendar = async (tx, operationId, sequenceNo, action, session) => 
     if (!key)
         throw new Error('Lịch học không có key để tạo queue HMO');
     const mappings = await loadPackagesForKey(tx, key);
+    // Calendar được phép tồn tại trước khi BA gán section lesson_id bên HMO.
+    // Không tạo một job chắc chắn lỗi/đẩy packages rỗng trong trạng thái này.
+    if (!mappings.length)
+        return false;
     await insertQueue(tx, {
         operationId,
         sequenceNo,
@@ -116,6 +124,7 @@ const enqueueCalendar = async (tx, operationId, sequenceNo, action, session) => 
             })),
         },
     });
+    return true;
 };
 exports.enqueueCalendarSync = enqueueCalendar;
 /**

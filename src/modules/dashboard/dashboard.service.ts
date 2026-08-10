@@ -11,6 +11,8 @@ type SummaryRow = {
   teachers: bigint | number;
   assistants: bigint | number;
   admin_users: bigint | number;
+  outlines_with_quiz: bigint | number;
+  outlines_without_quiz: bigint | number;
 };
 
 type TodayRow = {
@@ -23,13 +25,39 @@ type TodayRow = {
 
 const numberValue = (value: bigint | number | null | undefined) => Number(value ?? 0);
 
-export const getDashboardOverview = async () => {
+export type DashboardTimeFilter = { from?: Date; to?: Date };
+
+export const getDashboardOverview = async (filter: DashboardTimeFilter = {}) => {
+  const from = filter.from ?? new Date();
+  const to = filter.to ?? new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+    throw new Error('Khoảng thời gian không hợp lệ');
+  }
+  const calendarRange = Prisma.sql`start_time >= ${from} AND start_time <= ${to}`;
+  const lessonRange = Prisma.sql`updated_at >= ${from} AND updated_at <= ${to}`;
+
   const [summaryRows, todayRows, weeklyRows, upcomingRows, recentChanges, teamsRows, hocmaiRows] = await Promise.all([
     prisma.$queryRaw<SummaryRow[]>(Prisma.sql`
       SELECT
-        (SELECT COUNT(DISTINCT code) FROM calendar) AS courses,
-        (SELECT COUNT(*) FROM lessons WHERE status = 1) AS lessons,
-        (SELECT COUNT(*) FROM quiz_content WHERE quiz_status <> 'disable' OR quiz_status IS NULL) AS quizzes,
+        (SELECT COUNT(DISTINCT code) FROM calendar WHERE ${calendarRange}) AS courses,
+        (SELECT COUNT(*) FROM lessons WHERE status = 1 AND ${lessonRange}) AS lessons,
+        (SELECT COUNT(*) FROM quiz_content WHERE (quiz_status <> 'disable' OR quiz_status IS NULL) AND updated_at >= ${from} AND updated_at <= ${to}) AS quizzes,
+        (SELECT COUNT(*) FROM lessons AS lesson
+          WHERE lesson.status = 1 AND ${lessonRange}
+            AND EXISTS (
+              SELECT 1 FROM quiz_content AS quiz
+              WHERE quiz.code = lesson.subject_code
+                AND quiz.learn_number = lesson.learn_number
+                AND (quiz.quiz_status <> 'disable' OR quiz.quiz_status IS NULL)
+            )) AS outlines_with_quiz,
+        (SELECT COUNT(*) FROM lessons AS lesson
+          WHERE lesson.status = 1 AND ${lessonRange}
+            AND NOT EXISTS (
+              SELECT 1 FROM quiz_content AS quiz
+              WHERE quiz.code = lesson.subject_code
+                AND quiz.learn_number = lesson.learn_number
+                AND (quiz.quiz_status <> 'disable' OR quiz.quiz_status IS NULL)
+            )) AS outlines_without_quiz,
         (SELECT COUNT(*) FROM teacher_profiles WHERE status = 1) AS teaching_staff,
         (SELECT COUNT(*) FROM teacher_profiles WHERE status = 1 AND teacher_type = 1) AS teachers,
         (SELECT COUNT(*) FROM teacher_profiles WHERE status = 1 AND teacher_type = 2) AS assistants,
@@ -43,25 +71,16 @@ export const getDashboardOverview = async () => {
         SUM(CASE WHEN COALESCE(lesson_status, 0) <> 1 AND end_time < NOW() THEN 1 ELSE 0 END) AS completed,
         SUM(CASE WHEN lesson_status = 1 THEN 1 ELSE 0 END) AS cancelled
       FROM calendar
-      WHERE DATE(start_time) = CURDATE()
+      WHERE ${calendarRange}
     `),
     prisma.$queryRaw<Array<{ date: string; total: bigint; cancelled: bigint }>>(Prisma.sql`
-      SELECT
-        DATE_FORMAT(days.day_value, '%Y-%m-%d') AS date,
-        COUNT(calendar.id) AS total,
-        SUM(CASE WHEN calendar.lesson_status = 1 THEN 1 ELSE 0 END) AS cancelled
-      FROM (
-        SELECT CURDATE() AS day_value
-        UNION ALL SELECT DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-        UNION ALL SELECT DATE_ADD(CURDATE(), INTERVAL 2 DAY)
-        UNION ALL SELECT DATE_ADD(CURDATE(), INTERVAL 3 DAY)
-        UNION ALL SELECT DATE_ADD(CURDATE(), INTERVAL 4 DAY)
-        UNION ALL SELECT DATE_ADD(CURDATE(), INTERVAL 5 DAY)
-        UNION ALL SELECT DATE_ADD(CURDATE(), INTERVAL 6 DAY)
-      ) AS days
-      LEFT JOIN calendar ON DATE(calendar.start_time) = days.day_value
-      GROUP BY days.day_value
-      ORDER BY days.day_value ASC
+      SELECT DATE_FORMAT(start_time, '%Y-%m-%d') AS date,
+        COUNT(*) AS total,
+        SUM(CASE WHEN lesson_status = 1 THEN 1 ELSE 0 END) AS cancelled
+      FROM calendar
+      WHERE ${calendarRange}
+      GROUP BY DATE_FORMAT(start_time, '%Y-%m-%d')
+      ORDER BY DATE_FORMAT(start_time, '%Y-%m-%d') ASC
     `),
     prisma.$queryRaw<Array<{
       id: number;
@@ -81,7 +100,7 @@ export const getDashboardOverview = async () => {
         DATE_FORMAT(end_time, '%Y-%m-%d %H:%i:%s') AS end_time,
         channel_name
       FROM calendar
-      WHERE start_time >= NOW()
+      WHERE ${calendarRange}
         AND COALESCE(lesson_status, 0) <> 1
       ORDER BY start_time ASC, id ASC
       LIMIT 8
@@ -133,6 +152,8 @@ export const getDashboardOverview = async () => {
       teachers: numberValue(summary?.teachers),
       assistants: numberValue(summary?.assistants),
       adminUsers: numberValue(summary?.admin_users),
+      outlinesWithQuiz: numberValue(summary?.outlines_with_quiz),
+      outlinesWithoutQuiz: numberValue(summary?.outlines_without_quiz),
     },
     today: {
       total: numberValue(today?.total),

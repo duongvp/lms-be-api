@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.validateLessonImportRows = exports.validateLessonReorderPayload = exports.validateLessonBulkUpdatePayload = exports.validateLessonPayload = exports.validateLessonId = exports.validateLessonExportQuery = exports.validateLessonListQuery = void 0;
+exports.validateLessonImportRows = exports.validateLessonCourseMappingPayload = exports.validateLessonReorderPayload = exports.validateLessonBulkUpdatePayload = exports.validateLessonPayload = exports.validateLessonId = exports.validateLessonExportQuery = exports.validateLessonListQuery = void 0;
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const SORTABLE_FIELDS = new Set([
     'id',
@@ -114,6 +114,7 @@ const validateLessonListQuery = (query) => {
     const sortBy = stringOrUndefined(query.sort_by);
     const sortOrder = stringOrUndefined(query.sort_order);
     const courseCode = stringOrUndefined(query.course_code);
+    const subjectCode = stringOrUndefined(query.subject_code);
     if (sortBy && !SORTABLE_FIELDS.has(sortBy)) {
         throw new ApiError_1.default('sort_by không hợp lệ', 400);
     }
@@ -124,13 +125,13 @@ const validateLessonListQuery = (query) => {
         page,
         limit,
         grade: optionalInteger(query.grade, 'grade'),
-        subject_code: stringOrUndefined(query.subject_code),
+        subject_code: subjectCode,
         subject: stringOrUndefined(query.subject),
         learn_number: optionalInteger(query.learn_number, 'learn_number'),
         keyword: stringOrUndefined(query.keyword),
         course_code: courseCode,
         status: optionalInteger(query.status, 'status'),
-        sort_by: sortBy,
+        sort_by: sortBy ?? 'learn_number',
         sort_order: sortOrder === 'desc' || sortOrder === 'descend' ? 'desc' : 'asc',
     };
 };
@@ -244,6 +245,24 @@ const validateLessonReorderPayload = (body) => {
     };
 };
 exports.validateLessonReorderPayload = validateLessonReorderPayload;
+const validateLessonCourseMappingPayload = (body) => {
+    const programCode = requiredString(body.program_code, 'program_code', 100);
+    const packageId = requiredString(body.package_id, 'package_id', 50);
+    const courseId = requiredString(body.course_id, 'course_id', 50);
+    const action = stringOrUndefined(body.action);
+    if (action !== 'add' && action !== 'delete') {
+        throw new ApiError_1.default('action chỉ hỗ trợ add hoặc delete', 400);
+    }
+    const lessonIds = body.lesson_ids === undefined ? undefined : validateLessonIds(body.lesson_ids);
+    return {
+        program_code: programCode,
+        package_id: packageId,
+        course_id: courseId,
+        action,
+        lesson_ids: lessonIds,
+    };
+};
+exports.validateLessonCourseMappingPayload = validateLessonCourseMappingPayload;
 const validateLessonImportRows = (rows) => {
     const errors = [];
     const validRows = [];

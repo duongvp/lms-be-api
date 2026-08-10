@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import lessonController from './lesson.controller';
 import authMiddleware from '../auth/auth.middleware';
+import { requireLessonSecondaryAuth } from './lesson-secondary-auth';
 
 const router = Router();
 const { authenticate, authorize, authorizeFields } = authMiddleware;
@@ -13,9 +14,20 @@ const upload = multer({
 });
 
 router.use(authenticate);
+router.post('/reauth', authorize(['lessons.view']), lessonController.reauthenticate);
+router.use(requireLessonSecondaryAuth);
+router.get('/reauth', authorize(['lessons.view']), lessonController.reauthStatus);
 router.get('/', authorize(['lessons.view']), lessonController.list);
 router.get('/options/subjects', authorize(['lessons.view']), lessonController.subjects);
 router.get('/options/programs', authorize(['lessons.view']), lessonController.programs);
+router.post(
+  '/options/programs',
+  authorize(['lessons.create']),
+  authorizeFields('lessons', (req) => Object.keys(req.body || {})),
+  lessonController.createProgram
+);
+router.get('/course-mappings', authorize(['lessons.view']), lessonController.courseMappings);
+router.put('/course-mappings', authorize(['lessons.update']), lessonController.updateCourseMappings);
 router.patch(
   '/bulk',
   authorize(['lessons.update']),

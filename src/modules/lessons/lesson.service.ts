@@ -5,17 +5,22 @@ import {
   createLesson,
   findLessonByIdentity,
   findLessonById,
+  findLessonProgramByCode,
   findLessonSubjectOptions,
   findLessonProgramOptions,
+  findLessonCourseMappings,
   findLessons,
   findLessonsForExport,
   findLessonsByGroup,
+  findPastScheduledLessonIds,
   importLessons,
   reorderLessonsInGroup,
   deleteLessonIfUnscheduled,
   updateLesson,
+  updateLessonCourseMappings,
 } from './lesson.repository';
 import { normalizeSubject, SUBJECT_OPTIONS } from './lesson.constants';
+import { resolvePackagesByCourseId } from '../../integrations/package-course-sheet.service';
 import {
   LessonBulkUpdatePayload,
   LessonExportQuery,
@@ -25,6 +30,7 @@ import {
   LessonListQuery,
   LessonPayload,
   LessonReorderPayload,
+  LessonCourseMappingPayload,
 } from './lesson.types';
 import {
   buildLessonExportBuffer,
@@ -58,6 +64,29 @@ export const getLessonPrograms = async () => (
   serializeBigInt(await findLessonProgramOptions())
 );
 
+export const getCourseMappingsByProgram = async (programCode: string) => (
+  serializeBigInt(await findLessonCourseMappings(programCode))
+);
+
+export const changeLessonCourseMappings = async (payload: LessonCourseMappingPayload) => {
+  if (payload.action === 'add') {
+    const sheetRows = await resolvePackagesByCourseId(payload.course_id);
+    if (!sheetRows.some((row) => row.package_id === payload.package_id)) {
+      throw new ApiError(
+        `Package ID ${payload.package_id} không thuộc Course ID ${payload.course_id} trong PACKAGE_COURSE_SHEET_URL`,
+        400
+      );
+    }
+  }
+  return updateLessonCourseMappings({
+    programCode: payload.program_code,
+    action: payload.action,
+    packageId: payload.package_id,
+    courseId: payload.course_id,
+    lessonIds: payload.lesson_ids,
+  });
+};
+
 export const getLessonDetail = async (id: bigint) => {
   const lesson = await findLessonById(id);
   if (!lesson) throw new ApiError('Lesson not found', 404);
@@ -82,9 +111,40 @@ export const createNewLesson = async (payload: LessonPayload) => {
   }
 };
 
+export const createNewProgram = async (payload: LessonPayload) => {
+  if (!/^[A-Za-z0-9_-]+$/.test(payload.subject_code)) {
+    throw new ApiError(
+      'Mã Chương trình chỉ được dùng chữ không dấu, số, dấu gạch ngang hoặc gạch dưới',
+      400
+    );
+  }
+  const existingProgram = await findLessonProgramByCode(payload.subject_code);
+  if (existingProgram) {
+    throw new ApiError(`Chương trình ${payload.subject_code} đã tồn tại`, 409);
+  }
+
+  const firstLesson = await createNewLesson({
+    ...payload,
+    learn_number: 1,
+  });
+  return {
+    grade: payload.grade,
+    subject_code: payload.subject_code,
+    subject_name: payload.subject_name,
+    first_lesson: firstLesson,
+  };
+};
+
 export const updateExistingLesson = async (id: bigint, payload: Partial<LessonPayload>) => {
   const current = await findLessonById(id);
   if (!current) throw new ApiError('Lesson not found', 404);
+
+  if (payload.learn_number !== undefined && Number(payload.learn_number) !== Number(current.learn_number)) {
+    const lockedIds = await findPastScheduledLessonIds([id], String(current.subject_code));
+    if (lockedIds.has(String(id))) {
+      throw new ApiError('Không thể đổi thứ tự bài học đã diễn ra trong quá khứ', 409);
+    }
+  }
 
   if (payload.grade !== undefined && Number(payload.grade) !== Number(current.grade)) {
     throw new ApiError('Không thể thay đổi khối khi cập nhật bài học', 400);
@@ -149,11 +209,22 @@ export const reorderExistingLessons = async (payload: LessonReorderPayload) => {
     throw new ApiError('Danh sách sắp xếp không hợp lệ', 400);
   }
 
+  const learnNumbers = lessons.map((lesson) => Number(lesson.learn_number));
+  const lockedIds = await findPastScheduledLessonIds(payload.ordered_ids, payload.subject_code);
+  const lessonById = new Map(lessons.map((lesson) => [String(lesson.id), lesson]));
+  const movedLockedLesson = orderedIds.some((id, index) => (
+    lockedIds.has(id)
+    && Number(lessonById.get(id)?.learn_number) !== learnNumbers[index]
+  ));
+  if (movedLockedLesson) {
+    throw new ApiError('Không thể sắp xếp lại bài học đã diễn ra trong quá khứ', 409);
+  }
+
   return serializeBigInt(await reorderLessonsInGroup(
     payload.grade,
     payload.subject_code,
     payload.ordered_ids,
-    lessons.map((lesson) => Number(lesson.learn_number))
+    learnNumbers
   ));
 };
 

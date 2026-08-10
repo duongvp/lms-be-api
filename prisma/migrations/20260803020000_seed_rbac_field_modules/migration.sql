@@ -17,7 +17,7 @@ JOIN (
     UNION ALL SELECT 'users', 'name', 'Họ tên', 'text', 3
     UNION ALL SELECT 'users', 'email', 'Email', 'text', 4
     UNION ALL SELECT 'users', 'phone', 'Số điện thoại', 'text', 5
-    UNION ALL SELECT 'users', 'code', 'Mã lớp', 'text', 6
+    UNION ALL SELECT 'users', 'code', 'Khóa học', 'text', 6
     UNION ALL SELECT 'users', 'learn_number', 'Buổi học', 'number', 7
     UNION ALL SELECT 'users', 'class_id', 'ID lớp học', 'text', 8
     UNION ALL SELECT 'users', 'room_id', 'ID phòng', 'number', 9
@@ -26,7 +26,7 @@ JOIN (
     UNION ALL SELECT 'users', 'updated_at', 'Ngày cập nhật', 'datetime', 12
 
     UNION ALL SELECT 'calendar', 'id', 'ID', 'number', 1
-    UNION ALL SELECT 'calendar', 'code', 'Mã lớp', 'text', 2
+    UNION ALL SELECT 'calendar', 'code', 'Khóa học', 'text', 2
     UNION ALL SELECT 'calendar', 'learn_number', 'Buổi học', 'number', 3
     UNION ALL SELECT 'calendar', 'subject', 'Môn học', 'text', 4
     UNION ALL SELECT 'calendar', 'start_time', 'Bắt đầu', 'datetime', 5

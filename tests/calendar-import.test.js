@@ -415,7 +415,7 @@ test('HMO dùng nhiều GET và giới hạn số request chạy đồng thời'
           id: url.searchParams.get('course'),
           fullname: 'Test course',
           sections: [{
-            id: '1',
+            id: '1096309',
             name: 'Section',
             lessons: [{ id: '168357', name: 'Lesson' }],
           }],
@@ -444,8 +444,8 @@ test('HMO dùng nhiều GET và giới hạn số request chạy đồng thời'
       && url.searchParams.get('token') === 'test-token'
     )));
     assert.deepEqual(results[0].lessons, [{
-      lessonId: '168357',
-      name: 'Lesson',
+      lessonId: '1096309',
+      name: 'Section',
     }]);
   } finally {
     global.fetch = originalFetch;

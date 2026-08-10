@@ -492,14 +492,15 @@ const isTransactionConflict = (error: any) => {
 
 const withSerializableTransaction = async <T>(
   operation: (tx: Prisma.TransactionClient) => Promise<T>,
-  maxAttempts = 3
+  maxAttempts = 3,
+  timeoutMs = 15_000
 ): Promise<T> => {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       return await prisma.$transaction(operation, {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         maxWait: 5_000,
-        timeout: 15_000,
+        timeout: timeoutMs,
       });
     } catch (error) {
       if (!isTransactionConflict(error) || attempt === maxAttempts) {
@@ -1440,7 +1441,8 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any) => {
   };
 };
 
-export const rescheduleSession = async (
+const rescheduleSessionInTransaction = async (
+  tx: Prisma.TransactionClient,
   id: number,
   payload: any,
   changeActor?: CalendarChangeActor
@@ -1449,14 +1451,13 @@ export const rescheduleSession = async (
   const reason = normalizeChangeReason(payload);
   const actor = normalizeChangeActor(changeActor);
 
-  return await withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => withManualHocmaiQueue(tx, async () => {
-    const operationId = crypto.randomUUID();
-    // Đọc và validate bên trong transaction để không dùng snapshot cũ khi có
-    // hai yêu cầu cùng dời lịch của một khóa.
-    const current = await tx.calendar.findUnique({ where: { id } });
-    if (!current) throw new Error("Not found");
-    await hydrateAssistantTeachers(tx, [current]);
-    assertCanUpdateSession(current);
+  const operationId = crypto.randomUUID();
+  // Đọc và validate bên trong transaction để không dùng snapshot cũ khi có
+  // hai yêu cầu cùng dời lịch của một khóa.
+  const current = await tx.calendar.findUnique({ where: { id } });
+  if (!current) throw new Error("Not found");
+  await hydrateAssistantTeachers(tx, [current]);
+  assertCanUpdateSession(current);
 
     let action: 'cancel' | 'makeup' | 'following';
     let result: any;
@@ -1566,8 +1567,90 @@ export const rescheduleSession = async (
       ]);
     }
 
-    return result;
-  })));
+  return result;
+};
+
+export const rescheduleSession = async (
+  id: number,
+  payload: any,
+  changeActor?: CalendarChangeActor
+) => withCalendarTriggerErrorHint(() => withSerializableTransaction(
+  async (tx) => withManualHocmaiQueue(
+    tx,
+    () => rescheduleSessionInTransaction(tx, id, payload, changeActor)
+  )
+));
+
+export const bulkRescheduleSessions = async (
+  payload: any,
+  changeActor?: CalendarChangeActor
+) => {
+  const ids = Array.from(new Set<number>(
+    (Array.isArray(payload?.ids) ? payload.ids : [])
+      .map((value: unknown) => Number(value))
+      .filter((value: number) => Number.isInteger(value) && value > 0)
+  ));
+  if (!ids.length) throw new Error('Vui lòng chọn ít nhất một lịch học');
+  if (ids.length > 100) throw new Error('Chỉ được xử lý tối đa 100 lịch mỗi lần');
+
+  const operation = String(payload?.operation || '');
+  if (!['cancel', 'makeup'].includes(operation)) {
+    throw new Error('Thao tác hàng loạt không hợp lệ');
+  }
+  const reason = normalizeChangeReason(payload);
+  const offsetDays = operation === 'makeup'
+    ? normalizePositiveInteger(payload?.offset_days, 'Số ngày dịch lịch bù')
+    : 0;
+  if (offsetDays > 3650) throw new Error('Số ngày dịch lịch bù không được quá 3650 ngày');
+
+  return withCalendarTriggerErrorHint(() => withSerializableTransaction(
+    async (tx) => withManualHocmaiQueue(tx, async () => {
+      const selected = await tx.calendar.findMany({
+        where: { id: { in: ids } },
+        orderBy: [{ start_time: operation === 'makeup' ? 'desc' : 'asc' }, { id: 'asc' }],
+      });
+      if (selected.length !== ids.length) {
+        throw new Error('Có lịch học đã chọn không còn tồn tại');
+      }
+      const programCodes = new Set(selected.map((session) => String(session.code)));
+      if (programCodes.size !== 1) {
+        throw new Error('Chỉ được xử lý hàng loạt các lịch thuộc cùng một Chương trình');
+      }
+      selected.forEach(assertCanUpdateSession);
+
+      const results = [];
+      for (const session of selected) {
+        const sessionPayload: any = {
+          mode: operation,
+          reason,
+        };
+        if (operation === 'makeup') {
+          const startTime = new Date(session.start_time);
+          const endTime = new Date(session.end_time);
+          startTime.setDate(startTime.getDate() + offsetDays);
+          endTime.setDate(endTime.getDate() + offsetDays);
+          sessionPayload.new_session = {
+            start_time: startTime,
+            end_time: endTime,
+          };
+        }
+        results.push(await rescheduleSessionInTransaction(
+          tx,
+          session.id,
+          sessionPayload,
+          changeActor
+        ));
+      }
+      return {
+        operation,
+        count: results.length,
+        offset_days: operation === 'makeup' ? offsetDays : undefined,
+        results,
+      };
+    }),
+    3,
+    120_000
+  ));
 };
 
 // 2.1 & 2.2 Sửa lịch

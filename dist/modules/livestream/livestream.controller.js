@@ -120,7 +120,9 @@ exports.commitAutoSchedule = commitAutoSchedule;
 // Hàm mới: Cập nhật nhiều lịch học cùng lúc (Bulk Update)
 const updateBulk = async (req, res, next) => {
     try {
-        const result = await livestreamService.updateBulk(req.body, getChangeActor(req));
+        const result = ['cancel', 'makeup'].includes(String(req.body?.operation || ''))
+            ? await livestreamService.bulkRescheduleSessions(req.body, getChangeActor(req))
+            : await livestreamService.updateBulk(req.body, getChangeActor(req));
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {

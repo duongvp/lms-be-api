@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.rescheduleSession = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
+exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const package_course_sheet_service_1 = require("../../integrations/package-course-sheet.service");
@@ -389,13 +389,13 @@ const isTransactionConflict = (error) => {
         || message.includes('Lock wait timeout exceeded')
         || message.includes('Transaction failed due to a write conflict');
 };
-const withSerializableTransaction = async (operation, maxAttempts = 3) => {
+const withSerializableTransaction = async (operation, maxAttempts = 3, timeoutMs = 15_000) => {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
             return await prisma.$transaction(operation, {
                 isolationLevel: client_1.Prisma.TransactionIsolationLevel.Serializable,
                 maxWait: 5_000,
-                timeout: 15_000,
+                timeout: timeoutMs,
             });
         }
         catch (error) {
@@ -1139,130 +1139,187 @@ const rescheduleFollowing = async (tx, current, payload) => {
         created_session: createdSession,
     };
 };
-const rescheduleSession = async (id, payload, changeActor) => {
+const rescheduleSessionInTransaction = async (tx, id, payload, changeActor) => {
     const mode = payload.mode || payload.update_mode || 'cancel';
     const reason = normalizeChangeReason(payload);
     const actor = normalizeChangeActor(changeActor);
-    return await withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
-        const operationId = crypto_1.default.randomUUID();
-        // Đọc và validate bên trong transaction để không dùng snapshot cũ khi có
-        // hai yêu cầu cùng dời lịch của một khóa.
-        const current = await tx.calendar.findUnique({ where: { id } });
-        if (!current)
-            throw new Error("Not found");
-        await hydrateAssistantTeachers(tx, [current]);
-        assertCanUpdateSession(current);
-        let action;
-        let result;
-        let beforeFollowingSessions = [];
-        if (['cancel', 'cancel_only', 'no_makeup', 'no_make_up'].includes(mode)) {
-            action = 'cancel';
-            result = await cancelWithoutMakeup(tx, current);
-        }
-        else if (['makeup', 'make_up', 'compensate'].includes(mode)) {
-            action = 'makeup';
-            result = await cancelWithMakeup(tx, current, payload);
-        }
-        else if (mode === 'following') {
-            action = 'following';
-            beforeFollowingSessions = await tx.calendar.findMany({
-                where: {
-                    code: current.code,
-                    system_type: current.system_type,
-                    start_time: { gt: current.start_time },
-                    OR: [
-                        { lesson_status: null },
-                        { lesson_status: { not: 1 } },
-                    ],
-                },
-                orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
-            });
-            await hydrateAssistantTeachers(tx, beforeFollowingSessions);
-            result = await rescheduleFollowing(tx, current, payload);
-        }
-        else {
-            throw new Error("Invalid reschedule mode");
-        }
-        const affectedSessions = action === 'cancel'
-            ? [result]
-            : action === 'makeup'
-                ? [result.canceled_session, result.created_session]
-                : [
-                    result.canceled_session,
-                    ...(result.shifted_sessions || []),
-                    result.created_session,
-                ];
-        await writeCalendarChangeLog(tx, {
-            operationId,
-            action,
-            current,
-            reason,
-            actor,
-            beforeData: {
-                source_session: current,
-                following_sessions: beforeFollowingSessions,
+    const operationId = crypto_1.default.randomUUID();
+    // Đọc và validate bên trong transaction để không dùng snapshot cũ khi có
+    // hai yêu cầu cùng dời lịch của một khóa.
+    const current = await tx.calendar.findUnique({ where: { id } });
+    if (!current)
+        throw new Error("Not found");
+    await hydrateAssistantTeachers(tx, [current]);
+    assertCanUpdateSession(current);
+    let action;
+    let result;
+    let beforeFollowingSessions = [];
+    if (['cancel', 'cancel_only', 'no_makeup', 'no_make_up'].includes(mode)) {
+        action = 'cancel';
+        result = await cancelWithoutMakeup(tx, current);
+    }
+    else if (['makeup', 'make_up', 'compensate'].includes(mode)) {
+        action = 'makeup';
+        result = await cancelWithMakeup(tx, current, payload);
+    }
+    else if (mode === 'following') {
+        action = 'following';
+        beforeFollowingSessions = await tx.calendar.findMany({
+            where: {
+                code: current.code,
+                system_type: current.system_type,
+                start_time: { gt: current.start_time },
+                OR: [
+                    { lesson_status: null },
+                    { lesson_status: { not: 1 } },
+                ],
             },
-            afterData: result,
-            affectedSessions,
-            newKey: action === 'following' || action === 'makeup'
-                ? result?.canceled_session?.key
-                : result?.created_session?.key,
+            orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
         });
-        await (0, hocmai_sync_queue_service_1.enqueueRescheduleSync)(tx, action, result, operationId);
-        if (action === 'cancel') {
-            await (0, teams_notifications_1.enqueueCalendarTeamsNotification)(tx, {
+        await hydrateAssistantTeachers(tx, beforeFollowingSessions);
+        result = await rescheduleFollowing(tx, current, payload);
+    }
+    else {
+        throw new Error("Invalid reschedule mode");
+    }
+    const affectedSessions = action === 'cancel'
+        ? [result]
+        : action === 'makeup'
+            ? [result.canceled_session, result.created_session]
+            : [
+                result.canceled_session,
+                ...(result.shifted_sessions || []),
+                result.created_session,
+            ];
+    await writeCalendarChangeLog(tx, {
+        operationId,
+        action,
+        current,
+        reason,
+        actor,
+        beforeData: {
+            source_session: current,
+            following_sessions: beforeFollowingSessions,
+        },
+        afterData: result,
+        affectedSessions,
+        newKey: action === 'following' || action === 'makeup'
+            ? result?.canceled_session?.key
+            : result?.created_session?.key,
+    });
+    await (0, hocmai_sync_queue_service_1.enqueueRescheduleSync)(tx, action, result, operationId);
+    if (action === 'cancel') {
+        await (0, teams_notifications_1.enqueueCalendarTeamsNotification)(tx, {
+            eventType: 'cancelled',
+            before: current,
+            after: result,
+            actor,
+            operationId,
+        });
+    }
+    else if (action === 'makeup') {
+        await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, [
+            {
                 eventType: 'cancelled',
                 before: current,
-                after: result,
+                after: result.canceled_session,
                 actor,
                 operationId,
-            });
-        }
-        else if (action === 'makeup') {
-            await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, [
-                {
-                    eventType: 'cancelled',
-                    before: current,
-                    after: result.canceled_session,
-                    actor,
-                    operationId,
-                },
-                {
-                    eventType: 'created',
-                    after: result.created_session,
-                    actor,
-                    operationId,
-                },
-            ]);
-        }
-        else {
-            await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, [
-                {
-                    eventType: 'cancelled',
-                    before: current,
-                    after: result.canceled_session,
-                    actor,
-                    operationId,
-                },
-                ...(result.shifted_sessions || []).map((session, index) => ({
-                    eventType: 'updated',
-                    before: beforeFollowingSessions[index],
-                    after: session,
-                    actor,
-                    operationId,
-                })),
-                {
-                    eventType: 'created',
-                    after: result.created_session,
-                    actor,
-                    operationId,
-                },
-            ]);
-        }
-        return result;
-    })));
+            },
+            {
+                eventType: 'created',
+                after: result.created_session,
+                actor,
+                operationId,
+            },
+        ]);
+    }
+    else {
+        await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, [
+            {
+                eventType: 'cancelled',
+                before: current,
+                after: result.canceled_session,
+                actor,
+                operationId,
+            },
+            ...(result.shifted_sessions || []).map((session, index) => ({
+                eventType: 'updated',
+                before: beforeFollowingSessions[index],
+                after: session,
+                actor,
+                operationId,
+            })),
+            {
+                eventType: 'created',
+                after: result.created_session,
+                actor,
+                operationId,
+            },
+        ]);
+    }
+    return result;
 };
+const rescheduleSession = async (id, payload, changeActor) => withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, () => rescheduleSessionInTransaction(tx, id, payload, changeActor))));
 exports.rescheduleSession = rescheduleSession;
+const bulkRescheduleSessions = async (payload, changeActor) => {
+    const ids = Array.from(new Set((Array.isArray(payload?.ids) ? payload.ids : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0)));
+    if (!ids.length)
+        throw new Error('Vui lòng chọn ít nhất một lịch học');
+    if (ids.length > 100)
+        throw new Error('Chỉ được xử lý tối đa 100 lịch mỗi lần');
+    const operation = String(payload?.operation || '');
+    if (!['cancel', 'makeup'].includes(operation)) {
+        throw new Error('Thao tác hàng loạt không hợp lệ');
+    }
+    const reason = normalizeChangeReason(payload);
+    const offsetDays = operation === 'makeup'
+        ? normalizePositiveInteger(payload?.offset_days, 'Số ngày dịch lịch bù')
+        : 0;
+    if (offsetDays > 3650)
+        throw new Error('Số ngày dịch lịch bù không được quá 3650 ngày');
+    return withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
+        const selected = await tx.calendar.findMany({
+            where: { id: { in: ids } },
+            orderBy: [{ start_time: operation === 'makeup' ? 'desc' : 'asc' }, { id: 'asc' }],
+        });
+        if (selected.length !== ids.length) {
+            throw new Error('Có lịch học đã chọn không còn tồn tại');
+        }
+        const programCodes = new Set(selected.map((session) => String(session.code)));
+        if (programCodes.size !== 1) {
+            throw new Error('Chỉ được xử lý hàng loạt các lịch thuộc cùng một Chương trình');
+        }
+        selected.forEach(assertCanUpdateSession);
+        const results = [];
+        for (const session of selected) {
+            const sessionPayload = {
+                mode: operation,
+                reason,
+            };
+            if (operation === 'makeup') {
+                const startTime = new Date(session.start_time);
+                const endTime = new Date(session.end_time);
+                startTime.setDate(startTime.getDate() + offsetDays);
+                endTime.setDate(endTime.getDate() + offsetDays);
+                sessionPayload.new_session = {
+                    start_time: startTime,
+                    end_time: endTime,
+                };
+            }
+            results.push(await rescheduleSessionInTransaction(tx, session.id, sessionPayload, changeActor));
+        }
+        return {
+            operation,
+            count: results.length,
+            offset_days: operation === 'makeup' ? offsetDays : undefined,
+            results,
+        };
+    }), 3, 120_000));
+};
+exports.bulkRescheduleSessions = bulkRescheduleSessions;
 // 2.1 & 2.2 Sửa lịch
 const updateSchedule = async (id, data, updateMode, changeActor) => {
     if (updateMode && updateMode !== 'current') {

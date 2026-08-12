@@ -4,12 +4,14 @@ import { RoomConfigFilter, SaveRoomConfigInput, StaffInfoInput } from './room-co
 const prisma = new PrismaClient();
 
 export class RoomConfigRepository {
-  async findMany(filter: RoomConfigFilter) {
+  async findMany(filter: RoomConfigFilter, allowedPrograms: string[] | null = null) {
     const page = filter.page && filter.page > 0 ? Number(filter.page) : 1;
     const limit = filter.limit && filter.limit > 0 ? Number(filter.limit) : 20;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.room_configWhereInput = {};
+    const where: Prisma.room_configWhereInput = allowedPrograms === null
+      ? {}
+      : { code: { in: allowedPrograms } };
 
     if (filter.search) {
       where.OR = [
@@ -19,7 +21,9 @@ export class RoomConfigRepository {
     }
 
     if (filter.code) {
-      where.code = filter.code;
+      where.code = allowedPrograms === null
+        ? filter.code
+        : (allowedPrograms.includes(filter.code) ? filter.code : { in: [] });
     }
 
     if (filter.learn_number !== undefined && filter.learn_number !== null && !isNaN(Number(filter.learn_number))) {
@@ -113,11 +117,13 @@ export class RoomConfigRepository {
     };
   }
 
-  async upsertRoomConfig(input: SaveRoomConfigInput) {
+  private async upsertRoomConfigInTransaction(
+    tx: Prisma.TransactionClient,
+    input: SaveRoomConfigInput
+  ) {
     const { code, learn_number, config, updated_by, teacher, assistant_teacher } = input;
     const numLearnNumber = Number(learn_number);
 
-    return prisma.$transaction(async (tx) => {
       // 1. Upsert into room_config
       const roomConfigRecord = await tx.room_config.upsert({
         where: {
@@ -144,7 +150,11 @@ export class RoomConfigRepository {
       // class_id = code + learn_number (nối trực tiếp, ví dụ: toan-6-2027 + 14 = toan-6-202714)
       const computedClassId = `${code}${numLearnNumber}`;
 
-      const upsertStaffUser = async (staff: StaffInfoInput, defaultRoleLabel: string) => {
+      const upsertStaffUser = async (
+        staff: StaffInfoInput,
+        defaultRoleLabel: string,
+        roomId: number
+      ) => {
         if (!staff || !staff.username) return null;
 
         const username = staff.username.trim();
@@ -153,10 +163,26 @@ export class RoomConfigRepository {
         const email = staff.email ? staff.email.trim() : username;
         const phone = staff.phone ? staff.phone.trim() : '';
         const islearn = staff.islearn !== undefined ? Number(staff.islearn) : 0;
-        // Cả giáo viên và trợ giảng đều có room_id = 1
-        const roomId = 1;
         // class_id = code + learn_number (không có ký tự phân cách thêm)
         const classId = staff.class_id ? staff.class_id.trim() : computedClassId;
+
+        // HMID trống không phải là một định danh. Lưu NULL để MySQL cho phép
+        // nhiều nhân sự chưa có HMID trong cùng lớp/bài, thay vì dùng chuỗi rỗng.
+        if (studentHmid) {
+          const existingLearningUser = await tx.users.findFirst({
+            where: {
+              student_hmid: studentHmid,
+              code,
+              learn_number: numLearnNumber,
+              class_id: classId,
+            },
+          });
+          if (existingLearningUser && existingLearningUser.username !== username) {
+            throw new Error(
+              `HMID ${studentHmid} đã thuộc nhân sự ${existingLearningUser.username} ở bài này`
+            );
+          }
+        }
 
         return tx.users.upsert({
           where: {
@@ -168,7 +194,7 @@ export class RoomConfigRepository {
           },
           create: {
             username,
-            student_hmid: studentHmid,
+            student_hmid: studentHmid || null,
             email,
             phone,
             name,
@@ -194,16 +220,31 @@ export class RoomConfigRepository {
       };
 
       // 2. Upsert Teacher (room_id = 1)
-      const teacherRecord = teacher ? await upsertStaffUser(teacher, 'Giáo viên') : null;
+      const teacherRecord = teacher ? await upsertStaffUser(teacher, 'Giáo viên', 1) : null;
 
-      // 3. Upsert Assistant Teacher (room_id = 1)
-      const assistantRecord = assistant_teacher ? await upsertStaffUser(assistant_teacher, 'Trợ giảng') : null;
+      // 3. Upsert Assistant Teacher (room_id = 2)
+      const assistantRecord = assistant_teacher
+        ? await upsertStaffUser(assistant_teacher, 'Trợ giảng', 2)
+        : null;
 
       return {
         ...roomConfigRecord,
         teacher: teacherRecord,
         assistant_teacher: assistantRecord,
       };
+  }
+
+  async upsertRoomConfig(input: SaveRoomConfigInput) {
+    return prisma.$transaction((tx) => this.upsertRoomConfigInTransaction(tx, input));
+  }
+
+  async bulkUpsertRoomConfigs(inputs: SaveRoomConfigInput[]) {
+    return prisma.$transaction(async (tx) => {
+      const results = [];
+      for (const input of inputs) {
+        results.push(await this.upsertRoomConfigInTransaction(tx, input));
+      }
+      return results;
     });
   }
 }

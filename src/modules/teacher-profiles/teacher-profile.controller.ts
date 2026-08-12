@@ -112,7 +112,7 @@ const exportFile = async (req: Request, res: Response) => {
     });
     const rows = await getTeacherProfilesForExport({
       search: query.search,
-      teacher_type: query.teacher_type,
+      can_view_stream_key: query.can_view_stream_key,
       status: query.status,
     });
     const buffer = buildTeacherProfileFile(rows, format);

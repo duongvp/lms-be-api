@@ -5,8 +5,7 @@ type Column = { key: string; header: string };
 
 export const QUIZ_EXPORT_COLUMNS: Column[] = [
   { key: 'quiz_id', header: 'Mã quiz' },
-  { key: 'code', header: 'Mã lớp' },
-  { key: 'learn_number', header: 'Buổi học' },
+  { key: 'learn_number', header: 'Bài học' },
   { key: 'quiz_index', header: 'Thứ tự' },
   { key: 'quiz_name', header: 'Câu hỏi' },
   { key: 'quiz_type', header: 'Loại câu hỏi' },
@@ -30,6 +29,8 @@ const HEADER_ALIASES: Record<string, string> = {
   learn_number: 'learn_number',
   'buổi học': 'learn_number',
   'buoi hoc': 'learn_number',
+  'bài học': 'learn_number',
+  'bai hoc': 'learn_number',
   quiz_index: 'quiz_index',
   'thứ tự': 'quiz_index',
   'thu tu': 'quiz_index',
@@ -228,7 +229,7 @@ const TEMPLATE_ANSWER_HEADERS = Array.from(
 );
 
 const TEMPLATE_HEADERS = [
-  'Mã quiz', 'Mã lớp', 'Buổi học', 'Thứ tự', 'Câu hỏi', 'Loại câu hỏi',
+  'Mã quiz', 'Bài học', 'Thứ tự', 'Câu hỏi', 'Loại câu hỏi',
   ...TEMPLATE_ANSWER_HEADERS, 'Đáp án đúng (VD: B hoặc A;C;F)',
   'Gợi ý ô trống', 'Đáp án điền từ', 'Đáp án trả lời ngắn',
   'Cách tính điểm', 'Thời gian (giây)', 'Status (1: Hoạt động, 0: Ngừng hoạt động)',
@@ -237,7 +238,7 @@ const TEMPLATE_HEADERS = [
 
 const templateRows = [
   {
-    'Mã quiz': '', 'Mã lớp': 'toan-7-2027', 'Buổi học': 10, 'Thứ tự': 1,
+    'Mã quiz': '', 'Bài học': 10, 'Thứ tự': 1,
     'Câu hỏi': 'Kết quả của 2 + 2 là?', 'Loại câu hỏi': 'Trắc nghiệm',
     'Lựa chọn A': '3', 'Lựa chọn B': '4', 'Lựa chọn C': '5', 'Lựa chọn D': '',
     'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
@@ -247,7 +248,7 @@ const templateRows = [
     'Hướng dẫn theo loại (không nhập)': 'Nhập từ A đến đáp án cuối. Một đáp án đúng: B. Nhiều đáp án đúng: A;C;F.',
   },
   {
-    'Mã quiz': '', 'Mã lớp': 'toan-7-2027', 'Buổi học': 10, 'Thứ tự': 2,
+    'Mã quiz': '', 'Bài học': 10, 'Thứ tự': 2,
     'Câu hỏi': 'Thủ đô Việt Nam là _____.', 'Loại câu hỏi': 'Điền từ',
     'Lựa chọn A': '', 'Lựa chọn B': '', 'Lựa chọn C': '', 'Lựa chọn D': '',
     'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
@@ -257,7 +258,7 @@ const templateRows = [
     'Hướng dẫn theo loại (không nhập)': 'Nhập gợi ý và các cách viết được chấp nhận; phân tách đáp án bằng dấu ;',
   },
   {
-    'Mã quiz': '', 'Mã lớp': 'toan-7-2027', 'Buổi học': 10, 'Thứ tự': 3,
+    'Mã quiz': '', 'Bài học': 10, 'Thứ tự': 3,
     'Câu hỏi': 'Em hãy nêu công thức tính diện tích hình chữ nhật.', 'Loại câu hỏi': 'Trả lời ngắn',
     'Lựa chọn A': '', 'Lựa chọn B': '', 'Lựa chọn C': '', 'Lựa chọn D': '',
     'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
@@ -297,7 +298,7 @@ const buildFriendlyTemplateWorkbook = () => {
     ['Cách tính điểm', 'Chỉ nhập Toàn câu hoặc Theo ý.', 'Toàn câu'],
     ['Thời gian', 'Nhập số giây từ 1 đến 3600.', '60'],
     ['Status', 'Nhập 1 nếu hoạt động, nhập 0 nếu ngừng hoạt động.', '1'],
-    ['Thứ tự', 'Nên là duy nhất trong cùng Mã lớp + Buổi học.', '1, 2, 3...'],
+    ['Thứ tự', 'Hệ thống tự xếp khi tạo mới; chỉ thay đổi bằng chức năng Sắp xếp.', '1, 2, 3...'],
     ['Kiểm tra file', 'Nếu có một dòng lỗi thì hệ thống chưa lưu bất kỳ dòng nào.', 'Sửa lỗi rồi nhập lại'],
   ];
   const guideSheet = XLSX.utils.aoa_to_sheet(guideRows);

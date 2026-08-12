@@ -1,6 +1,10 @@
 import prisma from '../../lib/prisma';
 import { LessonExportQuery, LessonImportMode, LessonImportResult, LessonImportRow, LessonListQuery, LessonPayload } from './lesson.types';
 
+// Các trường tài liệu/nội dung buổi học vẫn được giữ ở DB để không mất dữ liệu
+// cũ, nhưng không còn là dữ liệu của đề cương và không được trả về từ module này.
+const LESSON_COLUMNS = 'id, grade, subject_code, subject_name, learn_number, lesson_name, status, created_at, updated_at';
+
 const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => {
   if (lessonIds.length === 0) return;
   const placeholders = lessonIds.map(() => '?').join(', ');
@@ -9,15 +13,6 @@ const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => {
      INNER JOIN lessons AS lesson ON lesson.id = calendar_row.session_id
      SET calendar_row.subject = lesson.subject_name,
          calendar_row.lesson_name = lesson.lesson_name,
-         calendar_row.lesson_document = lesson.lesson_document,
-         calendar_row.evg_banner = lesson.evg_banner,
-         calendar_row.evg_stream = lesson.evg_stream,
-         calendar_row.lesson_link = lesson.lesson_link,
-         calendar_row.lesson_baitap = lesson.lesson_baitap,
-         calendar_row.lesson_tomtat = lesson.lesson_tomtat,
-         calendar_row.lesson_phuongphap = lesson.lesson_phuongphap,
-         calendar_row.lesson_luuy = lesson.lesson_luuy,
-         calendar_row.lesson_ketqua = lesson.lesson_ketqua,
          calendar_row.updated_at = CURRENT_TIMESTAMP
      WHERE lesson.id IN (${placeholders})`,
     ...lessonIds
@@ -51,15 +46,6 @@ const syncCalendarSlotsAfterLessonReorder = async (
      SET calendar_row.session_id = lesson.id,
          calendar_row.subject = lesson.subject_name,
          calendar_row.lesson_name = lesson.lesson_name,
-         calendar_row.lesson_document = lesson.lesson_document,
-         calendar_row.evg_banner = lesson.evg_banner,
-         calendar_row.evg_stream = lesson.evg_stream,
-         calendar_row.lesson_link = lesson.lesson_link,
-         calendar_row.lesson_baitap = lesson.lesson_baitap,
-         calendar_row.lesson_tomtat = lesson.lesson_tomtat,
-         calendar_row.lesson_phuongphap = lesson.lesson_phuongphap,
-         calendar_row.lesson_luuy = lesson.lesson_luuy,
-         calendar_row.lesson_ketqua = lesson.lesson_ketqua,
          calendar_row.updated_at = CURRENT_TIMESTAMP
      WHERE calendar_row.code = ?
        AND calendar_row.learn_number IN (${learnNumberPlaceholders})`,
@@ -114,20 +100,22 @@ export const findLessons = async (query: LessonListQuery) => {
   const sortOrder = query.sort_order ?? 'desc';
   const programCode = query.subject_code || query.course_code;
   const selectSql = programCode
-    ? `lessons.*, (
+    ? `lessons.${LESSON_COLUMNS}, (
         SELECT COUNT(*)
         FROM calendar
-        WHERE calendar.code = ?
-          AND (calendar.session_id = lessons.id OR calendar.learn_number = lessons.learn_number)
+        WHERE calendar.session_id = lessons.id
+           OR (calendar.code = lessons.subject_code
+             AND calendar.learn_number = lessons.learn_number)
       ) AS scheduled_count, (
         SELECT COUNT(*)
         FROM calendar
-        WHERE calendar.code = ?
-          AND (calendar.session_id = lessons.id OR calendar.learn_number = lessons.learn_number)
+        WHERE (calendar.session_id = lessons.id
+          OR (calendar.code = lessons.subject_code
+            AND calendar.learn_number = lessons.learn_number))
           AND calendar.start_time <= NOW()
       ) AS past_scheduled_count`
-    : 'lessons.*';
-  const selectValues = programCode ? [programCode, programCode, ...values] : values;
+    : `lessons.${LESSON_COLUMNS}`;
+  const selectValues = values;
 
   const countRows = await prisma.$queryRawUnsafe<any[]>(
     `SELECT COUNT(*) AS total FROM lessons ${whereSql}`,
@@ -160,19 +148,30 @@ export const findLessonSubjectOptions = async () => {
   );
 };
 
-export const findLessonProgramOptions = async () => {
-  return prisma.$queryRawUnsafe<Array<{
-    grade: number;
-    subject_name: string;
+export const findLessonProgramOptions = async (allowedPrograms: string[] | null = null) => {
+  const rows = await prisma.$queryRawUnsafe<Array<{
+    grade: number | null;
+    subject_name: string | null;
     subject_code: string;
   }>>(
-    `SELECT DISTINCT grade, subject_name, subject_code
-     FROM lessons
-     WHERE status <> 0
-       AND subject_code IS NOT NULL
-       AND TRIM(subject_code) <> ''
+    `SELECT program.subject_code,
+            MAX(program.subject_name) AS subject_name,
+            MIN(program.grade) AS grade
+     FROM (
+       SELECT subject_code, subject_name, grade
+       FROM lessons
+       WHERE subject_code IS NOT NULL AND TRIM(subject_code) <> ''
+       UNION ALL
+       SELECT code AS subject_code, subject AS subject_name, NULL AS grade
+       FROM calendar
+       WHERE code IS NOT NULL AND TRIM(code) <> ''
+     ) AS program
+     GROUP BY program.subject_code
      ORDER BY subject_name ASC, grade ASC, subject_code ASC`
   );
+  return allowedPrograms === null
+    ? rows
+    : rows.filter((row) => allowedPrograms.includes(row.subject_code));
 };
 
 export const findLessonProgramByCode = async (programCode: string) => {
@@ -267,7 +266,7 @@ export const findLessonsForExport = async (query: LessonExportQuery) => {
   if (query.ids?.length) {
     const placeholders = query.ids.map(() => '?').join(', ');
     return prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM lessons WHERE id IN (${placeholders}) ORDER BY grade ASC, subject_code ASC, learn_number ASC`,
+      `SELECT ${LESSON_COLUMNS} FROM lessons WHERE id IN (${placeholders}) ORDER BY grade ASC, subject_code ASC, learn_number ASC`,
       ...query.ids
     );
   }
@@ -277,14 +276,14 @@ export const findLessonsForExport = async (query: LessonExportQuery) => {
   const sortOrder = query.sort_order ?? 'asc';
 
   return prisma.$queryRawUnsafe<any[]>(
-    `SELECT * FROM lessons ${whereSql} ORDER BY ${sortBy} ${sortOrder.toUpperCase()}, subject_code ASC, learn_number ASC`,
+    `SELECT ${LESSON_COLUMNS} FROM lessons ${whereSql} ORDER BY ${sortBy} ${sortOrder.toUpperCase()}, subject_code ASC, learn_number ASC`,
     ...values
   );
 };
 
 export const findLessonById = async (id: bigint) => {
   const rows = await prisma.$queryRawUnsafe<any[]>(
-    'SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1',
+    `SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = ? AND status <> 0 LIMIT 1`,
     id
   );
   return rows[0] ?? null;
@@ -297,7 +296,7 @@ export const findLessonByIdentity = async (
   excludeId?: bigint
 ) => {
   const rows = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT * FROM lessons WHERE grade = ? AND subject_code = ? AND learn_number = ? AND status <> 0${excludeId ? ' AND id <> ?' : ''} LIMIT 1`,
+    `SELECT ${LESSON_COLUMNS} FROM lessons WHERE grade = ? AND subject_code = ? AND learn_number = ? AND status <> 0${excludeId ? ' AND id <> ?' : ''} LIMIT 1`,
     ...(excludeId ? [grade, subjectCode, learnNumber, excludeId] : [grade, subjectCode, learnNumber])
   );
   return rows[0] ?? null;
@@ -314,15 +313,14 @@ export const findNextLearnNumber = async (grade: number, subjectCode: string) =>
 
 export const findLessonsByGroup = async (grade: number, subjectCode: string) => {
   return prisma.$queryRawUnsafe<any[]>(
-    'SELECT * FROM lessons WHERE grade = ? AND subject_code = ? AND status <> 0 ORDER BY learn_number ASC, id ASC',
+    `SELECT ${LESSON_COLUMNS} FROM lessons WHERE grade = ? AND subject_code = ? AND status <> 0 ORDER BY learn_number ASC, id ASC`,
     grade,
     subjectCode
   );
 };
 
 export const findPastScheduledLessonIds = async (
-  ids: bigint[],
-  programCode?: string
+  ids: bigint[]
 ): Promise<Set<string>> => {
   if (!ids.length) return new Set();
   const placeholders = ids.map(() => '?').join(', ');
@@ -334,10 +332,8 @@ export const findPastScheduledLessonIds = async (
          OR (calendar_row.code = lesson.subject_code
            AND calendar_row.learn_number = lesson.learn_number))
      WHERE lesson.id IN (${placeholders})
-       AND calendar_row.start_time <= NOW()
-       ${programCode ? 'AND calendar_row.code = ?' : ''}`,
-    ...ids,
-    ...(programCode ? [programCode] : [])
+       AND calendar_row.start_time <= NOW()`,
+    ...ids
   );
   return new Set(rows.map((row) => String(row.id)));
 };
@@ -357,28 +353,17 @@ export const createLesson = async (payload: LessonPayload) => {
     await tx.$executeRawUnsafe(
       `INSERT INTO lessons (
         grade, subject_code, subject_name, learn_number,
-        lesson_name, lesson_document, evg_banner, evg_stream, lesson_link,
-        lesson_baitap, lesson_tomtat, lesson_phuongphap,
-        lesson_luuy, lesson_ketqua, status, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
+        lesson_name, status, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
       payload.grade,
       payload.subject_code,
       payload.subject_name,
       learnNumber,
       payload.lesson_name,
-      payload.lesson_document ?? null,
-      payload.evg_banner ?? null,
-      payload.evg_stream ?? null,
-      payload.lesson_link ?? null,
-      payload.lesson_baitap ?? null,
-      payload.lesson_tomtat ?? null,
-      payload.lesson_phuongphap ?? null,
-      payload.lesson_luuy ?? null,
-      payload.lesson_ketqua ?? null,
       payload.status ?? 1
     );
 
-    const rows = await tx.$queryRawUnsafe<any[]>('SELECT * FROM lessons WHERE id = LAST_INSERT_ID() LIMIT 1');
+    const rows = await tx.$queryRawUnsafe<any[]>(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = LAST_INSERT_ID() LIMIT 1`);
     return rows[0] ?? null;
   });
 };
@@ -396,7 +381,7 @@ export const updateLesson = async (id: bigint, payload: Partial<LessonPayload>) 
     );
     await syncCalendarFromLesson(tx, id);
     const rows = await tx.$queryRawUnsafe<any[]>(
-      'SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1',
+      `SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = ? AND status <> 0 LIMIT 1`,
       id
     );
     return rows[0] ?? null;
@@ -417,7 +402,7 @@ export const bulkUpdateLessons = async (ids: bigint[], payload: Partial<LessonPa
     );
     for (const id of ids) await syncCalendarFromLesson(tx, id);
     return tx.$queryRawUnsafe<any[]>(
-      `SELECT * FROM lessons WHERE id IN (${placeholders}) ORDER BY grade ASC, subject_code ASC, learn_number ASC`,
+      `SELECT ${LESSON_COLUMNS} FROM lessons WHERE id IN (${placeholders}) ORDER BY grade ASC, subject_code ASC, learn_number ASC`,
       ...ids
     );
   });
@@ -504,7 +489,7 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
       }
 
       const existingRows = await tx.$queryRawUnsafe<any[]>(
-        'SELECT * FROM lessons WHERE grade = ? AND subject_code = ? AND learn_number = ? AND status <> 0 LIMIT 1',
+        `SELECT ${LESSON_COLUMNS} FROM lessons WHERE grade = ? AND subject_code = ? AND learn_number = ? AND status <> 0 LIMIT 1`,
         row.grade,
         row.subject_code,
         learnNumber
@@ -517,46 +502,38 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
           continue;
         }
 
+        const taughtRows = await tx.$queryRawUnsafe<Array<{ id: bigint }>>(
+          `SELECT calendar_row.id
+           FROM calendar AS calendar_row
+           WHERE (calendar_row.session_id = ?
+             OR (calendar_row.code = ? AND calendar_row.learn_number = ?))
+             AND calendar_row.start_time <= NOW()
+           LIMIT 1`,
+          existing.id,
+          row.subject_code,
+          learnNumber
+        );
+        if (taughtRows.length) {
+          throw new Error(`Dòng ${row.row_number}: không thể ghi đè bài học đã được dạy`);
+        }
+
         if (row.status === 0) {
           await tx.$executeRawUnsafe(
             `UPDATE lessons SET
-              lesson_name = ?, lesson_document = ?, evg_banner = ?, evg_stream = ?, lesson_link = ?,
-              lesson_baitap = ?, lesson_tomtat = ?,
-              lesson_phuongphap = ?, lesson_luuy = ?, lesson_ketqua = ?, status = 0,
+              lesson_name = ?, status = 0,
               learn_number = -CAST(id AS SIGNED), updated_at = CURRENT_TIMESTAMP(3)
             WHERE id = ?`,
             row.lesson_name,
-            row.lesson_document ?? null,
-            row.evg_banner ?? null,
-            row.evg_stream ?? null,
-            row.lesson_link ?? null,
-            row.lesson_baitap ?? null,
-            row.lesson_tomtat ?? null,
-            row.lesson_phuongphap ?? null,
-            row.lesson_luuy ?? null,
-            row.lesson_ketqua ?? null,
             existing.id
           );
         } else {
           await tx.$executeRawUnsafe(
             `UPDATE lessons SET
-              subject_name = ?, lesson_name = ?, lesson_document = ?,
-              evg_banner = ?, evg_stream = ?, lesson_link = ?,
-              lesson_baitap = ?, lesson_tomtat = ?,
-              lesson_phuongphap = ?, lesson_luuy = ?, lesson_ketqua = ?, status = ?,
+              subject_name = ?, lesson_name = ?, status = ?,
               updated_at = CURRENT_TIMESTAMP(3)
             WHERE id = ?`,
             row.subject_name,
             row.lesson_name,
-            row.lesson_document ?? null,
-            row.evg_banner ?? null,
-            row.evg_stream ?? null,
-            row.lesson_link ?? null,
-            row.lesson_baitap ?? null,
-            row.lesson_tomtat ?? null,
-            row.lesson_phuongphap ?? null,
-            row.lesson_luuy ?? null,
-            row.lesson_ketqua ?? null,
             row.status ?? 1,
             existing.id
           );
@@ -569,24 +546,13 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
       await tx.$executeRawUnsafe(
         `INSERT INTO lessons (
           grade, subject_code, subject_name, learn_number,
-          lesson_name, lesson_document, evg_banner, evg_stream, lesson_link,
-          lesson_baitap, lesson_tomtat, lesson_phuongphap,
-          lesson_luuy, lesson_ketqua, status, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
+          lesson_name, status, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
         row.grade,
         row.subject_code,
         row.subject_name,
         learnNumber,
         row.lesson_name,
-        row.lesson_document ?? null,
-        row.evg_banner ?? null,
-        row.evg_stream ?? null,
-        row.lesson_link ?? null,
-        row.lesson_baitap ?? null,
-        row.lesson_tomtat ?? null,
-        row.lesson_phuongphap ?? null,
-        row.lesson_luuy ?? null,
-        row.lesson_ketqua ?? null,
         row.status ?? 1
       );
 
@@ -611,7 +577,7 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
 export const deleteLessonIfUnscheduled = async (id: bigint) => {
   return prisma.$transaction(async (tx) => {
     const lessons = await tx.$queryRawUnsafe<any[]>(
-      'SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1 FOR UPDATE',
+      `SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = ? AND status <> 0 LIMIT 1 FOR UPDATE`,
       id
     );
     const lesson = lessons[0] ?? null;

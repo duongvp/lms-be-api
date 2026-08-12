@@ -12,9 +12,12 @@ import {
   QuizSubmissionQuery,
 } from './quiz.types';
 
-const buildQuizWhere = (query: QuizListQuery) => {
+const buildQuizWhere = (query: QuizListQuery, allowedPrograms: string[] | null = null) => {
   const where: Record<string, any> = {};
-  if (query.code) where.code = query.code;
+  if (allowedPrograms !== null) where.code = { in: allowedPrograms };
+  if (query.code) where.code = allowedPrograms === null
+    ? query.code
+    : (allowedPrograms.includes(query.code) ? query.code : { in: [] });
   if (query.learn_number !== undefined) where.learn_number = query.learn_number;
   if (query.quiz_type !== undefined) where.quiz_type = query.quiz_type;
   if (query.score_type !== undefined) where.score_type = query.score_type;
@@ -23,10 +26,10 @@ const buildQuizWhere = (query: QuizListQuery) => {
   return where;
 };
 
-export const findQuizzes = async (query: QuizListQuery) => {
+export const findQuizzes = async (query: QuizListQuery, allowedPrograms: string[] | null = null) => {
   const page = query.page ?? 1;
   const limit = query.limit ?? 10;
-  const where = buildQuizWhere(query);
+  const where = buildQuizWhere(query, allowedPrograms);
   const sortBy = query.sort_by ?? 'updated_at';
   const sortOrder = query.sort_order ?? 'desc';
   const [total, data] = await prisma.$transaction([
@@ -41,11 +44,11 @@ export const findQuizzes = async (query: QuizListQuery) => {
   return { total, page, limit, data };
 };
 
-export const findQuizzesForExport = async (query: QuizListQuery, quizIds?: string[]) => (
+export const findQuizzesForExport = async (query: QuizListQuery, quizIds?: string[], allowedPrograms: string[] | null = null) => (
   prisma.quiz_content.findMany({
     where: quizIds?.length
-      ? { quiz_id: { in: quizIds } }
-      : buildQuizWhere(query) as any,
+      ? { quiz_id: { in: quizIds }, ...(allowedPrograms === null ? {} : { code: { in: allowedPrograms } }) }
+      : buildQuizWhere(query, allowedPrograms) as any,
     orderBy: [
       { code: 'asc' },
       { learn_number: 'asc' },
@@ -104,7 +107,7 @@ export const findQuizIndexSuggestion = async ({
   };
 };
 
-export const findQuizClassOptions = async () => {
+export const findQuizClassOptions = async (allowedPrograms: string[] | null = null) => {
   const rows = await prisma.$queryRawUnsafe<Array<{
     code: string;
     subject_name: string | null;
@@ -118,7 +121,9 @@ export const findQuizClassOptions = async () => {
      GROUP BY calendar.code
      ORDER BY subject_name ASC, calendar.code ASC`
   );
-  return rows.map((row) => ({ ...row, lesson_count: Number(row.lesson_count) }));
+  return rows
+    .filter((row) => allowedPrograms === null || allowedPrograms.includes(row.code))
+    .map((row) => ({ ...row, lesson_count: Number(row.lesson_count) }));
 };
 
 export const findQuizLessonOptions = async (code: string) => {
@@ -134,7 +139,7 @@ export const findQuizLessonOptions = async (code: string) => {
             COALESCE(
               MAX(NULLIF(TRIM(lesson.lesson_name), '')),
               MAX(NULLIF(TRIM(calendar.lesson_name), '')),
-              CONCAT('Buổi ', calendar.learn_number)
+              CONCAT('Bài ', calendar.learn_number)
             ) AS lesson_name,
             COALESCE(
               MAX(NULLIF(TRIM(lesson.subject_name), '')),

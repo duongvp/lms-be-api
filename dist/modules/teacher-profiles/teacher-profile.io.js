@@ -41,7 +41,7 @@ const teacher_profile_types_1 = require("./teacher-profile.types");
 const COLUMNS = [
     'Mã nhân sự (*)',
     'Họ và tên',
-    'Loại nhân sự (1: Giáo viên, 2: Trợ giảng)',
+    'Quyền xem Stream Key (1: Giáo viên, 0: Trợ giảng)',
     'Trạng thái (1: Hoạt động, 0: Ngừng hoạt động)',
 ];
 const normalizeHeader = (value) => String(value ?? '')
@@ -60,9 +60,9 @@ const HEADER_ALIASES = {
     'ho va ten': 'display_name',
     'ten hien thi': 'display_name',
     'display name': 'display_name',
-    'loai nhan su': 'teacher_type',
-    'loai nhan su (1: giao vien, 2: tro giang)': 'teacher_type',
-    'teacher type': 'teacher_type',
+    'quyen xem stream key': 'can_view_stream_key',
+    'quyen xem stream key (1: giao vien, 0: tro giang)': 'can_view_stream_key',
+    'can view stream key': 'can_view_stream_key',
     'trang thai': 'status',
     'trang thai (1: hoat dong, 0: ngung hoat dong)': 'status',
     status: 'status',
@@ -73,8 +73,8 @@ const mapHeader = (value) => {
         return HEADER_ALIASES[normalized];
     if (normalized.startsWith('ma nhan su'))
         return 'username';
-    if (normalized.startsWith('loai nhan su'))
-        return 'teacher_type';
+    if (normalized.startsWith('quyen xem stream key'))
+        return 'can_view_stream_key';
     if (normalized.startsWith('trang thai'))
         return 'status';
     return undefined;
@@ -103,15 +103,15 @@ const parseTeacherProfileFile = (buffer, filename) => {
     }));
 };
 exports.parseTeacherProfileFile = parseTeacherProfileFile;
-const parseTeacherType = (value) => {
+const parseCanViewStreamKey = (value) => {
     const normalized = normalizeHeader(value);
     if (normalized === '1') {
-        return teacher_profile_types_1.TEACHER_TYPES.TEACHER;
+        return teacher_profile_types_1.STREAM_KEY_ACCESS.TEACHER;
     }
-    if (normalized === '2') {
-        return teacher_profile_types_1.TEACHER_TYPES.TEACHING_ASSISTANT;
+    if (normalized === '0') {
+        return teacher_profile_types_1.STREAM_KEY_ACCESS.TEACHING_ASSISTANT;
     }
-    throw new Error('Loại nhân sự chỉ nhận 1 (Giáo viên) hoặc 2 (Trợ giảng)');
+    throw new Error('Quyền xem Stream Key chỉ nhận 1 (Giáo viên) hoặc 0 (Trợ giảng)');
 };
 const parseStatus = (value) => {
     const normalized = normalizeHeader(value);
@@ -143,7 +143,7 @@ const validateTeacherProfileImportRows = (rows) => {
             const payload = (0, teacher_profile_validation_1.validateTeacherProfilePayload)({
                 username: row.username,
                 display_name: row.display_name,
-                teacher_type: parseTeacherType(row.teacher_type),
+                can_view_stream_key: parseCanViewStreamKey(row.can_view_stream_key),
                 status: parseStatus(row.status),
             });
             const normalizedUsername = payload.username.toLowerCase();
@@ -155,7 +155,7 @@ const validateTeacherProfileImportRows = (rows) => {
                 row: excelRow,
                 username: payload.username,
                 display_name: payload.display_name ?? null,
-                teacher_type: payload.teacher_type,
+                can_view_stream_key: payload.can_view_stream_key,
                 status: payload.status,
             });
         }
@@ -173,7 +173,7 @@ exports.validateTeacherProfileImportRows = validateTeacherProfileImportRows;
 const toExportRows = (rows) => rows.map((row) => [
     String(row.username ?? ''),
     row.display_name ?? '',
-    Number(row.teacher_type),
+    Number(row.can_view_stream_key),
     Number(row.status),
 ]);
 const applyWorksheetFormatting = (worksheet, rowCount) => {
@@ -243,13 +243,13 @@ const buildTeacherProfileTemplate = (format) => (0, exports.buildTeacherProfileF
     {
         username: 'gv001',
         display_name: 'Nguyễn Văn A',
-        teacher_type: teacher_profile_types_1.TEACHER_TYPES.TEACHER,
+        can_view_stream_key: teacher_profile_types_1.STREAM_KEY_ACCESS.TEACHER,
         status: 1,
     },
     {
         username: 'tg001',
         display_name: 'Trần Thị B',
-        teacher_type: teacher_profile_types_1.TEACHER_TYPES.TEACHING_ASSISTANT,
+        can_view_stream_key: teacher_profile_types_1.STREAM_KEY_ACCESS.TEACHING_ASSISTANT,
         status: 1,
     },
 ], format);

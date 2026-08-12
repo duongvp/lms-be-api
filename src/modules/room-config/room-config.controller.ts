@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import service, { RoomConfigService } from './room-config.service';
+import { getFirstProgramScopeFilter } from '../../services/authorization.service';
 
 export class RoomConfigController {
   constructor(private roomConfigService: RoomConfigService = service) {}
@@ -13,7 +14,7 @@ export class RoomConfigController {
         learn_number: learn_number ? Number(learn_number) : undefined,
         page: page ? Number(page) : 1,
         limit: limit ? Number(limit) : 20,
-      });
+      }, getFirstProgramScopeFilter(req.user, ['room_config.view', 'calendar.view', 'lessons.view']));
 
       return res.status(200).json({
         success: true,
@@ -48,6 +49,8 @@ export class RoomConfigController {
 
       const result = await this.roomConfigService.save({
         ...req.body,
+        ...(req.params.code ? { code: String(req.params.code) } : {}),
+        ...(req.params.learn_number ? { learn_number: Number(req.params.learn_number) } : {}),
         updated_by,
       });
 
@@ -65,9 +68,9 @@ export class RoomConfigController {
     try {
       const currentUser = (req as any).user;
       const updated_by = currentUser?.username || currentUser?.email || 'admin_import';
-      const items = req.body.items || req.body;
+      const { program_code, items } = req.body || {};
 
-      const result = await this.roomConfigService.bulkImport(items, updated_by);
+      const result = await this.roomConfigService.bulkImport(program_code, items, updated_by);
 
       return res.status(200).json({
         success: true,

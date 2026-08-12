@@ -37,7 +37,7 @@ const getQuizOptions = () => ({
     duration_unit: 'seconds',
 });
 exports.getQuizOptions = getQuizOptions;
-const getQuizClassOptions = async () => (0, serializer_1.serializeBigInt)(await (0, quiz_repository_1.findQuizClassOptions)());
+const getQuizClassOptions = async (allowedPrograms = null) => (0, serializer_1.serializeBigInt)(await (0, quiz_repository_1.findQuizClassOptions)(allowedPrograms));
 exports.getQuizClassOptions = getQuizClassOptions;
 const getQuizLessonOptions = async (code) => ((0, serializer_1.serializeBigInt)(await (0, quiz_repository_1.findQuizLessonOptions)(code)));
 exports.getQuizLessonOptions = getQuizLessonOptions;
@@ -49,8 +49,8 @@ const getQuizIndexSuggestion = async (query) => {
     });
 };
 exports.getQuizIndexSuggestion = getQuizIndexSuggestion;
-const getQuizzes = async (query) => {
-    const result = await (0, quiz_repository_1.findQuizzes)(query);
+const getQuizzes = async (query, allowedPrograms = null) => {
+    const result = await (0, quiz_repository_1.findQuizzes)(query, allowedPrograms);
     return (0, serializer_1.serializeBigInt)({ ...result, data: result.data.map(normalizeQuiz) });
 };
 exports.getQuizzes = getQuizzes;
@@ -64,7 +64,11 @@ exports.getQuizDetail = getQuizDetail;
 const createNewQuiz = async (payload, creator) => {
     const quizId = payload.quiz_id ?? (0, crypto_1.randomUUID)();
     try {
-        return normalizeQuizResult(await (0, quiz_repository_1.createQuiz)(quizId, payload, creator));
+        const { next_index } = await (0, quiz_repository_1.findQuizIndexSuggestion)({
+            code: payload.code,
+            learn_number: payload.learn_number,
+        });
+        return normalizeQuizResult(await (0, quiz_repository_1.createQuiz)(quizId, { ...payload, quiz_index: next_index }, creator));
     }
     catch (error) {
         return translatePersistenceError(error);
@@ -115,17 +119,17 @@ const reorderExistingQuizzes = async (payload) => {
     const existing = await (0, quiz_repository_1.findEnabledQuizzesByGroup)(payload.code, payload.learn_number);
     const currentIds = existing.map((quiz) => quiz.quiz_id);
     if (currentIds.length !== payload.ordered_quiz_ids.length) {
-        throw new ApiError_1.default('Danh sách sắp xếp phải bao gồm toàn bộ quiz đang hoạt động trong lớp và buổi học', 400);
+        throw new ApiError_1.default('Danh sách sắp xếp phải bao gồm toàn bộ câu hỏi đang hoạt động trong Chương trình và bài học', 400);
     }
     const currentSet = new Set(currentIds);
     if (payload.ordered_quiz_ids.some((id) => !currentSet.has(id))) {
-        throw new ApiError_1.default('Danh sách sắp xếp chứa quiz không thuộc lớp hoặc buổi học', 400);
+        throw new ApiError_1.default('Danh sách sắp xếp chứa câu hỏi không thuộc Chương trình hoặc bài học', 400);
     }
     return (0, serializer_1.serializeBigInt)((await (0, quiz_repository_1.reorderQuizzes)(payload)).map(normalizeQuiz));
 };
 exports.reorderExistingQuizzes = reorderExistingQuizzes;
-const exportQuizzes = async (query, filterVisible = async (rows) => rows) => {
-    const rows = await (0, quiz_repository_1.findQuizzesForExport)(query, query.quiz_ids);
+const exportQuizzes = async (query, filterVisible = async (rows) => rows, allowedPrograms = null) => {
+    const rows = await (0, quiz_repository_1.findQuizzesForExport)(query, query.quiz_ids, allowedPrograms);
     const visibleRows = await filterVisible(rows.map(normalizeQuiz));
     const buffer = (0, quiz_io_1.buildQuizExportBuffer)(visibleRows, query.format);
     return {

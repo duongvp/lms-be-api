@@ -32,7 +32,7 @@ const getLessonSubjects = async () => {
     }));
 };
 exports.getLessonSubjects = getLessonSubjects;
-const getLessonPrograms = async () => ((0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.findLessonProgramOptions)()));
+const getLessonPrograms = async (allowedPrograms = null) => ((0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.findLessonProgramOptions)(allowedPrograms)));
 exports.getLessonPrograms = getLessonPrograms;
 const getCourseMappingsByProgram = async (programCode) => ((0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.findLessonCourseMappings)(programCode)));
 exports.getCourseMappingsByProgram = getCourseMappingsByProgram;
@@ -101,11 +101,9 @@ const updateExistingLesson = async (id, payload) => {
     const current = await (0, lesson_repository_1.findLessonById)(id);
     if (!current)
         throw new ApiError_1.default('Lesson not found', 404);
-    if (payload.learn_number !== undefined && Number(payload.learn_number) !== Number(current.learn_number)) {
-        const lockedIds = await (0, lesson_repository_1.findPastScheduledLessonIds)([id], String(current.subject_code));
-        if (lockedIds.has(String(id))) {
-            throw new ApiError_1.default('Không thể đổi thứ tự bài học đã diễn ra trong quá khứ', 409);
-        }
+    const lockedIds = await (0, lesson_repository_1.findPastScheduledLessonIds)([id]);
+    if (lockedIds.has(String(id))) {
+        throw new ApiError_1.default('Không thể chỉnh sửa bài học đã được dạy', 409);
     }
     if (payload.grade !== undefined && Number(payload.grade) !== Number(current.grade)) {
         throw new ApiError_1.default('Không thể thay đổi khối khi cập nhật bài học', 400);
@@ -143,6 +141,10 @@ const bulkUpdateExistingLessons = async ({ ids, data }) => {
     if (lessons.some((lesson) => !lesson)) {
         throw new ApiError_1.default('Có bài học không tồn tại hoặc đã bị xóa', 404);
     }
+    const lockedIds = await (0, lesson_repository_1.findPastScheduledLessonIds)(ids);
+    if (lockedIds.size) {
+        throw new ApiError_1.default('Không thể chỉnh sửa hàng loạt khi có bài học đã được dạy', 409);
+    }
     return (0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.bulkUpdateLessons)(ids, data));
 };
 exports.bulkUpdateExistingLessons = bulkUpdateExistingLessons;
@@ -159,7 +161,7 @@ const reorderExistingLessons = async (payload) => {
         throw new ApiError_1.default('Danh sách sắp xếp không hợp lệ', 400);
     }
     const learnNumbers = lessons.map((lesson) => Number(lesson.learn_number));
-    const lockedIds = await (0, lesson_repository_1.findPastScheduledLessonIds)(payload.ordered_ids, payload.subject_code);
+    const lockedIds = await (0, lesson_repository_1.findPastScheduledLessonIds)(payload.ordered_ids);
     const lessonById = new Map(lessons.map((lesson) => [String(lesson.id), lesson]));
     const movedLockedLesson = orderedIds.some((id, index) => (lockedIds.has(id)
         && Number(lessonById.get(id)?.learn_number) !== learnNumbers[index]));

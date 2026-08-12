@@ -35,6 +35,7 @@ import {
 } from './quiz.validation';
 import { parseQuizImportFile } from './quiz.io';
 import { QUIZ_MUTABLE_FIELDS } from './quiz.constants';
+import { assertProgramAccess, getProgramScopeFilter } from '../../services/authorization.service';
 
 const visibleRecord = (req: Request, record: any) => (
   FieldPermissionService.filterVisibleRecord(req.user?.roleIds || [], 'quiz', record)
@@ -46,7 +47,11 @@ const visibleRecords = (req: Request, records: any[]) => (
 
 const list = async (req: Request, res: Response) => {
   try {
-    const result = await getQuizzes(validateQuizListQuery(req.query));
+    if (!String(req.query.code || '').trim()) return ErrorResponse(res, 'Vui lòng chọn Chương trình', 400);
+    const result = await getQuizzes(
+      validateQuizListQuery(req.query),
+      getProgramScopeFilter(req.user, 'quiz.view')
+    );
     const data = await visibleRecords(req, result.data as any[]);
     return SuccessResponse(res, 'Success', { ...result, data });
   } catch (error: any) {
@@ -56,9 +61,11 @@ const list = async (req: Request, res: Response) => {
 
 const options = async (_req: Request, res: Response) => SuccessResponse(res, 'Success', getQuizOptions());
 
-const classes = async (_req: Request, res: Response) => {
+const classes = async (req: Request, res: Response) => {
   try {
-    return SuccessResponse(res, 'Success', await getQuizClassOptions());
+    return SuccessResponse(res, 'Success', await getQuizClassOptions(
+      getProgramScopeFilter(req.user, 'quiz.view')
+    ));
   } catch (error: any) {
     return ErrorResponse(res, error.message, error.statusCode || 400);
   }
@@ -157,9 +164,12 @@ const reorder = async (req: Request, res: Response) => {
 
 const exportFile = async (req: Request, res: Response) => {
   try {
+    const query = validateQuizExportQuery(req.query);
+    if (!query.code) return ErrorResponse(res, 'Vui lòng chọn Chương trình', 400);
     const result = await exportQuizzes(
-      validateQuizExportQuery(req.query),
-      (rows) => visibleRecords(req, rows)
+      query,
+      (rows) => visibleRecords(req, rows),
+      getProgramScopeFilter(req.user, 'quiz.export')
     );
     res.setHeader('Content-Type', result.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
@@ -172,6 +182,7 @@ const exportFile = async (req: Request, res: Response) => {
 const template = async (req: Request, res: Response) => {
   try {
     const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+    assertProgramAccess(req.user, 'quiz.import', validateQuizClassCode(req.query.code));
     const result = getQuizImportTemplate(format);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
@@ -194,7 +205,9 @@ const importFile = async (req: Request, res: Response) => {
       'quiz',
       [...QUIZ_MUTABLE_FIELDS]
     );
-    const rawRows = parseQuizImportFile(req.file.buffer, req.file.originalname);
+    const code = validateQuizClassCode(req.body?.code);
+    assertProgramAccess(req.user, 'quiz.import', code);
+    const rawRows = parseQuizImportFile(req.file.buffer, req.file.originalname).map((row) => ({ ...row, code }));
     if (!rawRows.length) return ErrorResponse(res, 'File import không có dữ liệu', 400);
     const { validRows, errors } = validateQuizImportRows(rawRows);
     if (errors.length) {

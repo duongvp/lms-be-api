@@ -1,0 +1,36 @@
+{
+  "purpose": "Read-only backup before simplifying program scope. No legacy row was modified.",
+  "scope_resources": [
+    { "id": "1", "scopeType": "PROGRAM", "scopeKey": "lopdemo-8", "displayName": "SLKH", "status": "ACTIVE", "metadata": null, "createdAt": "2026-08-11T10:37:33.943Z", "updatedAt": "2026-08-11T10:37:33.943Z" },
+    { "id": "2", "scopeType": "PROGRAM", "scopeKey": "lopdemo-7", "displayName": "Định tính", "status": "ACTIVE", "metadata": null, "createdAt": "2026-08-11T10:37:34.056Z", "updatedAt": "2026-08-11T10:37:34.056Z" }
+  ],
+  "role_permission_scope_policies": [
+    { "id": "1", "rolePermissionId": 627, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:33.480Z", "updatedAt": "2026-08-11T10:37:33.480Z" },
+    { "id": "2", "rolePermissionId": 615, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:33.549Z", "updatedAt": "2026-08-11T10:37:33.549Z" },
+    { "id": "3", "rolePermissionId": 617, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:33.596Z", "updatedAt": "2026-08-11T10:37:33.596Z" },
+    { "id": "4", "rolePermissionId": 619, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:33.640Z", "updatedAt": "2026-08-11T10:37:33.640Z" },
+    { "id": "5", "rolePermissionId": 618, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:33.687Z", "updatedAt": "2026-08-11T10:37:33.687Z" },
+    { "id": "6", "rolePermissionId": 630, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:33.733Z", "updatedAt": "2026-08-11T10:37:33.733Z" },
+    { "id": "7", "rolePermissionId": 616, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:33.779Z", "updatedAt": "2026-08-11T10:37:33.779Z" },
+    { "id": "8", "rolePermissionId": 614, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:33.826Z", "updatedAt": "2026-08-11T10:37:33.826Z" },
+    { "id": "9", "rolePermissionId": 620, "scopeType": "PROGRAM", "mode": "RESTRICTED", "createdAt": "2026-08-11T10:37:33.872Z", "updatedAt": "2026-08-11T10:37:33.872Z" },
+    { "id": "10", "rolePermissionId": 622, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:34.124Z", "updatedAt": "2026-08-11T10:37:34.124Z" },
+    { "id": "11", "rolePermissionId": 624, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:34.171Z", "updatedAt": "2026-08-11T10:37:34.171Z" },
+    { "id": "12", "rolePermissionId": 626, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:34.217Z", "updatedAt": "2026-08-11T10:37:34.217Z" },
+    { "id": "13", "rolePermissionId": 628, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:34.263Z", "updatedAt": "2026-08-11T10:37:34.263Z" },
+    { "id": "14", "rolePermissionId": 625, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:34.311Z", "updatedAt": "2026-08-11T10:37:34.311Z" },
+    { "id": "15", "rolePermissionId": 623, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:34.357Z", "updatedAt": "2026-08-11T10:37:34.357Z" },
+    { "id": "16", "rolePermissionId": 621, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:34.402Z", "updatedAt": "2026-08-11T10:37:34.402Z" },
+    { "id": "17", "rolePermissionId": 629, "scopeType": "PROGRAM", "mode": "ALL", "createdAt": "2026-08-11T10:37:34.450Z", "updatedAt": "2026-08-11T10:37:34.450Z" }
+  ],
+  "role_permission_scopes": [
+    { "rolePermissionId": 620, "scopeResourceId": "1", "createdAt": "2026-08-11T10:37:34.033Z" },
+    { "rolePermissionId": 620, "scopeResourceId": "2", "createdAt": "2026-08-11T10:37:34.101Z" }
+  ],
+  "user_permission_scope_policies": [],
+  "user_permission_scopes": [],
+  "role_program_scope_policies": [],
+  "role_program_scopes": [],
+  "user_program_scope_policies": [],
+  "user_program_scopes": []
+}

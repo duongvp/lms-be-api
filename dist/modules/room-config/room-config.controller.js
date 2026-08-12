@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RoomConfigController = void 0;
 const room_config_service_1 = __importDefault(require("./room-config.service"));
+const authorization_service_1 = require("../../services/authorization.service");
 class RoomConfigController {
     roomConfigService;
     constructor(roomConfigService = room_config_service_1.default) {
@@ -19,7 +20,7 @@ class RoomConfigController {
                 learn_number: learn_number ? Number(learn_number) : undefined,
                 page: page ? Number(page) : 1,
                 limit: limit ? Number(limit) : 20,
-            });
+            }, (0, authorization_service_1.getFirstProgramScopeFilter)(req.user, ['room_config.view', 'calendar.view', 'lessons.view']));
             return res.status(200).json({
                 success: true,
                 data: result,
@@ -48,6 +49,8 @@ class RoomConfigController {
             const updated_by = currentUser?.username || currentUser?.email || 'admin';
             const result = await this.roomConfigService.save({
                 ...req.body,
+                ...(req.params.code ? { code: String(req.params.code) } : {}),
+                ...(req.params.learn_number ? { learn_number: Number(req.params.learn_number) } : {}),
                 updated_by,
             });
             return res.status(200).json({
@@ -64,8 +67,8 @@ class RoomConfigController {
         try {
             const currentUser = req.user;
             const updated_by = currentUser?.username || currentUser?.email || 'admin_import';
-            const items = req.body.items || req.body;
-            const result = await this.roomConfigService.bulkImport(items, updated_by);
+            const { program_code, items } = req.body || {};
+            const result = await this.roomConfigService.bulkImport(program_code, items, updated_by);
             return res.status(200).json({
                 success: true,
                 message: `Import hoàn tất. Thành công ${result.successCount}/${result.total}`,

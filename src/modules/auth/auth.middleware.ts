@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { logger } from '../../utils/logger';
 import { TOKEN_TYPES } from './constants';
 import FieldPermissionService from '../roles/field-permission.service';
+import { assertProgramAccess, loadUserAccess } from '../../services/authorization.service';
 
 const prisma = new PrismaClient();
 
@@ -78,42 +79,17 @@ const authenticate = async (
       return;
     }
 
-    // Lấy roles và permissions
-    const userRoles = await prisma.userRoles.findMany({
-      where: {
-        userId: user.id,
-        role: { isActive: true },
-      },
-      include: {
-        role: {
-          include: {
-            rolePermissions: {
-              include: { permission: true }
-            }
-          }
-        }
-      }
-    });
-
-    const roles = userRoles.map(ur => ur.role);
-    const permissionsMap = new Map();
-    roles.forEach(r => {
-      r.rolePermissions.forEach(rp => {
-        if (rp.permission) {
-          permissionsMap.set(rp.permission.code, rp.permission);
-        }
-      });
-    });
-    const isAdmin = roles.some(role => role.code === 'admin');
+    const { roles, permissionCodes, programScope } = await loadUserAccess(user.id);
 
     // Gắn user vào request
     req.user = {
       userId: user.id,
       sessionId: session.id,
       username: user.username,
-      roleIds: roles.map(r => r.id.toString()),
-      roles: roles.map(r => r.code),
-      permissions: isAdmin ? ['*'] : Array.from(permissionsMap.keys())
+      roleIds: roles.map((r: any) => r.id.toString()),
+      roles: roles.map((r: any) => r.code),
+      permissions: permissionCodes,
+      programScope,
     };
 
     next();
@@ -185,8 +161,91 @@ const authorizeFields = (
   };
 };
 
+const authorizeProgram = (
+  permissionCode: string,
+  extractProgramCode: (req: Request) => string
+) => (req: Request, res: Response, next: NextFunction): void => {
+  try {
+    assertProgramAccess(req.user, permissionCode, extractProgramCode(req));
+    next();
+  } catch (error: any) {
+    res.status(error.statusCode || 403).json({
+      success: false,
+      message: error.message || 'Program permission denied',
+    });
+  }
+};
+
+const authorizePrograms = (
+  permissionCode: string,
+  resolveProgramCodes: (req: Request) => string[] | Promise<string[]>
+) => async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const codes = Array.from(new Set(
+      (await resolveProgramCodes(req)).map((code) => String(code || '').trim()).filter(Boolean)
+    ));
+    if (!codes.length) {
+      res.status(400).json({ success: false, message: 'Không xác định được Chương trình' });
+      return;
+    }
+    codes.forEach((code) => assertProgramAccess(req.user, permissionCode, code));
+    next();
+  } catch (error: any) {
+    res.status(error.statusCode || 403).json({
+      success: false,
+      message: error.message || 'Program permission denied',
+    });
+  }
+};
+
+const authorizeProgramForAny = (
+  permissionCodes: string[],
+  extractProgramCode: (req: Request) => string
+) => (req: Request, res: Response, next: NextFunction): void => {
+  const code = String(extractProgramCode(req) || '').trim();
+  const allowed = permissionCodes.some((permissionCode) => {
+    try {
+      assertProgramAccess(req.user, permissionCode, code);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (allowed) return next();
+  res.status(403).json({ success: false, message: 'Không có quyền thao tác trên Chương trình này' });
+};
+
+const authorizeProgramsForAny = (
+  permissionCodes: string[],
+  resolveProgramCodes: (req: Request) => string[] | Promise<string[]>
+) => async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const codes = Array.from(new Set(
+      (await resolveProgramCodes(req)).map((code) => String(code || '').trim()).filter(Boolean)
+    ));
+    const allowed = codes.length > 0 && codes.every((code) => (
+      permissionCodes.some((permissionCode) => {
+        try {
+          assertProgramAccess(req.user, permissionCode, code);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+    ));
+    if (!allowed) throw new Error('Không có quyền thao tác trên Chương trình này');
+    next();
+  } catch (error: any) {
+    res.status(403).json({ success: false, message: error.message || 'Program permission denied' });
+  }
+};
+
 export default {
   authenticate,
   authorize,
   authorizeFields,
+  authorizeProgram,
+  authorizePrograms,
+  authorizeProgramForAny,
+  authorizeProgramsForAny,
 };

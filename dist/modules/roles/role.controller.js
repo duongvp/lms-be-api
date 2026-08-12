@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const role_service_1 = __importDefault(require("./role.service"));
+const program_scope_service_1 = require("./program-scope.service");
 const field_permission_service_1 = __importDefault(require("./field-permission.service"));
 const apiResponse_1 = require("../../utils/apiResponse");
 const MOCK_MODULES = [
@@ -208,6 +209,31 @@ const getPermissionsStructure = async (req, res) => {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
     }
 };
+const getProgramResources = async (_req, res) => {
+    try {
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, program_scope_service_1.listProgramResources)());
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
+    }
+};
+const getProgramScopes = async (req, res) => {
+    try {
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, program_scope_service_1.getRoleProgramScope)(BigInt(String(req.params.id))));
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
+    }
+};
+const updateProgramScopes = async (req, res) => {
+    try {
+        const result = await (0, program_scope_service_1.updateRoleProgramScope)(BigInt(String(req.params.id)), req.body?.programScope || req.body);
+        return (0, apiResponse_1.SuccessResponse)(res, 'Program scope updated successfully', result);
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 500);
+    }
+};
 exports.default = {
     getAllRoles,
     getRoleById,
@@ -217,5 +243,8 @@ exports.default = {
     getModulesStructure,
     getRoleFieldPolicy,
     updateRoleFieldPolicy,
-    getPermissionsStructure
+    getPermissionsStructure,
+    getProgramResources,
+    getProgramScopes,
+    updateProgramScopes
 };

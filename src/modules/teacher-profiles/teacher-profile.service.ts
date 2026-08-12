@@ -2,18 +2,18 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import ApiError from '../../utils/ApiError';
 import {
-  TEACHER_TYPES,
+  STREAM_KEY_ACCESS,
   TeacherProfileListQuery,
   TeacherProfileImportMode,
   TeacherProfileImportRow,
   TeacherProfilePayload,
-  TeacherType,
+  CanViewStreamKey,
 } from './teacher-profile.types';
 
 type TeacherProfileRow = {
   id: number | bigint;
   username: string;
-  teacher_type: number;
+  can_view_stream_key: number;
   display_name: string | null;
   status: number;
   created_at: Date | null;
@@ -23,7 +23,7 @@ type TeacherProfileRow = {
 const normalizeProfileRow = (row: TeacherProfileRow) => ({
   ...row,
   id: Number(row.id),
-  teacher_type: Number(row.teacher_type),
+  can_view_stream_key: Number(row.can_view_stream_key),
   status: Number(row.status),
 });
 
@@ -57,7 +57,7 @@ const findUsage = async (username: string, displayName?: string | null) => {
 
 const getProfileRow = async (id: number) => {
   const rows = await prisma.$queryRaw<TeacherProfileRow[]>`
-    SELECT id, username, teacher_type, display_name, status, created_at, updated_at
+    SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
     FROM teacher_profiles
     WHERE id = ${id}
     LIMIT 1
@@ -77,8 +77,8 @@ const throwDatabaseError = (error: unknown): never => {
 
 export const listTeacherProfiles = async (query: TeacherProfileListQuery) => {
   const conditions: Prisma.Sql[] = [];
-  if (query.teacher_type !== undefined) {
-    conditions.push(Prisma.sql`teacher_type = ${query.teacher_type}`);
+  if (query.can_view_stream_key !== undefined) {
+    conditions.push(Prisma.sql`can_view_stream_key = ${query.can_view_stream_key}`);
   }
   if (query.status !== undefined) {
     conditions.push(Prisma.sql`status = ${query.status}`);
@@ -99,7 +99,7 @@ export const listTeacherProfiles = async (query: TeacherProfileListQuery) => {
       ${where}
     `),
     prisma.$queryRaw<TeacherProfileRow[]>(Prisma.sql`
-      SELECT id, username, teacher_type, display_name, status, created_at, updated_at
+      SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
       FROM teacher_profiles
       ${where}
       ORDER BY status DESC, display_name ASC, username ASC
@@ -123,18 +123,18 @@ export const createTeacherProfile = async (payload: TeacherProfilePayload) => {
   try {
     await prisma.$executeRaw`
       INSERT INTO teacher_profiles (
-        username, display_name, teacher_type, status, created_at, updated_at
+        username, display_name, can_view_stream_key, status, created_at, updated_at
       ) VALUES (
         ${payload.username!},
         ${payload.display_name ?? null},
-        ${payload.teacher_type ?? TEACHER_TYPES.TEACHER},
+        ${payload.can_view_stream_key ?? STREAM_KEY_ACCESS.TEACHER},
         ${payload.status ?? 1},
         NOW(),
         NOW()
       )
     `;
     const rows = await prisma.$queryRaw<TeacherProfileRow[]>`
-      SELECT id, username, teacher_type, display_name, status, created_at, updated_at
+      SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
       FROM teacher_profiles
       WHERE username = ${payload.username!}
       LIMIT 1
@@ -145,17 +145,17 @@ export const createTeacherProfile = async (payload: TeacherProfilePayload) => {
   }
 };
 
-const assertTypeCanChange = async (
+const assertStreamKeyAccessCanChange = async (
   username: string,
   displayName: string | null,
-  currentType: number,
-  nextType?: TeacherType
+  currentAccess: number,
+  nextAccess?: CanViewStreamKey
 ) => {
-  if (nextType === undefined || nextType === currentType) return;
+  if (nextAccess === undefined || nextAccess === currentAccess) return;
   const usage = await findUsage(username, displayName);
   if (usage.teacherCount > 0 || usage.assistantCount > 0) {
     throw new ApiError(
-      'Không thể đổi loại nhân sự vì username đang được sử dụng trong lịch học',
+      'Không thể đổi vai trò vì username đang được sử dụng trong lịch học',
       409
     );
   }
@@ -166,19 +166,19 @@ export const updateTeacherProfile = async (
   payload: TeacherProfilePayload
 ) => {
   const current = await getProfileRow(id);
-  await assertTypeCanChange(
+  await assertStreamKeyAccessCanChange(
     current.username,
     current.display_name,
-    current.teacher_type,
-    payload.teacher_type
+    current.can_view_stream_key,
+    payload.can_view_stream_key
   );
 
   const assignments: Prisma.Sql[] = [];
   if (payload.display_name !== undefined) {
     assignments.push(Prisma.sql`display_name = ${payload.display_name}`);
   }
-  if (payload.teacher_type !== undefined) {
-    assignments.push(Prisma.sql`teacher_type = ${payload.teacher_type}`);
+  if (payload.can_view_stream_key !== undefined) {
+    assignments.push(Prisma.sql`can_view_stream_key = ${payload.can_view_stream_key}`);
   }
   if (payload.status !== undefined) {
     assignments.push(Prisma.sql`status = ${payload.status}`);
@@ -242,7 +242,7 @@ export const importTeacherProfiles = async (
   const usernames = rows.map((row) => row.username);
   const existingRows = usernames.length
     ? await tx.$queryRaw<TeacherProfileRow[]>(Prisma.sql`
-        SELECT id, username, teacher_type, display_name, status, created_at, updated_at
+        SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
         FROM teacher_profiles
         WHERE username IN (${Prisma.join(usernames)})
       `)
@@ -251,13 +251,13 @@ export const importTeacherProfiles = async (
     existingRows.map((row) => [row.username.toLowerCase(), normalizeProfileRow(row)])
   );
 
-  const typeChanges = rows.filter((row) => {
+  const accessChanges = rows.filter((row) => {
     const current = existingByUsername.get(row.username.toLowerCase());
-    return current && current.teacher_type !== row.teacher_type;
+    return current && current.can_view_stream_key !== row.can_view_stream_key;
   });
-  if (mode === 'overwrite' && typeChanges.length) {
+  if (mode === 'overwrite' && accessChanges.length) {
     const teacherIdentifierToUsername = new Map<string, string>();
-    const usageConditions = typeChanges.flatMap((row) => {
+    const usageConditions = accessChanges.flatMap((row) => {
       const username = row.username.toLowerCase();
       const current = existingByUsername.get(username);
       teacherIdentifierToUsername.set(username, username);
@@ -291,7 +291,7 @@ export const importTeacherProfiles = async (
       });
     });
     if (usedUsernames.size) {
-      const labels = typeChanges
+      const labels = accessChanges
         .filter((row) => usedUsernames.has(row.username.toLowerCase()))
         .map((row) => `${row.username} (dòng ${row.row})`);
       throw new ApiError(
@@ -315,7 +315,7 @@ export const importTeacherProfiles = async (
         UPDATE teacher_profiles
         SET
           display_name = ${row.display_name},
-          teacher_type = ${row.teacher_type},
+          can_view_stream_key = ${row.can_view_stream_key},
           status = ${row.status},
           updated_at = NOW()
         WHERE id = ${existing.id}
@@ -325,11 +325,11 @@ export const importTeacherProfiles = async (
     }
     await tx.$executeRaw`
       INSERT INTO teacher_profiles (
-        username, display_name, teacher_type, status, created_at, updated_at
+        username, display_name, can_view_stream_key, status, created_at, updated_at
       ) VALUES (
         ${row.username},
         ${row.display_name},
-        ${row.teacher_type},
+        ${row.can_view_stream_key},
         ${row.status},
         NOW(),
         NOW()

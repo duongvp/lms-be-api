@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
+exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const package_course_sheet_service_1 = require("../../integrations/package-course-sheet.service");
@@ -158,7 +158,7 @@ const normalizeTeachingAssignments = async (client, data) => {
       SELECT username, display_name
       FROM teacher_profiles
       WHERE username = ${teacher}
-        AND teacher_type = 1
+        AND can_view_stream_key = 1
         AND status = 1
       LIMIT 1
     `);
@@ -171,13 +171,13 @@ const normalizeTeachingAssignments = async (client, data) => {
     // Only assistants are account assignments and need profile validation.
     if (assistants.length) {
         const profiles = await client.$queryRaw(client_1.Prisma.sql `
-      SELECT username, teacher_type
+      SELECT username, can_view_stream_key
       FROM teacher_profiles
       WHERE username IN (${client_1.Prisma.join(assistants)})
         AND status = 1
     `);
-        const profileByUsername = new Map(profiles.map((profile) => [profile.username, profile.teacher_type]));
-        const invalidAssistants = assistants.filter((username) => profileByUsername.get(username) !== 2);
+        const profileByUsername = new Map(profiles.map((profile) => [profile.username, profile.can_view_stream_key]));
+        const invalidAssistants = assistants.filter((username) => profileByUsername.get(username) !== 0);
         if (invalidAssistants.length) {
             throw new Error(`Trợ giảng không tồn tại, đã ngừng hoạt động hoặc sai loại: ${invalidAssistants.join(', ')}`);
         }
@@ -836,25 +836,24 @@ const getProgramLessonsForScheduling = async (programCode) => {
     }));
 };
 exports.getProgramLessonsForScheduling = getProgramLessonsForScheduling;
-const getSchedulingPrograms = async () => {
+const getSchedulingPrograms = async (allowedPrograms = null) => {
     const rows = await prisma.$queryRaw(client_1.Prisma.sql `
-    SELECT source.code, MAX(source.subject_name) AS subject_name
+    SELECT program.code, MAX(program.subject_name) AS subject_name
     FROM (
-      SELECT lesson.subject_code AS code, lesson.subject_name
-      FROM lessons AS lesson
-      WHERE lesson.status <> 0
-        AND lesson.subject_code IS NOT NULL
-        AND TRIM(lesson.subject_code) <> ''
+      SELECT subject_code AS code, subject_name
+      FROM lessons
+      WHERE subject_code IS NOT NULL AND TRIM(subject_code) <> ''
       UNION ALL
-      SELECT calendar_row.code, calendar_row.subject AS subject_name
-      FROM calendar AS calendar_row
-      WHERE calendar_row.code IS NOT NULL
-        AND TRIM(calendar_row.code) <> ''
-    ) AS source
-    GROUP BY source.code
-    ORDER BY source.code ASC
+      SELECT code, subject AS subject_name
+      FROM calendar
+      WHERE code IS NOT NULL AND TRIM(code) <> ''
+    ) AS program
+    GROUP BY program.code
+    ORDER BY subject_name ASC, program.code ASC
   `);
-    return rows.map((row) => ({
+    return rows
+        .filter((row) => allowedPrograms === null || allowedPrograms.includes(row.code))
+        .map((row) => ({
         code: row.code,
         subject_name: row.subject_name,
     }));
@@ -999,13 +998,13 @@ const createValidatedCalendarImport = async (rows, changeActor) => {
     }));
 };
 exports.createValidatedCalendarImport = createValidatedCalendarImport;
-const cancelWithoutMakeup = async (tx, current) => {
+const cancelWithoutMakeup = async (tx, current, reason) => {
     return await tx.calendar.update({
         where: { id: current.id },
-        data: { lesson_status: 1 },
+        data: { lesson_status: 1, cancel_reason: reason },
     });
 };
-const cancelWithMakeup = async (tx, current, payload) => {
+const cancelWithMakeup = async (tx, current, payload, reason) => {
     const newSessionInput = normalizeRoom({ ...(payload.new_session || payload) });
     delete newSessionInput.mode;
     delete newSessionInput.update_mode;
@@ -1044,13 +1043,14 @@ const cancelWithMakeup = async (tx, current, payload) => {
         where: { id: current.id },
         data: {
             lesson_status: 1,
+            cancel_reason: reason,
             key: canceledKey,
         },
     });
     const createdSession = await createCalendarRecord(tx, newSessionData);
     return { canceled_session: updatedCurrent, created_session: createdSession };
 };
-const rescheduleFollowing = async (tx, current, payload) => {
+const rescheduleFollowing = async (tx, current, payload, reason) => {
     const newSessionInput = normalizeRoom({ ...(payload.new_session || {}) });
     await normalizeTeachingAssignments(tx, newSessionInput);
     if (!newSessionInput.start_time || !newSessionInput.end_time) {
@@ -1100,6 +1100,7 @@ const rescheduleFollowing = async (tx, current, payload) => {
         // lưu lịch sử và không chiếm key đang hoạt động của lesson.
         data: {
             lesson_status: 1,
+            cancel_reason: reason,
             key: canceledKey,
         },
     });
@@ -1156,11 +1157,11 @@ const rescheduleSessionInTransaction = async (tx, id, payload, changeActor) => {
     let beforeFollowingSessions = [];
     if (['cancel', 'cancel_only', 'no_makeup', 'no_make_up'].includes(mode)) {
         action = 'cancel';
-        result = await cancelWithoutMakeup(tx, current);
+        result = await cancelWithoutMakeup(tx, current, reason);
     }
     else if (['makeup', 'make_up', 'compensate'].includes(mode)) {
         action = 'makeup';
-        result = await cancelWithMakeup(tx, current, payload);
+        result = await cancelWithMakeup(tx, current, payload, reason);
     }
     else if (mode === 'following') {
         action = 'following';
@@ -1177,7 +1178,7 @@ const rescheduleSessionInTransaction = async (tx, id, payload, changeActor) => {
             orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
         });
         await hydrateAssistantTeachers(tx, beforeFollowingSessions);
-        result = await rescheduleFollowing(tx, current, payload);
+        result = await rescheduleFollowing(tx, current, payload, reason);
     }
     else {
         throw new Error("Invalid reschedule mode");
@@ -1325,6 +1326,9 @@ const updateSchedule = async (id, data, updateMode, changeActor) => {
     if (updateMode && updateMode !== 'current') {
         return await (0, exports.rescheduleSession)(id, { ...data, mode: updateMode }, changeActor);
     }
+    if (data?.lesson_status !== undefined || data?.cancel_reason !== undefined) {
+        throw new Error('Chỉ được đánh dấu nghỉ học qua thao tác Nghỉ học để bắt buộc lưu lý do');
+    }
     const rawMappingUpdate = data?.package_lesson_mappings;
     const auditReason = data?.reason ?? data?.change_reason;
     const hasMappingUpdate = Array.isArray(rawMappingUpdate);
@@ -1454,8 +1458,52 @@ const normalizeSortOrder = (value) => {
     const order = normalizeString(value);
     return order === 'desc' || order === 'descend' ? 'desc' : 'asc';
 };
+const getCalendarIdsForPrograms = async (programs) => {
+    if (!programs.length)
+        return [];
+    const rows = await prisma.$queryRaw(client_1.Prisma.sql `
+    SELECT DISTINCT calendar_row.id
+    FROM calendar AS calendar_row
+    LEFT JOIN lessons AS session_lesson
+      ON session_lesson.id = calendar_row.session_id
+     AND session_lesson.status <> 0
+    WHERE session_lesson.subject_code IN (${client_1.Prisma.join(programs)})
+       OR (
+         calendar_row.session_id IS NULL
+         AND EXISTS (
+           SELECT 1
+           FROM lessons AS legacy_lesson
+           WHERE legacy_lesson.subject_code = calendar_row.code
+             AND legacy_lesson.learn_number = calendar_row.learn_number
+             AND legacy_lesson.status <> 0
+             AND legacy_lesson.subject_code IN (${client_1.Prisma.join(programs)})
+         )
+       )
+  `);
+    return rows.map((row) => Number(row.id));
+};
+const assertSchedulingProgramExists = async (programCode) => {
+    const program = await prisma.lessons.findFirst({
+        where: { subject_code: programCode, status: { not: 0 } },
+        select: { id: true },
+    });
+    if (!program)
+        throw new Error('Chương trình không tồn tại hoặc chưa có đề cương');
+};
+exports.assertSchedulingProgramExists = assertSchedulingProgramExists;
+const assertCalendarIdsInProgram = async (ids, programCode) => {
+    const uniqueIds = Array.from(new Set(ids.filter((id) => Number.isInteger(id) && id > 0)));
+    if (!uniqueIds.length)
+        throw new Error('File import không có lịch học hợp lệ');
+    const allowedIds = new Set(await getCalendarIdsForPrograms([programCode]));
+    const deniedIds = uniqueIds.filter((id) => !allowedIds.has(id));
+    if (deniedIds.length) {
+        throw new Error(`Có lịch học không thuộc Chương trình ${programCode}`);
+    }
+};
+exports.assertCalendarIdsInProgram = assertCalendarIdsInProgram;
 // 3. Lấy danh sách lịch
-const getCalendar = async (query) => {
+const getCalendar = async (query, allowedPrograms = null) => {
     const page = normalizeNumber(query.page, 'page') ?? 1;
     const limit = normalizeNumber(query.limit, 'limit') ?? 10;
     if (page < 1)
@@ -1489,7 +1537,7 @@ const getCalendar = async (query) => {
       SELECT display_name
       FROM teacher_profiles
       WHERE username = ${teacher}
-        AND teacher_type = 1
+        AND can_view_stream_key = 1
         AND status = 1
       LIMIT 1
     `);
@@ -1506,7 +1554,22 @@ const getCalendar = async (query) => {
     if (startTime && endTime && startTime > endTime) {
         throw new Error('Khoảng thời gian không hợp lệ');
     }
-    const where = {};
+    const selectedProgram = exactCode || code;
+    const requestedPrograms = selectedProgram ? [selectedProgram] : null;
+    const effectivePrograms = allowedPrograms === null
+        ? requestedPrograms
+        : requestedPrograms
+            ? allowedPrograms.filter((program) => requestedPrograms.includes(program))
+            : allowedPrograms;
+    const scopedCalendarIds = effectivePrograms === null
+        ? null
+        : await getCalendarIdsForPrograms(effectivePrograms);
+    // The deployed Prisma client does not expose calendar.session_id yet.
+    // Resolve canonical ownership in parameterized SQL, then use the stable id field in Prisma.
+    const programCondition = scopedCalendarIds === null
+        ? null
+        : { id: { in: scopedCalendarIds } };
+    const where = programCondition ? { AND: [programCondition] } : {};
     if (keyword) {
         where.OR = [
             { code: { contains: keyword } },
@@ -1517,8 +1580,6 @@ const getCalendar = async (query) => {
             { channel_name: { contains: keyword } },
         ];
     }
-    if (exactCode || code)
-        where.code = exactCode || code;
     if (teacher)
         where.teacher = { contains: teacher };
     if (subject)
@@ -1543,7 +1604,7 @@ const getCalendar = async (query) => {
                     { start_time: { lte: now } },
                     { end_time: { gte: now } },
                 ];
-        where.AND = timeConditions;
+        where.AND = [...(Array.isArray(where.AND) ? where.AND : []), ...timeConditions];
     }
     const orderBy = sortFields.length
         ? sortFields.map((field, index) => ({
@@ -1575,13 +1636,20 @@ const getCalendar = async (query) => {
     };
 };
 exports.getCalendar = getCalendar;
-const getCalendarRowsForExport = async (rawIds) => {
+const getCalendarRowsForExport = async (rawIds, allowedPrograms = null) => {
     const ids = String(rawIds ?? '')
         .split(',')
         .map((id) => Number(id.trim()))
         .filter((id) => Number.isInteger(id) && id > 0);
+    const scopedCalendarIds = allowedPrograms === null
+        ? null
+        : await getCalendarIdsForPrograms(allowedPrograms);
+    const conditions = [
+        ...(ids.length ? [{ id: { in: ids } }] : []),
+        ...(scopedCalendarIds === null ? [] : [{ id: { in: scopedCalendarIds } }]),
+    ];
     const calendars = await prisma.calendar.findMany({
-        where: ids.length ? { id: { in: ids } } : {},
+        where: conditions.length ? { AND: conditions } : {},
         orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
     });
     await hydrateAssistantTeachers(prisma, calendars);
@@ -1817,6 +1885,26 @@ exports.updateCalendarMappings = updateCalendarMappings;
 // Sửa nhiều lịch (Bulk Update)
 const updateBulk = async (config, changeActor) => {
     const { ids, config_mode, update_data } = config;
+    // Một lần cập nhật có thể gồm nhiều lịch, mapping HMO và bản ghi audit/queue.
+    // Prisma mặc định chỉ cho interactive transaction 5 giây, không đủ cho luồng này.
+    const bulkTransactionOptions = { maxWait: 10_000, timeout: 60_000 };
+    const applyScheduleDate = (value, currentTime) => {
+        const dateText = String(value || '').trim();
+        if (!dateText)
+            return currentTime;
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateText);
+        if (!match)
+            throw new Error('start_date phải có định dạng YYYY-MM-DD');
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const next = new Date(currentTime);
+        next.setUTCFullYear(year, month - 1, day);
+        if (next.getUTCFullYear() !== year || next.getUTCMonth() !== month - 1 || next.getUTCDate() !== day) {
+            throw new Error('start_date không hợp lệ');
+        }
+        return next;
+    };
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
         throw new Error("Missing or invalid ids array for bulk update");
     }
@@ -1861,12 +1949,12 @@ const updateBulk = async (config, changeActor) => {
                         if (update_data.start_time) {
                             const [hours, minutes] = update_data.start_time.split(':');
                             newStart = new Date(current.start_time);
-                            newStart.setHours(Number(hours), Number(minutes), 0, 0);
+                            newStart.setUTCHours(Number(hours), Number(minutes), 0, 0);
                         }
                         if (update_data.end_time) {
                             const [hours, minutes] = update_data.end_time.split(':');
                             newEnd = new Date(current.end_time);
-                            newEnd.setHours(Number(hours), Number(minutes), 0, 0);
+                            newEnd.setUTCHours(Number(hours), Number(minutes), 0, 0);
                         }
                         // Check conflict
                         await checkConflict({
@@ -1900,7 +1988,7 @@ const updateBulk = async (config, changeActor) => {
                 };
                 await (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, applyUpdates);
                 return results;
-            });
+            }, bulkTransactionOptions);
         }
         // Dù chỉ đổi giáo viên/phòng vẫn phải khóa và kiểm tra từng buổi để
         // không cập nhật lịch đã bắt đầu.
@@ -1931,7 +2019,7 @@ const updateBulk = async (config, changeActor) => {
             };
             await (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, applyUpdates);
             return results;
-        });
+        }, bulkTransactionOptions);
     }
     // 2. CẤU HÌNH RIÊNG: Mỗi bài học có data cập nhật riêng
     if (config_mode === 'separate') {
@@ -1965,33 +2053,41 @@ const updateBulk = async (config, changeActor) => {
                     await normalizeTeachingAssignments(tx, dataToUpdate);
                     let newStart = current.start_time;
                     let newEnd = current.end_time;
+                    if (item.start_date) {
+                        newStart = applyScheduleDate(item.start_date, current.start_time);
+                        newEnd = applyScheduleDate(item.start_date, current.end_time);
+                    }
                     if (item.start_time) {
                         const [hours, minutes] = item.start_time.split(':');
-                        newStart = new Date(current.start_time);
-                        newStart.setHours(Number(hours), Number(minutes), 0, 0);
+                        newStart = new Date(newStart);
+                        newStart.setUTCHours(Number(hours), Number(minutes), 0, 0);
                     }
                     if (item.end_time) {
                         const [hours, minutes] = item.end_time.split(':');
-                        newEnd = new Date(current.end_time);
-                        newEnd.setHours(Number(hours), Number(minutes), 0, 0);
+                        newEnd = new Date(newEnd);
+                        newEnd.setUTCHours(Number(hours), Number(minutes), 0, 0);
                     }
-                    if (item.start_time || item.end_time) {
+                    if (item.start_date || item.start_time || item.end_time) {
                         dataToUpdate.start_time = newStart;
                         dataToUpdate.end_time = newEnd;
                     }
-                    // Check conflict
-                    await checkConflict({
-                        teacher: dataToUpdate.teacher || current.teacher,
-                        assistant_teacher: dataToUpdate.assistant_teacher ?? current.assistant_teacher,
-                        channel_name: dataToUpdate.channel_name || current.channel_name,
-                        code: current.code,
-                        start_time: newStart,
-                        end_time: newEnd,
-                        id
-                    });
-                    const updated = await updateCalendarRecord(tx, id, dataToUpdate);
-                    await auditTimeChange(tx, current, updated, changeActor, item?.reason ?? config?.reason);
                     const mappingUpdate = mappingUpdatesById.get(id);
+                    if (!Object.keys(dataToUpdate).length && mappingUpdate === undefined)
+                        continue;
+                    let updated = current;
+                    if (Object.keys(dataToUpdate).length) {
+                        await checkConflict({
+                            teacher: dataToUpdate.teacher || current.teacher,
+                            assistant_teacher: dataToUpdate.assistant_teacher ?? current.assistant_teacher,
+                            channel_name: dataToUpdate.channel_name || current.channel_name,
+                            code: current.code,
+                            start_time: newStart,
+                            end_time: newEnd,
+                            id
+                        });
+                        updated = await updateCalendarRecord(tx, id, dataToUpdate);
+                        await auditTimeChange(tx, current, updated, changeActor, item?.reason ?? config?.reason);
+                    }
                     if (mappingUpdate) {
                         await assertMappingsBelongToCalendarLesson(tx, current, mappingUpdate);
                         await replacePackageLessonMappingForCalendar(tx, updated, mappingUpdate);
@@ -2008,7 +2104,7 @@ const updateBulk = async (config, changeActor) => {
             };
             await (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, applyUpdates);
             return results;
-        });
+        }, bulkTransactionOptions);
     }
     throw new Error("Invalid config_mode");
 };

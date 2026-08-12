@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import * as StyledXLSX from 'xlsx-js-style';
 import { validateTeacherProfilePayload } from './teacher-profile.validation';
 import {
-  TEACHER_TYPES,
+  STREAM_KEY_ACCESS,
   TeacherProfileImportError,
   TeacherProfileImportRow,
 } from './teacher-profile.types';
@@ -12,7 +12,7 @@ export type TeacherProfileFileFormat = 'csv' | 'xlsx';
 const COLUMNS = [
   'Mã nhân sự (*)',
   'Họ và tên',
-  'Loại nhân sự (1: Giáo viên, 2: Trợ giảng)',
+  'Quyền xem Stream Key (1: Giáo viên, 0: Trợ giảng)',
   'Trạng thái (1: Hoạt động, 0: Ngừng hoạt động)',
 ] as const;
 
@@ -33,9 +33,9 @@ const HEADER_ALIASES: Record<string, string> = {
   'ho va ten': 'display_name',
   'ten hien thi': 'display_name',
   'display name': 'display_name',
-  'loai nhan su': 'teacher_type',
-  'loai nhan su (1: giao vien, 2: tro giang)': 'teacher_type',
-  'teacher type': 'teacher_type',
+  'quyen xem stream key': 'can_view_stream_key',
+  'quyen xem stream key (1: giao vien, 0: tro giang)': 'can_view_stream_key',
+  'can view stream key': 'can_view_stream_key',
   'trang thai': 'status',
   'trang thai (1: hoat dong, 0: ngung hoat dong)': 'status',
   status: 'status',
@@ -45,7 +45,7 @@ const mapHeader = (value: unknown) => {
   const normalized = normalizeHeader(value);
   if (HEADER_ALIASES[normalized]) return HEADER_ALIASES[normalized];
   if (normalized.startsWith('ma nhan su')) return 'username';
-  if (normalized.startsWith('loai nhan su')) return 'teacher_type';
+  if (normalized.startsWith('quyen xem stream key')) return 'can_view_stream_key';
   if (normalized.startsWith('trang thai')) return 'status';
   return undefined;
 };
@@ -73,15 +73,15 @@ export const parseTeacherProfileFile = (buffer: Buffer, filename: string) => {
   }));
 };
 
-const parseTeacherType = (value: unknown) => {
+const parseCanViewStreamKey = (value: unknown) => {
   const normalized = normalizeHeader(value);
   if (normalized === '1') {
-    return TEACHER_TYPES.TEACHER;
+    return STREAM_KEY_ACCESS.TEACHER;
   }
-  if (normalized === '2') {
-    return TEACHER_TYPES.TEACHING_ASSISTANT;
+  if (normalized === '0') {
+    return STREAM_KEY_ACCESS.TEACHING_ASSISTANT;
   }
-  throw new Error('Loại nhân sự chỉ nhận 1 (Giáo viên) hoặc 2 (Trợ giảng)');
+  throw new Error('Quyền xem Stream Key chỉ nhận 1 (Giáo viên) hoặc 0 (Trợ giảng)');
 };
 
 const parseStatus = (value: unknown) => {
@@ -117,7 +117,7 @@ export const validateTeacherProfileImportRows = (
       const payload = validateTeacherProfilePayload({
         username: row.username,
         display_name: row.display_name,
-        teacher_type: parseTeacherType(row.teacher_type),
+        can_view_stream_key: parseCanViewStreamKey(row.can_view_stream_key),
         status: parseStatus(row.status),
       });
       const normalizedUsername = payload.username!.toLowerCase();
@@ -129,7 +129,7 @@ export const validateTeacherProfileImportRows = (
         row: excelRow,
         username: payload.username!,
         display_name: payload.display_name ?? null,
-        teacher_type: payload.teacher_type!,
+        can_view_stream_key: payload.can_view_stream_key!,
         status: payload.status!,
       });
     } catch (error: any) {
@@ -146,7 +146,7 @@ export const validateTeacherProfileImportRows = (
 const toExportRows = (rows: Array<Record<string, any>>) => rows.map((row) => [
   String(row.username ?? ''),
   row.display_name ?? '',
-  Number(row.teacher_type),
+  Number(row.can_view_stream_key),
   Number(row.status),
 ]);
 
@@ -226,13 +226,13 @@ export const buildTeacherProfileTemplate = (format: TeacherProfileFileFormat) =>
     {
       username: 'gv001',
       display_name: 'Nguyễn Văn A',
-      teacher_type: TEACHER_TYPES.TEACHER,
+      can_view_stream_key: STREAM_KEY_ACCESS.TEACHER,
       status: 1,
     },
     {
       username: 'tg001',
       display_name: 'Trần Thị B',
-      teacher_type: TEACHER_TYPES.TEACHING_ASSISTANT,
+      can_view_stream_key: STREAM_KEY_ACCESS.TEACHING_ASSISTANT,
       status: 1,
     },
   ], format);

@@ -53,6 +53,10 @@ router.get('/', authorize(['roles.view']), role_controller_1.default.getAllRoles
 router.get('/modules-structure', authorize(['roles.view']), role_controller_1.default.getModulesStructure);
 // Route to get permissions structure for UI
 router.get('/permissions-structure', authorize(['roles.view']), role_controller_1.default.getPermissionsStructure);
+// Program-level scope APIs. Keep these routes before the generic /:id route.
+router.get('/program-resources', authorize(['roles.view']), role_controller_1.default.getProgramResources);
+router.get('/:id/program-scope', authorize(['roles.view']), role_controller_1.default.getProgramScopes);
+router.put('/:id/program-scope', authorize(['roles.update']), role_controller_1.default.updateProgramScopes);
 // Field-level policy APIs
 router.get('/:id/field-policy', authorize(['roles.view']), role_controller_1.default.getRoleFieldPolicy);
 router.put('/:id/field-policy', authorize(['roles.update']), role_controller_1.default.updateRoleFieldPolicy);

@@ -60,8 +60,8 @@ export const getLessonSubjects = async () => {
     }));
 };
 
-export const getLessonPrograms = async () => (
-  serializeBigInt(await findLessonProgramOptions())
+export const getLessonPrograms = async (allowedPrograms: string[] | null = null) => (
+  serializeBigInt(await findLessonProgramOptions(allowedPrograms))
 );
 
 export const getCourseMappingsByProgram = async (programCode: string) => (
@@ -139,11 +139,9 @@ export const updateExistingLesson = async (id: bigint, payload: Partial<LessonPa
   const current = await findLessonById(id);
   if (!current) throw new ApiError('Lesson not found', 404);
 
-  if (payload.learn_number !== undefined && Number(payload.learn_number) !== Number(current.learn_number)) {
-    const lockedIds = await findPastScheduledLessonIds([id], String(current.subject_code));
-    if (lockedIds.has(String(id))) {
-      throw new ApiError('Không thể đổi thứ tự bài học đã diễn ra trong quá khứ', 409);
-    }
+  const lockedIds = await findPastScheduledLessonIds([id]);
+  if (lockedIds.has(String(id))) {
+    throw new ApiError('Không thể chỉnh sửa bài học đã được dạy', 409);
   }
 
   if (payload.grade !== undefined && Number(payload.grade) !== Number(current.grade)) {
@@ -190,6 +188,10 @@ export const bulkUpdateExistingLessons = async ({ ids, data }: LessonBulkUpdateP
   if (lessons.some((lesson) => !lesson)) {
     throw new ApiError('Có bài học không tồn tại hoặc đã bị xóa', 404);
   }
+  const lockedIds = await findPastScheduledLessonIds(ids);
+  if (lockedIds.size) {
+    throw new ApiError('Không thể chỉnh sửa hàng loạt khi có bài học đã được dạy', 409);
+  }
   
   return serializeBigInt(await bulkUpdateLessons(ids, data));
 };
@@ -210,7 +212,7 @@ export const reorderExistingLessons = async (payload: LessonReorderPayload) => {
   }
 
   const learnNumbers = lessons.map((lesson) => Number(lesson.learn_number));
-  const lockedIds = await findPastScheduledLessonIds(payload.ordered_ids, payload.subject_code);
+  const lockedIds = await findPastScheduledLessonIds(payload.ordered_ids);
   const lessonById = new Map(lessons.map((lesson) => [String(lesson.id), lesson]));
   const movedLockedLesson = orderedIds.some((id, index) => (
     lockedIds.has(id)

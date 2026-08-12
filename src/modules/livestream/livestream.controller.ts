@@ -11,6 +11,7 @@ import {
 } from './livestream.io';
 import { previewAutoSchedule as buildAutoSchedulePreview } from './auto-schedule.service';
 import { importCalendarFromSheet } from './calendar-import.service';
+import { getProgramScopeFilter } from '../../services/authorization.service';
 
 const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => ({
   userId: Number(req.user?.userId),
@@ -53,9 +54,14 @@ export const getProgramLessons = async (req: Request, res: Response, next: NextF
   }
 };
 
-export const getPrograms = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const getPrograms = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    res.status(200).json({ success: true, data: await livestreamService.getSchedulingPrograms() });
+    res.status(200).json({
+      success: true,
+      data: await livestreamService.getSchedulingPrograms(
+        getProgramScopeFilter(req.user, 'calendar.view')
+      ),
+    });
   } catch (error) {
     next(error);
   }
@@ -152,7 +158,10 @@ export const deleteSession = async (req: Request, res: Response, next: NextFunct
 
 export const getCalendar = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const result = await livestreamService.getCalendar(req.query);
+    const result = await livestreamService.getCalendar(
+      req.query,
+      getProgramScopeFilter(req.user, 'calendar.view')
+    );
     const data = await FieldPermissionService.filterVisibleRecords(
       req.user?.roleIds || [],
       'calendar',
@@ -182,7 +191,10 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
 export const exportFile = async (req: Request, res: Response): Promise<void> => {
   try {
     const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
-    const rows = await livestreamService.getCalendarRowsForExport(req.query.ids);
+    const rows = await livestreamService.getCalendarRowsForExport(
+      req.query.ids,
+      getProgramScopeFilter(req.user, 'calendar.export')
+    );
     const buffer = buildCalendarFile(rows, format);
     res.setHeader('Content-Type', getCalendarFileContentType(format));
     res.setHeader(
@@ -218,6 +230,7 @@ export const importFile = async (req: Request, res: Response): Promise<void> => 
       res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
       return;
     }
+    await livestreamService.assertSchedulingProgramExists(programCode);
     importRows.forEach((row) => {
       if (String(row.calendar.code) !== programCode) {
         errors.push({
@@ -294,8 +307,38 @@ export const previewMappingImport = async (req: Request, res: Response): Promise
       res.status(400).json({ success: false, message: 'Vui lòng chọn file import' });
       return;
     }
+    const programCode = String(req.body?.program_code || '').trim();
+    if (!programCode) {
+      res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
+      return;
+    }
+    await livestreamService.assertSchedulingProgramExists(programCode);
     const updates = parseCalendarMappingImportFile(req.file.buffer, req.file.originalname);
     const result = await livestreamService.previewCalendarMappingUpdates({ updates });
+    await livestreamService.assertCalendarIdsInProgram(
+      result.updates.map((item: any) => Number(item.id)),
+      programCode
+    );
+    res.status(200).json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const importMappings = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const programCode = String(req.body?.program_code || '').trim();
+    if (!programCode) {
+      res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
+      return;
+    }
+    await livestreamService.assertSchedulingProgramExists(programCode);
+    const preview = await livestreamService.previewCalendarMappingUpdates(req.body);
+    await livestreamService.assertCalendarIdsInProgram(
+      preview.updates.map((item: any) => Number(item.id)),
+      programCode
+    );
+    const result = await livestreamService.updateCalendarMappings(req.body, getChangeActor(req));
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });

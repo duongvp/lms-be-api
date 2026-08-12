@@ -56,63 +56,22 @@ const requiredString = (value: unknown, fieldName: string, maxLength: number) =>
   return parsed;
 };
 
-const optionalString = (value: unknown, fieldName: string, maxLength: number) => {
-  const parsed = stringOrUndefined(value);
-  if (!parsed) return null;
-  if (parsed.length > maxLength) {
-    throw new ApiError(`${fieldName} không được vượt quá ${maxLength} ký tự`, 400);
-  }
-  return parsed;
-};
-
-const normalizeLessonDocuments = (value: unknown) => {
-  if (value === undefined || value === null || value === '') return null;
-
-  let documents: unknown = value;
-  if (typeof value === 'string') {
-    const text = value.trim();
-    if (!text) return null;
-    try {
-      documents = JSON.parse(text);
-    } catch {
-      // Hỗ trợ dữ liệu cũ chỉ lưu một đường dẫn/tên file.
-      documents = [{ link: text, title: 'Tài liệu bài học', type: 'pdf' }];
-    }
-  }
-
-  if (!Array.isArray(documents)) {
-    throw new ApiError('lesson_document phải là danh sách tài liệu', 400);
-  }
-
-  const normalized = documents.map((document, index) => {
-    if (!document || typeof document !== 'object' || Array.isArray(document)) {
-      throw new ApiError(`lesson_document[${index}] không hợp lệ`, 400);
-    }
-
-    const item = document as Record<string, unknown>;
-    const link = requiredString(item.link, `lesson_document[${index}].link`, 2000);
-    const title = requiredString(item.title, `lesson_document[${index}].title`, 400);
-    const type = requiredString(item.type ?? 'pdf', `lesson_document[${index}].type`, 50);
-    return { link: link.trim(), title, type };
-  });
-
-  const serialized = JSON.stringify(normalized);
-  if (serialized.length > 65_535) {
-    throw new ApiError('lesson_document vượt quá dung lượng cho phép', 400);
-  }
-  return serialized;
-};
-
 const valueToString = (value: unknown) => {
   if (value === undefined || value === null) return undefined;
   const trimmed = String(value).trim();
   return trimmed || undefined;
 };
 
-const optionalImportText = (value: unknown, maxLength: number) => {
-  const parsed = valueToString(value);
-  if (!parsed) return null;
-  return parsed.length > maxLength ? parsed.slice(0, maxLength) : parsed;
+const CALENDAR_ONLY_FIELDS = [
+  'lesson_document', 'evg_banner', 'evg_stream', 'lesson_link', 'lesson_baitap',
+  'lesson_tomtat', 'lesson_phuongphap', 'lesson_luuy', 'lesson_ketqua',
+];
+
+const rejectCalendarOnlyFields = (body: Record<string, unknown>) => {
+  const supplied = CALENDAR_ONLY_FIELDS.find((field) => body[field] !== undefined);
+  if (supplied) {
+    throw new ApiError(`${supplied} thuộc dữ liệu từng buổi học; hãy cấu hình tại Quản lý lịch học`, 400);
+  }
 };
 
 export const validateLessonListQuery = (query: any): LessonListQuery => {
@@ -181,6 +140,7 @@ const validateLessonIds = (value: unknown) => {
 };
 
 export const validateLessonPayload = (body: any, isUpdate = false): Partial<LessonPayload> => {
+  rejectCalendarOnlyFields(body ?? {});
   const payload: Partial<LessonPayload> = {};
 
   if (!isUpdate || body.grade !== undefined) payload.grade = requiredInteger(body.grade, 'grade');
@@ -192,16 +152,6 @@ export const validateLessonPayload = (body: any, isUpdate = false): Partial<Less
   }
   if (body.learn_number !== undefined) payload.learn_number = requiredInteger(body.learn_number, 'learn_number');
   if (!isUpdate || body.lesson_name !== undefined) payload.lesson_name = requiredString(body.lesson_name, 'lesson_name', 400);
-
-  if (body.lesson_document !== undefined) payload.lesson_document = normalizeLessonDocuments(body.lesson_document);
-  if (body.evg_banner !== undefined) payload.evg_banner = optionalString(body.evg_banner, 'evg_banner', 500);
-  if (body.evg_stream !== undefined) payload.evg_stream = optionalString(body.evg_stream, 'evg_stream', 500);
-  if (body.lesson_link !== undefined) payload.lesson_link = optionalString(body.lesson_link, 'lesson_link', 500);
-  if (body.lesson_baitap !== undefined) payload.lesson_baitap = optionalString(body.lesson_baitap, 'lesson_baitap', 500);
-  if (body.lesson_tomtat !== undefined) payload.lesson_tomtat = optionalString(body.lesson_tomtat, 'lesson_tomtat', 500);
-  if (body.lesson_phuongphap !== undefined) payload.lesson_phuongphap = optionalString(body.lesson_phuongphap, 'lesson_phuongphap', 500);
-  if (body.lesson_luuy !== undefined) payload.lesson_luuy = optionalString(body.lesson_luuy, 'lesson_luuy', 500);
-  if (body.lesson_ketqua !== undefined) payload.lesson_ketqua = optionalString(body.lesson_ketqua, 'lesson_ketqua', 500);
 
   if (body.status !== undefined) {
     const status = requiredInteger(body.status, 'status');
@@ -306,15 +256,6 @@ export const validateLessonImportRows = (rows: Record<string, unknown>[]) => {
       : optionalInteger(row.status, 'status');
     if (status !== undefined && ![0, 1].includes(status)) addError('status', 'Status chỉ nhận 0 hoặc 1');
 
-    let lessonDocument: string | null = null;
-    let lessonDocumentValid = true;
-    try {
-      lessonDocument = normalizeLessonDocuments(row.lesson_document);
-    } catch (error: any) {
-      lessonDocumentValid = false;
-      addError('lesson_document', error.message || 'Lesson Document không hợp lệ');
-    }
-
     if (grade !== undefined && subjectCode && learnNumber !== undefined) {
       const key = `${grade}|${subjectCode}|${learnNumber}`;
       if (seenKeys.has(key)) addError('learn_number', 'Trùng Grade + Subject + Learn Number trong file import');
@@ -329,7 +270,6 @@ export const validateLessonImportRows = (rows: Record<string, unknown>[]) => {
       subjectCode &&
       lessonName &&
       lessonName.length <= 400 &&
-      lessonDocumentValid &&
       (learnNumber === undefined || learnNumber > 0) &&
       status !== undefined &&
       [0, 1].includes(status)
@@ -341,15 +281,6 @@ export const validateLessonImportRows = (rows: Record<string, unknown>[]) => {
         subject_name: subjectName,
         learn_number: learnNumber,
         lesson_name: lessonName,
-        lesson_document: lessonDocument,
-        evg_banner: optionalImportText(row.evg_banner, 500),
-        evg_stream: optionalImportText(row.evg_stream, 500),
-        lesson_link: optionalImportText(row.lesson_link, 500),
-        lesson_baitap: optionalImportText(row.lesson_baitap, 500),
-        lesson_tomtat: optionalImportText(row.lesson_tomtat, 500),
-        lesson_phuongphap: optionalImportText(row.lesson_phuongphap, 500),
-        lesson_luuy: optionalImportText(row.lesson_luuy, 500),
-        lesson_ketqua: optionalImportText(row.lesson_ketqua, 500),
         status,
       });
     }

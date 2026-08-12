@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "start": "node dist/server.js",
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "test:calendar-import": "node tests/calendar-import.test.js",
     "test:calendar-import:integration": "node tests/calendar-import.integration.js",
     "test:quiz": "tsx --test tests/quiz.validation.test.ts",

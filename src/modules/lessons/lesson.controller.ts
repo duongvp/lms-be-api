@@ -35,6 +35,7 @@ import { LessonImportMode, LessonPayload } from './lesson.types';
 import FieldPermissionService from '../roles/field-permission.service';
 import { issueLessonSecondaryToken } from './lesson-secondary-auth';
 import { findLessonProgramByCode } from './lesson.repository';
+import { getProgramScopeFilter } from '../../services/authorization.service';
 
 const reauthenticate = async (req: Request, res: Response) => {
   try {
@@ -78,9 +79,11 @@ const subjects = async (_req: Request, res: Response) => {
   }
 };
 
-const programs = async (_req: Request, res: Response) => {
+const programs = async (req: Request, res: Response) => {
   try {
-    return SuccessResponse(res, 'Success', await getLessonPrograms());
+    return SuccessResponse(res, 'Success', await getLessonPrograms(
+      getProgramScopeFilter(req.user, 'lessons.view')
+    ));
   } catch (error: any) {
     return ErrorResponse(res, error.message, error.statusCode || 400);
   }
@@ -193,6 +196,10 @@ const exportFile = async (req: Request, res: Response) => {
 const template = async (req: Request, res: Response) => {
   try {
     const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+    const programCode = String(req.query.program_code || '').trim();
+    if (!programCode) return ErrorResponse(res, 'Vui lòng chọn Chương trình trước khi tải file mẫu', 400);
+    const program = await findLessonProgramByCode(programCode);
+    if (!program) return ErrorResponse(res, 'Chương trình không tồn tại hoặc chưa có đề cương', 404);
     const result = getLessonImportTemplate(format);
     res.setHeader('Content-Type', result.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);

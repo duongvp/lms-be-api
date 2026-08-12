@@ -35,6 +35,12 @@ export type AutoSchedulePayload = {
   customize_lesson_names?: boolean;
   lesson_name_prefix?: string;
   lesson_name_suffix?: string;
+  lesson_name_rules?: Array<{
+    from_learn_number: number;
+    to_learn_number: number;
+    prefix?: string;
+    suffix?: string;
+  }>;
   blocks: AutoScheduleBlock[];
 };
 
@@ -71,6 +77,29 @@ const renderNamePattern = (pattern: string, occurrence: number) => (
   pattern.replaceAll('{n}', String(occurrence))
 );
 
+const normalizeLessonNameRules = (rules: AutoSchedulePayload['lesson_name_rules']) => {
+  const normalized = (rules || []).map((rule, index) => {
+    const from = Number(rule?.from_learn_number);
+    const to = Number(rule?.to_learn_number);
+    if (!Number.isInteger(from) || from <= 0 || !Number.isInteger(to) || to < from) {
+      throw new Error(`Khoảng bài thứ ${index + 1} không hợp lệ`);
+    }
+    return {
+      from_learn_number: from,
+      to_learn_number: to,
+      prefix: String(rule?.prefix || '').slice(0, 100),
+      suffix: String(rule?.suffix || '').slice(0, 100),
+    };
+  }).sort((left, right) => left.from_learn_number - right.from_learn_number);
+
+  for (let index = 1; index < normalized.length; index += 1) {
+    if (normalized[index].from_learn_number <= normalized[index - 1].to_learn_number) {
+      throw new Error('Các khoảng bài áp dụng tiền tố/hậu tố không được chồng lấn');
+    }
+  }
+  return normalized;
+};
+
 const lessonsOf = (block: AutoScheduleBlock): AutoScheduleLesson[] => {
   if (Array.isArray(block.lessons) && block.lessons.length) return block.lessons;
   // Tương thích payload cũ: một Block chính là một bài.
@@ -85,23 +114,26 @@ const lessonsOf = (block: AutoScheduleBlock): AutoScheduleLesson[] => {
   return [];
 };
 
-const orderedSessions = (blocks: AutoScheduleBlock[], strategy: string) => {
+const orderedSessions = (blocks: AutoScheduleBlock[], strategy: string, maxSessionsPerLesson?: number) => {
   const result: Array<{
     block: AutoScheduleBlock;
     lesson: AutoScheduleLesson;
     session: AutoScheduleSession;
   }> = [];
 
+  const sessionsOfLesson = (lesson: AutoScheduleLesson) => (
+    maxSessionsPerLesson ? lesson.sessions.slice(0, maxSessionsPerLesson) : lesson.sessions
+  );
   const normalizedBlocks = blocks.map((block) => ({ block, lessons: lessonsOf(block) }));
   if (
     strategy === 'interleaved'
     && normalizedBlocks.every(({ lessons }) => lessons.length === 1)
   ) {
-    const maximum = Math.max(...normalizedBlocks.map(({ lessons }) => lessons[0].sessions.length));
+    const maximum = Math.max(...normalizedBlocks.map(({ lessons }) => sessionsOfLesson(lessons[0]).length));
     for (let sessionIndex = 0; sessionIndex < maximum; sessionIndex += 1) {
       normalizedBlocks.forEach(({ block, lessons }) => {
         const lesson = lessons[0];
-        const session = lesson.sessions[sessionIndex];
+        const session = sessionsOfLesson(lesson)[sessionIndex];
         if (session) result.push({ block, lesson, session });
       });
     }
@@ -110,7 +142,7 @@ const orderedSessions = (blocks: AutoScheduleBlock[], strategy: string) => {
 
   normalizedBlocks.forEach(({ block, lessons }) => {
     if (strategy !== 'interleaved') {
-      lessons.forEach((lesson) => lesson.sessions.forEach((session) => {
+      lessons.forEach((lesson) => sessionsOfLesson(lesson).forEach((session) => {
         result.push({ block, lesson, session });
       }));
       return;
@@ -118,10 +150,10 @@ const orderedSessions = (blocks: AutoScheduleBlock[], strategy: string) => {
 
     // Xen kẽ bên trong từng Block cặp: Bài 1/buổi 1 -> Bài 2/buổi 1
     // -> Bài 1/buổi 2 -> Bài 2/buổi 2, rồi mới sang Block tiếp theo.
-    const maximum = Math.max(...lessons.map((lesson) => lesson.sessions.length));
+    const maximum = Math.max(...lessons.map((lesson) => sessionsOfLesson(lesson).length));
     for (let sessionIndex = 0; sessionIndex < maximum; sessionIndex += 1) {
       lessons.forEach((lesson) => {
-        const session = lesson.sessions[sessionIndex];
+        const session = sessionsOfLesson(lesson)[sessionIndex];
         if (session) result.push({ block, lesson, session });
       });
     }
@@ -169,12 +201,17 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
     if (!DATE_PATTERN.test(value)) throw new Error(`Ngày nghỉ ${value} không hợp lệ`);
     return value;
   }));
-  const sequence = orderedSessions(payload.blocks, payload.strategy || 'by_block');
+  const sequence = orderedSessions(
+    payload.blocks,
+    payload.strategy || 'by_block',
+    payload.system_type === 'topuni' ? 1 : undefined
+  );
   let cursor = parseDateOnly(payload.start_date);
   const lessonOccurrences = new Map<string, number>();
   const customizeLessonNames = Boolean(payload.customize_lesson_names);
   const lessonNamePrefix = String(payload.lesson_name_prefix || '').slice(0, 100);
   const lessonNameSuffix = String(payload.lesson_name_suffix || '').slice(0, 100);
+  const lessonNameRules = normalizeLessonNameRules(payload.lesson_name_rules);
 
   const calendars = sequence.map(({ block, lesson, session }, index) => {
     if (!Number.isInteger(lesson.learn_number) || lesson.learn_number <= 0) {
@@ -192,8 +229,16 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
     const occurrence = (lessonOccurrences.get(lessonKey) || 0) + 1;
     lessonOccurrences.set(lessonKey, occurrence);
     const masterLessonName = String(lesson.lesson_name || '');
-    const lessonName = customizeLessonNames && occurrence > 1
-      ? `${renderNamePattern(lessonNamePrefix, occurrence)}${masterLessonName}${renderNamePattern(lessonNameSuffix, occurrence)}`.slice(0, 400)
+    const lessonNameRule = lessonNameRules.find((rule) => (
+      lesson.learn_number >= rule.from_learn_number && lesson.learn_number <= rule.to_learn_number
+    ));
+    const prefix = lessonNameRule?.prefix ?? lessonNamePrefix;
+    const suffix = lessonNameRule?.suffix ?? lessonNameSuffix;
+    // Khoảng bài chỉ quyết định dùng bộ tiền tố/hậu tố nào. Tất cả mẫu tên
+    // (riêng hoặc chung) đều chỉ áp dụng từ buổi thứ hai của từng bài.
+    const shouldApplyNamePattern = customizeLessonNames && occurrence > 1;
+    const lessonName = shouldApplyNamePattern
+      ? `${renderNamePattern(prefix, occurrence)}${masterLessonName}${renderNamePattern(suffix, occurrence)}`.slice(0, 400)
       : masterLessonName;
 
     return {

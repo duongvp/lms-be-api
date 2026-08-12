@@ -138,7 +138,15 @@ const withManualHocmaiQueue = async (tx, operation) => {
         return await operation();
     }
     finally {
-        await tx.$executeRawUnsafe(`SET ${MANUAL_QUEUE_SESSION_VARIABLE} = 0`);
+        try {
+            await tx.$executeRawUnsafe(`SET ${MANUAL_QUEUE_SESSION_VARIABLE} = 0`);
+        }
+        catch (error) {
+            // Khi transaction đã timeout/đóng, connection cũng không còn được tái sử dụng
+            // trong transaction này. Không để câu SET dọn session che mất lỗi nghiệp vụ gốc.
+            if (error?.code !== 'P2028')
+                throw error;
+        }
     }
 };
 exports.withManualHocmaiQueue = withManualHocmaiQueue;

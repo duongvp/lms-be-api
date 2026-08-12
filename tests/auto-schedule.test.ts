@@ -121,3 +121,85 @@ test('áp dụng tiền tố và hậu tố từ lần thứ hai của từng b�
   ]);
   assert.ok(result.calendars.every((item) => !('session_type' in item.auto_schedule)));
 });
+
+test('áp dụng mẫu tên khác nhau theo khoảng bài', () => {
+  const result = previewAutoSchedule({
+    program_code: 'nguvan-6-2027',
+    system_type: 'topclass',
+    start_date: '2027-06-21',
+    customize_lesson_names: true,
+    lesson_name_rules: [
+      { from_learn_number: 1, to_learn_number: 10, prefix: '[Khối 1-{n}] ', suffix: '' },
+      { from_learn_number: 11, to_learn_number: 20, prefix: '[Khối 2-{n}] ', suffix: ' - mở rộng' },
+    ],
+    blocks: [{
+      lessons: [1, 11].map((learn_number) => ({
+        learn_number,
+        lesson_name: `Bài ${learn_number}`,
+        sessions: [
+          { weekday: 1, start_time: '19:00', end_time: '20:30' },
+          { weekday: 2, start_time: '19:00', end_time: '20:30' },
+        ],
+      })),
+    }],
+  });
+
+  assert.deepEqual(result.calendars.map((item) => item.lesson_name), [
+    'Bài 1',
+    '[Khối 1-2] Bài 1',
+    'Bài 11',
+    '[Khối 2-2] Bài 11 - mở rộng',
+  ]);
+});
+
+test('bài ngoài khoảng riêng tiếp tục dùng cấu hình tên chung', () => {
+  const result = previewAutoSchedule({
+    program_code: 'nguvan-6-2027',
+    system_type: 'topclass',
+    start_date: '2027-06-21',
+    customize_lesson_names: true,
+    lesson_name_prefix: '[Chung {n}] ',
+    lesson_name_suffix: ' - chung',
+    lesson_name_rules: [
+      { from_learn_number: 1, to_learn_number: 2, prefix: '[Riêng {n}] ', suffix: ' - riêng' },
+    ],
+    blocks: [{
+      lessons: [1, 2, 3].map((learn_number) => ({
+        learn_number,
+        lesson_name: `Bài ${learn_number}`,
+        sessions: [
+          { weekday: 1, start_time: '19:00', end_time: '20:30' },
+          { weekday: 2, start_time: '19:00', end_time: '20:30' },
+        ],
+      })),
+    }],
+  });
+
+  assert.deepEqual(result.calendars.map((item) => item.lesson_name), [
+    'Bài 1',
+    '[Riêng 2] Bài 1 - riêng',
+    'Bài 2',
+    '[Riêng 2] Bài 2 - riêng',
+    'Bài 3',
+    '[Chung 2] Bài 3 - chung',
+  ]);
+});
+
+test('Topuni chỉ tạo một buổi cho mỗi bài dù payload có nhiều buổi', () => {
+  const result = previewAutoSchedule({
+    program_code: 'toan-12-2027',
+    system_type: 'topuni',
+    start_date: '2027-06-21',
+    blocks: [{
+      lessons: [1, 2].map((learn_number) => ({
+        learn_number,
+        sessions: [
+          { weekday: 1, start_time: '19:00', end_time: '20:30' },
+          { weekday: 3, start_time: '19:00', end_time: '20:30' },
+        ],
+      })),
+    }],
+  });
+
+  assert.deepEqual(result.calendars.map((item) => item.learn_number), [1, 2]);
+});

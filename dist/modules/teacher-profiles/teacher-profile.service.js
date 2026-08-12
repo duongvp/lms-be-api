@@ -11,7 +11,7 @@ const teacher_profile_types_1 = require("./teacher-profile.types");
 const normalizeProfileRow = (row) => ({
     ...row,
     id: Number(row.id),
-    teacher_type: Number(row.teacher_type),
+    can_view_stream_key: Number(row.can_view_stream_key),
     status: Number(row.status),
 });
 const assistantUsernames = (value) => String(value || '')
@@ -39,7 +39,7 @@ const findUsage = async (username, displayName) => {
 };
 const getProfileRow = async (id) => {
     const rows = await prisma_1.default.$queryRaw `
-    SELECT id, username, teacher_type, display_name, status, created_at, updated_at
+    SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
     FROM teacher_profiles
     WHERE id = ${id}
     LIMIT 1
@@ -58,8 +58,8 @@ const throwDatabaseError = (error) => {
 };
 const listTeacherProfiles = async (query) => {
     const conditions = [];
-    if (query.teacher_type !== undefined) {
-        conditions.push(client_1.Prisma.sql `teacher_type = ${query.teacher_type}`);
+    if (query.can_view_stream_key !== undefined) {
+        conditions.push(client_1.Prisma.sql `can_view_stream_key = ${query.can_view_stream_key}`);
     }
     if (query.status !== undefined) {
         conditions.push(client_1.Prisma.sql `status = ${query.status}`);
@@ -79,7 +79,7 @@ const listTeacherProfiles = async (query) => {
       ${where}
     `),
         prisma_1.default.$queryRaw(client_1.Prisma.sql `
-      SELECT id, username, teacher_type, display_name, status, created_at, updated_at
+      SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
       FROM teacher_profiles
       ${where}
       ORDER BY status DESC, display_name ASC, username ASC
@@ -101,18 +101,18 @@ const createTeacherProfile = async (payload) => {
     try {
         await prisma_1.default.$executeRaw `
       INSERT INTO teacher_profiles (
-        username, display_name, teacher_type, status, created_at, updated_at
+        username, display_name, can_view_stream_key, status, created_at, updated_at
       ) VALUES (
         ${payload.username},
         ${payload.display_name ?? null},
-        ${payload.teacher_type ?? teacher_profile_types_1.TEACHER_TYPES.TEACHER},
+        ${payload.can_view_stream_key ?? teacher_profile_types_1.STREAM_KEY_ACCESS.TEACHER},
         ${payload.status ?? 1},
         NOW(),
         NOW()
       )
     `;
         const rows = await prisma_1.default.$queryRaw `
-      SELECT id, username, teacher_type, display_name, status, created_at, updated_at
+      SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
       FROM teacher_profiles
       WHERE username = ${payload.username}
       LIMIT 1
@@ -124,23 +124,23 @@ const createTeacherProfile = async (payload) => {
     }
 };
 exports.createTeacherProfile = createTeacherProfile;
-const assertTypeCanChange = async (username, displayName, currentType, nextType) => {
-    if (nextType === undefined || nextType === currentType)
+const assertStreamKeyAccessCanChange = async (username, displayName, currentAccess, nextAccess) => {
+    if (nextAccess === undefined || nextAccess === currentAccess)
         return;
     const usage = await findUsage(username, displayName);
     if (usage.teacherCount > 0 || usage.assistantCount > 0) {
-        throw new ApiError_1.default('Không thể đổi loại nhân sự vì username đang được sử dụng trong lịch học', 409);
+        throw new ApiError_1.default('Không thể đổi vai trò vì username đang được sử dụng trong lịch học', 409);
     }
 };
 const updateTeacherProfile = async (id, payload) => {
     const current = await getProfileRow(id);
-    await assertTypeCanChange(current.username, current.display_name, current.teacher_type, payload.teacher_type);
+    await assertStreamKeyAccessCanChange(current.username, current.display_name, current.can_view_stream_key, payload.can_view_stream_key);
     const assignments = [];
     if (payload.display_name !== undefined) {
         assignments.push(client_1.Prisma.sql `display_name = ${payload.display_name}`);
     }
-    if (payload.teacher_type !== undefined) {
-        assignments.push(client_1.Prisma.sql `teacher_type = ${payload.teacher_type}`);
+    if (payload.can_view_stream_key !== undefined) {
+        assignments.push(client_1.Prisma.sql `can_view_stream_key = ${payload.can_view_stream_key}`);
     }
     if (payload.status !== undefined) {
         assignments.push(client_1.Prisma.sql `status = ${payload.status}`);
@@ -195,19 +195,19 @@ const importTeacherProfiles = async (rows, mode) => prisma_1.default.$transactio
     const usernames = rows.map((row) => row.username);
     const existingRows = usernames.length
         ? await tx.$queryRaw(client_1.Prisma.sql `
-        SELECT id, username, teacher_type, display_name, status, created_at, updated_at
+        SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
         FROM teacher_profiles
         WHERE username IN (${client_1.Prisma.join(usernames)})
       `)
         : [];
     const existingByUsername = new Map(existingRows.map((row) => [row.username.toLowerCase(), normalizeProfileRow(row)]));
-    const typeChanges = rows.filter((row) => {
+    const accessChanges = rows.filter((row) => {
         const current = existingByUsername.get(row.username.toLowerCase());
-        return current && current.teacher_type !== row.teacher_type;
+        return current && current.can_view_stream_key !== row.can_view_stream_key;
     });
-    if (mode === 'overwrite' && typeChanges.length) {
+    if (mode === 'overwrite' && accessChanges.length) {
         const teacherIdentifierToUsername = new Map();
-        const usageConditions = typeChanges.flatMap((row) => {
+        const usageConditions = accessChanges.flatMap((row) => {
             const username = row.username.toLowerCase();
             const current = existingByUsername.get(username);
             teacherIdentifierToUsername.set(username, username);
@@ -240,7 +240,7 @@ const importTeacherProfiles = async (rows, mode) => prisma_1.default.$transactio
             });
         });
         if (usedUsernames.size) {
-            const labels = typeChanges
+            const labels = accessChanges
                 .filter((row) => usedUsernames.has(row.username.toLowerCase()))
                 .map((row) => `${row.username} (dòng ${row.row})`);
             throw new ApiError_1.default(`Không thể đổi loại nhân sự đang được dùng trong lịch: ${labels.join(', ')}`, 409);
@@ -260,7 +260,7 @@ const importTeacherProfiles = async (rows, mode) => prisma_1.default.$transactio
         UPDATE teacher_profiles
         SET
           display_name = ${row.display_name},
-          teacher_type = ${row.teacher_type},
+          can_view_stream_key = ${row.can_view_stream_key},
           status = ${row.status},
           updated_at = NOW()
         WHERE id = ${existing.id}
@@ -270,11 +270,11 @@ const importTeacherProfiles = async (rows, mode) => prisma_1.default.$transactio
         }
         await tx.$executeRaw `
       INSERT INTO teacher_profiles (
-        username, display_name, teacher_type, status, created_at, updated_at
+        username, display_name, can_view_stream_key, status, created_at, updated_at
       ) VALUES (
         ${row.username},
         ${row.display_name},
-        ${row.teacher_type},
+        ${row.can_view_stream_key},
         ${row.status},
         NOW(),
         NOW()

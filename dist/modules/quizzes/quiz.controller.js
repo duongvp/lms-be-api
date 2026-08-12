@@ -9,11 +9,14 @@ const quiz_service_1 = require("./quiz.service");
 const quiz_validation_1 = require("./quiz.validation");
 const quiz_io_1 = require("./quiz.io");
 const quiz_constants_1 = require("./quiz.constants");
+const authorization_service_1 = require("../../services/authorization.service");
 const visibleRecord = (req, record) => (field_permission_service_1.default.filterVisibleRecord(req.user?.roleIds || [], 'quiz', record));
 const visibleRecords = (req, records) => (field_permission_service_1.default.filterVisibleRecords(req.user?.roleIds || [], 'quiz', records));
 const list = async (req, res) => {
     try {
-        const result = await (0, quiz_service_1.getQuizzes)((0, quiz_validation_1.validateQuizListQuery)(req.query));
+        if (!String(req.query.code || '').trim())
+            return (0, apiResponse_1.ErrorResponse)(res, 'Vui lòng chọn Chương trình', 400);
+        const result = await (0, quiz_service_1.getQuizzes)((0, quiz_validation_1.validateQuizListQuery)(req.query), (0, authorization_service_1.getProgramScopeFilter)(req.user, 'quiz.view'));
         const data = await visibleRecords(req, result.data);
         return (0, apiResponse_1.SuccessResponse)(res, 'Success', { ...result, data });
     }
@@ -22,9 +25,9 @@ const list = async (req, res) => {
     }
 };
 const options = async (_req, res) => (0, apiResponse_1.SuccessResponse)(res, 'Success', (0, quiz_service_1.getQuizOptions)());
-const classes = async (_req, res) => {
+const classes = async (req, res) => {
     try {
-        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, quiz_service_1.getQuizClassOptions)());
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, quiz_service_1.getQuizClassOptions)((0, authorization_service_1.getProgramScopeFilter)(req.user, 'quiz.view')));
     }
     catch (error) {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
@@ -119,7 +122,10 @@ const reorder = async (req, res) => {
 };
 const exportFile = async (req, res) => {
     try {
-        const result = await (0, quiz_service_1.exportQuizzes)((0, quiz_validation_1.validateQuizExportQuery)(req.query), (rows) => visibleRecords(req, rows));
+        const query = (0, quiz_validation_1.validateQuizExportQuery)(req.query);
+        if (!query.code)
+            return (0, apiResponse_1.ErrorResponse)(res, 'Vui lòng chọn Chương trình', 400);
+        const result = await (0, quiz_service_1.exportQuizzes)(query, (rows) => visibleRecords(req, rows), (0, authorization_service_1.getProgramScopeFilter)(req.user, 'quiz.export'));
         res.setHeader('Content-Type', result.contentType);
         res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
         return res.send(result.buffer);
@@ -131,6 +137,7 @@ const exportFile = async (req, res) => {
 const template = async (req, res) => {
     try {
         const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+        (0, authorization_service_1.assertProgramAccess)(req.user, 'quiz.import', (0, quiz_validation_1.validateQuizClassCode)(req.query.code));
         const result = (0, quiz_service_1.getQuizImportTemplate)(format);
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
@@ -151,7 +158,9 @@ const importFile = async (req, res) => {
         if (extension !== 'xlsx' && extension !== 'csv')
             return (0, apiResponse_1.ErrorResponse)(res, 'Chỉ hỗ trợ file .xlsx hoặc .csv', 400);
         await field_permission_service_1.default.assertEditableFields(req.user?.roleIds || [], 'quiz', [...quiz_constants_1.QUIZ_MUTABLE_FIELDS]);
-        const rawRows = (0, quiz_io_1.parseQuizImportFile)(req.file.buffer, req.file.originalname);
+        const code = (0, quiz_validation_1.validateQuizClassCode)(req.body?.code);
+        (0, authorization_service_1.assertProgramAccess)(req.user, 'quiz.import', code);
+        const rawRows = (0, quiz_io_1.parseQuizImportFile)(req.file.buffer, req.file.originalname).map((row) => ({ ...row, code }));
         if (!rawRows.length)
             return (0, apiResponse_1.ErrorResponse)(res, 'File import không có dữ liệu', 400);
         const { validRows, errors } = (0, quiz_validation_1.validateQuizImportRows)(rawRows);

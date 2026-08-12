@@ -1,14 +1,14 @@
-export const TEACHER_TYPES = {
+export const STREAM_KEY_ACCESS = {
   TEACHER: 1,
-  TEACHING_ASSISTANT: 2,
+  TEACHING_ASSISTANT: 0,
 } as const;
 
-export type TeacherType = typeof TEACHER_TYPES[keyof typeof TEACHER_TYPES];
+export type CanViewStreamKey = typeof STREAM_KEY_ACCESS[keyof typeof STREAM_KEY_ACCESS];
 
 export type TeacherProfilePayload = {
   username?: string;
   display_name?: string | null;
-  teacher_type?: TeacherType;
+  can_view_stream_key?: CanViewStreamKey;
   status?: 0 | 1;
 };
 
@@ -16,7 +16,7 @@ export type TeacherProfileListQuery = {
   page: number;
   limit: number;
   search?: string;
-  teacher_type?: TeacherType;
+  can_view_stream_key?: CanViewStreamKey;
   status?: 0 | 1;
 };
 
@@ -26,7 +26,7 @@ export type TeacherProfileImportRow = {
   row: number;
   username: string;
   display_name: string | null;
-  teacher_type: TeacherType;
+  can_view_stream_key: CanViewStreamKey;
   status: 0 | 1;
 };
 

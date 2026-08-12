@@ -10,6 +10,7 @@ const client_1 = require("@prisma/client");
 const constants_1 = require("./constants");
 const logger_1 = require("../../utils/logger");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
+const authorization_service_1 = require("../../services/authorization.service");
 const prisma = new client_1.PrismaClient();
 const getRequiredSecret = (name) => {
     const value = process.env[name];
@@ -43,34 +44,6 @@ const getTokenExpiry = (token) => {
     if (!decoded?.exp)
         throw new ApiError_1.default('Token expiration is missing', 500);
     return new Date(decoded.exp * 1000);
-};
-const loadUserAccess = async (userId) => {
-    const user = await prisma.users.findUnique({ where: { id: userId } });
-    if (!user)
-        throw new ApiError_1.default('User not found', 404);
-    const userRoles = await prisma.userRoles.findMany({
-        where: {
-            userId: user.id,
-            role: { isActive: true },
-        },
-        include: {
-            role: {
-                include: {
-                    rolePermissions: {
-                        include: { permission: true },
-                    },
-                },
-            },
-        },
-    });
-    const roles = userRoles.map((item) => item.role);
-    // Admin là superuser theo nghiệp vụ. Trả wildcard để quyền admin không bị
-    // thiếu khi hệ thống bổ sung permission mới nhưng dữ liệu gán quyền cũ
-    // chưa kịp đồng bộ.
-    const permissionCodes = roles.some((role) => role.code === 'admin')
-        ? ['*']
-        : Array.from(new Set(roles.flatMap((role) => role.rolePermissions.map((item) => item.permission.code))));
-    return { user, roles, permissionCodes };
 };
 const generateTokens = (userId, sessionId, rememberMe) => {
     const accessToken = jsonwebtoken_1.default.sign({ userId, sessionId, type: constants_1.TOKEN_TYPES.ACCESS }, getRequiredSecret('ACCESS_TOKEN_SECRET'), { expiresIn: getTokenTtl('ACCESS_TOKEN_EXPIRES_IN', '15m') });
@@ -158,7 +131,7 @@ const login = async (username, password, rememberMe = false) => {
     if (!user) {
         throw new ApiError_1.default('Tài khoản không có quyền truy cập hệ thống quản trị', 403);
     }
-    const { roles, permissionCodes } = await loadUserAccess(user.id);
+    const { roles, permissionCodes, programScope } = await (0, authorization_service_1.loadUserAccess)(user.id);
     if (roles.length === 0) {
         throw new ApiError_1.default('Tài khoản không có vai trò đang hoạt động', 403);
     }
@@ -188,12 +161,13 @@ const login = async (username, password, rememberMe = false) => {
             fieldPolicy: role.fieldPolicy,
         })),
         permissions: permissionCodes,
+        programScope,
         ...tokens,
     };
 };
 exports.login = login;
 const getMe = async (userId) => {
-    const { user, roles, permissionCodes } = await loadUserAccess(userId);
+    const { user, roles, permissionCodes, programScope } = await (0, authorization_service_1.loadUserAccess)(userId);
     return {
         userId: user.id,
         username: user.username,
@@ -205,6 +179,7 @@ const getMe = async (userId) => {
             fieldPolicy: role.fieldPolicy,
         })),
         permissions: permissionCodes,
+        programScope,
     };
 };
 exports.getMe = getMe;
@@ -237,7 +212,7 @@ const refreshToken = async (refreshTokenString) => {
         throw new ApiError_1.default('Invalid or revoked refresh token', 401);
     }
     const sessionUserId = Number(session.user_id);
-    await loadUserAccess(sessionUserId);
+    await (0, authorization_service_1.loadUserAccess)(sessionUserId);
     const tokens = (0, exports.generateTokens)(sessionUserId, session.id, Boolean(decoded.rememberMe));
     const updated = await prisma.$executeRaw `
         UPDATE auth_sessions

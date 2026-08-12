@@ -11,8 +11,8 @@ class RoomConfigService {
     constructor(repo = room_config_repository_1.default) {
         this.repo = repo;
     }
-    async list(filter) {
-        return this.repo.findMany(filter);
+    async list(filter, allowedPrograms = null) {
+        return this.repo.findMany(filter, allowedPrograms);
     }
     async getDetail(code, learn_number) {
         if (!code || isNaN(Number(learn_number))) {
@@ -45,38 +45,61 @@ class RoomConfigService {
             config: parsedConfig || {},
         });
     }
-    async bulkImport(items, updatedBy) {
+    async bulkImport(programCode, items, updatedBy) {
         if (!Array.isArray(items) || items.length === 0) {
             throw new ApiError_1.default('Danh sách dữ liệu import không được rỗng', 400);
         }
-        const results = [];
-        const errors = [];
-        for (let index = 0; index < items.length; index++) {
-            const item = items[index];
-            try {
-                if (!item.code || item.learn_number === undefined || item.learn_number === null) {
-                    throw new Error(`Dòng ${index + 1}: Thiếu subject/code hoặc learn_number`);
-                }
-                const saved = await this.save({
-                    ...item,
-                    updated_by: updatedBy || item.updated_by || 'import',
-                });
-                results.push(saved);
-            }
-            catch (err) {
-                errors.push({
-                    row: index + 1,
-                    code: item.code,
-                    learn_number: item.learn_number,
-                    message: err.message || 'Lỗi xử lý',
-                });
-            }
+        const normalizedProgramCode = String(programCode || '').trim();
+        if (!normalizedProgramCode) {
+            throw new ApiError_1.default('Vui lòng chọn Chương trình trước khi import', 400);
         }
+        if (items.length > 1000) {
+            throw new ApiError_1.default('Mỗi lần chỉ import tối đa 1.000 dòng', 400);
+        }
+        const keys = new Set();
+        const normalizedItems = items.map((item, index) => {
+            const code = String(item?.code || '').trim();
+            const learnNumber = Number(item?.learn_number);
+            if (!code || !Number.isInteger(learnNumber) || learnNumber <= 0) {
+                throw new ApiError_1.default(`Dòng ${index + 1}: Mã chương trình và số bài phải hợp lệ`, 400);
+            }
+            if (code !== normalizedProgramCode) {
+                throw new ApiError_1.default(`Dòng ${index + 1}: Không thuộc Chương trình ${normalizedProgramCode}`, 400);
+            }
+            const key = `${code}:${learnNumber}`;
+            if (keys.has(key)) {
+                throw new ApiError_1.default(`Dòng ${index + 1}: Bị trùng bài ${learnNumber} trong file`, 400);
+            }
+            keys.add(key);
+            let config = item.config;
+            if (typeof config === 'string') {
+                try {
+                    config = JSON.parse(config);
+                }
+                catch {
+                    throw new ApiError_1.default(`Dòng ${index + 1}: Cấu hình JSON không hợp lệ`, 400);
+                }
+            }
+            if (config !== undefined && (config === null || Array.isArray(config) || typeof config !== 'object')) {
+                throw new ApiError_1.default(`Dòng ${index + 1}: Cấu hình phải là JSON object`, 400);
+            }
+            return {
+                ...item,
+                code,
+                learn_number: learnNumber,
+                config: config || {},
+                // Giáo viên và trợ giảng là dữ liệu của Lịch học, không được import ở đây.
+                teacher: undefined,
+                assistant_teacher: undefined,
+                updated_by: updatedBy || item.updated_by || 'import',
+            };
+        });
+        const results = await this.repo.bulkUpsertRoomConfigs(normalizedItems);
         return {
             total: items.length,
             successCount: results.length,
-            errorCount: errors.length,
-            errors,
+            errorCount: 0,
+            errors: [],
             items: results,
         };
     }

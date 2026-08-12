@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import RoleService from './role.service';
+import { getRoleProgramScope, listProgramResources, updateRoleProgramScope } from './program-scope.service';
 import FieldPermissionService from './field-permission.service';
 import { SuccessResponse, ErrorResponse } from '../../utils/apiResponse';
 
@@ -207,6 +208,34 @@ const getPermissionsStructure = async (req: Request, res: Response) => {
     }
 };
 
+const getProgramResources = async (_req: Request, res: Response) => {
+    try {
+        return SuccessResponse(res, 'Success', await listProgramResources());
+    } catch (error: any) {
+        return ErrorResponse(res, error.message, error.statusCode || 500);
+    }
+};
+
+const getProgramScopes = async (req: Request, res: Response) => {
+    try {
+        return SuccessResponse(res, 'Success', await getRoleProgramScope(BigInt(String(req.params.id))));
+    } catch (error: any) {
+        return ErrorResponse(res, error.message, error.statusCode || 500);
+    }
+};
+
+const updateProgramScopes = async (req: Request, res: Response) => {
+    try {
+        const result = await updateRoleProgramScope(
+            BigInt(String(req.params.id)),
+            req.body?.programScope || req.body
+        );
+        return SuccessResponse(res, 'Program scope updated successfully', result);
+    } catch (error: any) {
+        return ErrorResponse(res, error.message, error.statusCode || 500);
+    }
+};
+
 
 export default {
     getAllRoles,
@@ -217,5 +246,8 @@ export default {
     getModulesStructure,
     getRoleFieldPolicy,
     updateRoleFieldPolicy,
-    getPermissionsStructure
+    getPermissionsStructure,
+    getProgramResources,
+    getProgramScopes,
+    updateProgramScopes
 };

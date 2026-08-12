@@ -1,9 +1,9 @@
 import ApiError from '../../utils/ApiError';
 import {
-  TEACHER_TYPES,
+  STREAM_KEY_ACCESS,
   TeacherProfileListQuery,
   TeacherProfilePayload,
-  TeacherType,
+  CanViewStreamKey,
 } from './teacher-profile.types';
 
 const parseInteger = (value: unknown, field: string) => {
@@ -27,10 +27,10 @@ const parseString = (value: unknown, field: string, maxLength: number) => {
   return parsed;
 };
 
-const parseTeacherType = (value: unknown): TeacherType => {
-  const parsed = parseInteger(value, 'teacher_type');
-  if (parsed !== TEACHER_TYPES.TEACHER && parsed !== TEACHER_TYPES.TEACHING_ASSISTANT) {
-    throw new ApiError('teacher_type chỉ nhận giá trị 1 (Giáo viên) hoặc 2 (Trợ giảng)', 400);
+const parseCanViewStreamKey = (value: unknown): CanViewStreamKey => {
+  const parsed = parseInteger(value, 'can_view_stream_key');
+  if (parsed !== STREAM_KEY_ACCESS.TEACHER && parsed !== STREAM_KEY_ACCESS.TEACHING_ASSISTANT) {
+    throw new ApiError('can_view_stream_key chỉ nhận giá trị 1 (Giáo viên) hoặc 0 (Trợ giảng)', 400);
   }
   return parsed;
 };
@@ -61,9 +61,9 @@ export const validateTeacherProfileListQuery = (query: any): TeacherProfileListQ
     page,
     limit,
     search: parseString(query.search, 'search', 120) || undefined,
-    teacher_type: query.teacher_type === undefined
+    can_view_stream_key: query.can_view_stream_key === undefined
       ? undefined
-      : parseTeacherType(query.teacher_type),
+      : parseCanViewStreamKey(query.can_view_stream_key),
     status: query.status === undefined ? undefined : parseStatus(query.status),
   };
 };
@@ -94,9 +94,9 @@ export const validateTeacherProfilePayload = (
     payload.display_name = parseString(body.display_name, 'display_name', 100) || null;
   }
 
-  if (!isUpdate || body.teacher_type !== undefined) {
-    payload.teacher_type = parseTeacherType(
-      body.teacher_type ?? TEACHER_TYPES.TEACHER
+  if (!isUpdate || body.can_view_stream_key !== undefined) {
+    payload.can_view_stream_key = parseCanViewStreamKey(
+      body.can_view_stream_key ?? STREAM_KEY_ACCESS.TEACHER
     );
   }
 

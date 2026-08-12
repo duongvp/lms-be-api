@@ -80,7 +80,7 @@ const exportFile = async (req, res) => {
         });
         const rows = await (0, teacher_profile_service_1.getTeacherProfilesForExport)({
             search: query.search,
-            teacher_type: query.teacher_type,
+            can_view_stream_key: query.can_view_stream_key,
             status: query.status,
         });
         const buffer = (0, teacher_profile_io_1.buildTeacherProfileFile)(rows, format);

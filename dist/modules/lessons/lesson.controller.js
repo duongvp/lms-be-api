@@ -10,6 +10,7 @@ const lesson_io_1 = require("./lesson.io");
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const lesson_secondary_auth_1 = require("./lesson-secondary-auth");
 const lesson_repository_1 = require("./lesson.repository");
+const authorization_service_1 = require("../../services/authorization.service");
 const reauthenticate = async (req, res) => {
     try {
         return (0, apiResponse_1.SuccessResponse)(res, 'Xác thực cấp 2 thành công', (0, lesson_secondary_auth_1.issueLessonSecondaryToken)(req, req.body?.password));
@@ -41,9 +42,9 @@ const subjects = async (_req, res) => {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
     }
 };
-const programs = async (_req, res) => {
+const programs = async (req, res) => {
     try {
-        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, lesson_service_1.getLessonPrograms)());
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, lesson_service_1.getLessonPrograms)((0, authorization_service_1.getProgramScopeFilter)(req.user, 'lessons.view')));
     }
     catch (error) {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
@@ -153,6 +154,12 @@ const exportFile = async (req, res) => {
 const template = async (req, res) => {
     try {
         const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+        const programCode = String(req.query.program_code || '').trim();
+        if (!programCode)
+            return (0, apiResponse_1.ErrorResponse)(res, 'Vui lòng chọn Chương trình trước khi tải file mẫu', 400);
+        const program = await (0, lesson_repository_1.findLessonProgramByCode)(programCode);
+        if (!program)
+            return (0, apiResponse_1.ErrorResponse)(res, 'Chương trình không tồn tại hoặc chưa có đề cương', 404);
         const result = (0, lesson_service_1.getLessonImportTemplate)(format);
         res.setHeader('Content-Type', result.contentType);
         res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);

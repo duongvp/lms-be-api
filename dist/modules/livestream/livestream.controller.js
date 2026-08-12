@@ -36,12 +36,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
+exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const livestream_io_1 = require("./livestream.io");
 const auto_schedule_service_1 = require("./auto-schedule.service");
 const calendar_import_service_1 = require("./calendar-import.service");
+const authorization_service_1 = require("../../services/authorization.service");
 const getChangeActor = (req) => ({
     userId: Number(req.user?.userId),
     username: String(req.user?.username || ''),
@@ -86,9 +87,12 @@ const getProgramLessons = async (req, res, next) => {
     }
 };
 exports.getProgramLessons = getProgramLessons;
-const getPrograms = async (_req, res, next) => {
+const getPrograms = async (req, res, next) => {
     try {
-        res.status(200).json({ success: true, data: await livestreamService.getSchedulingPrograms() });
+        res.status(200).json({
+            success: true,
+            data: await livestreamService.getSchedulingPrograms((0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view')),
+        });
     }
     catch (error) {
         next(error);
@@ -177,7 +181,7 @@ const deleteSession = async (req, res, next) => {
 exports.deleteSession = deleteSession;
 const getCalendar = async (req, res, next) => {
     try {
-        const result = await livestreamService.getCalendar(req.query);
+        const result = await livestreamService.getCalendar(req.query, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view'));
         const data = await field_permission_service_1.default.filterVisibleRecords(req.user?.roleIds || [], 'calendar', result.data);
         const now = new Date();
         const dataWithSystemMetadata = data.map((record, index) => {
@@ -204,7 +208,7 @@ exports.getCalendar = getCalendar;
 const exportFile = async (req, res) => {
     try {
         const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
-        const rows = await livestreamService.getCalendarRowsForExport(req.query.ids);
+        const rows = await livestreamService.getCalendarRowsForExport(req.query.ids, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.export'));
         const buffer = (0, livestream_io_1.buildCalendarFile)(rows, format);
         res.setHeader('Content-Type', (0, livestream_io_1.getCalendarFileContentType)(format));
         res.setHeader('Content-Disposition', `attachment; filename="calendar-export-${Date.now()}.${format}"`);
@@ -235,6 +239,7 @@ const importFile = async (req, res) => {
             res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
             return;
         }
+        await livestreamService.assertSchedulingProgramExists(programCode);
         importRows.forEach((row) => {
             if (String(row.calendar.code) !== programCode) {
                 errors.push({
@@ -309,8 +314,15 @@ const previewMappingImport = async (req, res) => {
             res.status(400).json({ success: false, message: 'Vui lòng chọn file import' });
             return;
         }
+        const programCode = String(req.body?.program_code || '').trim();
+        if (!programCode) {
+            res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
+            return;
+        }
+        await livestreamService.assertSchedulingProgramExists(programCode);
         const updates = (0, livestream_io_1.parseCalendarMappingImportFile)(req.file.buffer, req.file.originalname);
         const result = await livestreamService.previewCalendarMappingUpdates({ updates });
+        await livestreamService.assertCalendarIdsInProgram(result.updates.map((item) => Number(item.id)), programCode);
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
@@ -318,3 +330,21 @@ const previewMappingImport = async (req, res) => {
     }
 };
 exports.previewMappingImport = previewMappingImport;
+const importMappings = async (req, res) => {
+    try {
+        const programCode = String(req.body?.program_code || '').trim();
+        if (!programCode) {
+            res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
+            return;
+        }
+        await livestreamService.assertSchedulingProgramExists(programCode);
+        const preview = await livestreamService.previewCalendarMappingUpdates(req.body);
+        await livestreamService.assertCalendarIdsInProgram(preview.updates.map((item) => Number(item.id)), programCode);
+        const result = await livestreamService.updateCalendarMappings(req.body, getChangeActor(req));
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.importMappings = importMappings;

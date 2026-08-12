@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TEACHER_TYPES = void 0;
-exports.TEACHER_TYPES = {
+exports.STREAM_KEY_ACCESS = void 0;
+exports.STREAM_KEY_ACCESS = {
     TEACHER: 1,
-    TEACHING_ASSISTANT: 2,
+    TEACHING_ASSISTANT: 0,
 };

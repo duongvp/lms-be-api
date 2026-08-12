@@ -6,10 +6,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getQuizAnalytics = exports.findQuizSubmissions = exports.importQuizzes = exports.reorderQuizzes = exports.bulkUpdateQuizzes = exports.setQuizStatus = exports.updateQuiz = exports.createQuiz = exports.findQuizLessonOptions = exports.findQuizClassOptions = exports.findQuizIndexSuggestion = exports.findEnabledQuizzesByGroup = exports.findQuizzesByIds = exports.findQuizById = exports.findQuizzesForExport = exports.findQuizzes = void 0;
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
-const buildQuizWhere = (query) => {
+const buildQuizWhere = (query, allowedPrograms = null) => {
     const where = {};
+    if (allowedPrograms !== null)
+        where.code = { in: allowedPrograms };
     if (query.code)
-        where.code = query.code;
+        where.code = allowedPrograms === null
+            ? query.code
+            : (allowedPrograms.includes(query.code) ? query.code : { in: [] });
     if (query.learn_number !== undefined)
         where.learn_number = query.learn_number;
     if (query.quiz_type !== undefined)
@@ -22,10 +26,10 @@ const buildQuizWhere = (query) => {
         where.quiz_name = { contains: query.keyword };
     return where;
 };
-const findQuizzes = async (query) => {
+const findQuizzes = async (query, allowedPrograms = null) => {
     const page = query.page ?? 1;
     const limit = query.limit ?? 10;
-    const where = buildQuizWhere(query);
+    const where = buildQuizWhere(query, allowedPrograms);
     const sortBy = query.sort_by ?? 'updated_at';
     const sortOrder = query.sort_order ?? 'desc';
     const [total, data] = await prisma_1.default.$transaction([
@@ -40,10 +44,10 @@ const findQuizzes = async (query) => {
     return { total, page, limit, data };
 };
 exports.findQuizzes = findQuizzes;
-const findQuizzesForExport = async (query, quizIds) => (prisma_1.default.quiz_content.findMany({
+const findQuizzesForExport = async (query, quizIds, allowedPrograms = null) => (prisma_1.default.quiz_content.findMany({
     where: quizIds?.length
-        ? { quiz_id: { in: quizIds } }
-        : buildQuizWhere(query),
+        ? { quiz_id: { in: quizIds }, ...(allowedPrograms === null ? {} : { code: { in: allowedPrograms } }) }
+        : buildQuizWhere(query, allowedPrograms),
     orderBy: [
         { code: 'asc' },
         { learn_number: 'asc' },
@@ -90,7 +94,7 @@ const findQuizIndexSuggestion = async ({ code, learn_number, quiz_index, exclude
     };
 };
 exports.findQuizIndexSuggestion = findQuizIndexSuggestion;
-const findQuizClassOptions = async () => {
+const findQuizClassOptions = async (allowedPrograms = null) => {
     const rows = await prisma_1.default.$queryRawUnsafe(`SELECT calendar.code,
             MAX(NULLIF(TRIM(calendar.subject), '')) AS subject_name,
             COUNT(DISTINCT calendar.learn_number) AS lesson_count
@@ -98,7 +102,9 @@ const findQuizClassOptions = async () => {
      WHERE calendar.code IS NOT NULL AND TRIM(calendar.code) <> ''
      GROUP BY calendar.code
      ORDER BY subject_name ASC, calendar.code ASC`);
-    return rows.map((row) => ({ ...row, lesson_count: Number(row.lesson_count) }));
+    return rows
+        .filter((row) => allowedPrograms === null || allowedPrograms.includes(row.code))
+        .map((row) => ({ ...row, lesson_count: Number(row.lesson_count) }));
 };
 exports.findQuizClassOptions = findQuizClassOptions;
 const findQuizLessonOptions = async (code) => {
@@ -107,7 +113,7 @@ const findQuizLessonOptions = async (code) => {
             COALESCE(
               MAX(NULLIF(TRIM(lesson.lesson_name), '')),
               MAX(NULLIF(TRIM(calendar.lesson_name), '')),
-              CONCAT('Buổi ', calendar.learn_number)
+              CONCAT('Bài ', calendar.learn_number)
             ) AS lesson_name,
             COALESCE(
               MAX(NULLIF(TRIM(lesson.subject_name), '')),

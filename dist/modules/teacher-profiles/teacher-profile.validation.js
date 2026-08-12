@@ -27,10 +27,10 @@ const parseString = (value, field, maxLength) => {
     }
     return parsed;
 };
-const parseTeacherType = (value) => {
-    const parsed = parseInteger(value, 'teacher_type');
-    if (parsed !== teacher_profile_types_1.TEACHER_TYPES.TEACHER && parsed !== teacher_profile_types_1.TEACHER_TYPES.TEACHING_ASSISTANT) {
-        throw new ApiError_1.default('teacher_type chỉ nhận giá trị 1 (Giáo viên) hoặc 2 (Trợ giảng)', 400);
+const parseCanViewStreamKey = (value) => {
+    const parsed = parseInteger(value, 'can_view_stream_key');
+    if (parsed !== teacher_profile_types_1.STREAM_KEY_ACCESS.TEACHER && parsed !== teacher_profile_types_1.STREAM_KEY_ACCESS.TEACHING_ASSISTANT) {
+        throw new ApiError_1.default('can_view_stream_key chỉ nhận giá trị 1 (Giáo viên) hoặc 0 (Trợ giảng)', 400);
     }
     return parsed;
 };
@@ -60,9 +60,9 @@ const validateTeacherProfileListQuery = (query) => {
         page,
         limit,
         search: parseString(query.search, 'search', 120) || undefined,
-        teacher_type: query.teacher_type === undefined
+        can_view_stream_key: query.can_view_stream_key === undefined
             ? undefined
-            : parseTeacherType(query.teacher_type),
+            : parseCanViewStreamKey(query.can_view_stream_key),
         status: query.status === undefined ? undefined : parseStatus(query.status),
     };
 };
@@ -84,8 +84,8 @@ const validateTeacherProfilePayload = (body, isUpdate = false) => {
     if (!isUpdate || body.display_name !== undefined) {
         payload.display_name = parseString(body.display_name, 'display_name', 100) || null;
     }
-    if (!isUpdate || body.teacher_type !== undefined) {
-        payload.teacher_type = parseTeacherType(body.teacher_type ?? teacher_profile_types_1.TEACHER_TYPES.TEACHER);
+    if (!isUpdate || body.can_view_stream_key !== undefined) {
+        payload.can_view_stream_key = parseCanViewStreamKey(body.can_view_stream_key ?? teacher_profile_types_1.STREAM_KEY_ACCESS.TEACHER);
     }
     if (!isUpdate || body.status !== undefined) {
         payload.status = parseStatus(body.status ?? 1);

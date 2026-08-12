@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { TOKEN_TYPES } from './constants';
 import { logger } from '../../utils/logger';
 import ApiError from '../../utils/ApiError';
+import { loadUserAccess } from '../../services/authorization.service';
 
 const prisma = new PrismaClient();
 
@@ -43,41 +44,6 @@ const getTokenExpiry = (token: string) => {
     const decoded = jwt.decode(token) as any;
     if (!decoded?.exp) throw new ApiError('Token expiration is missing', 500);
     return new Date(decoded.exp * 1000);
-};
-
-const loadUserAccess = async (userId: number) => {
-    const user = await prisma.users.findUnique({ where: { id: userId } });
-    if (!user) throw new ApiError('User not found', 404);
-
-    const userRoles = await prisma.userRoles.findMany({
-        where: {
-            userId: user.id,
-            role: { isActive: true },
-        },
-        include: {
-            role: {
-                include: {
-                    rolePermissions: {
-                        include: { permission: true },
-                    },
-                },
-            },
-        },
-    });
-
-    const roles = userRoles.map((item) => item.role);
-    // Admin là superuser theo nghiệp vụ. Trả wildcard để quyền admin không bị
-    // thiếu khi hệ thống bổ sung permission mới nhưng dữ liệu gán quyền cũ
-    // chưa kịp đồng bộ.
-    const permissionCodes = roles.some((role) => role.code === 'admin')
-        ? ['*']
-        : Array.from(new Set(
-            roles.flatMap((role) =>
-                role.rolePermissions.map((item) => item.permission.code)
-            )
-        ));
-
-    return { user, roles, permissionCodes };
 };
 
 export const generateTokens = (
@@ -203,7 +169,7 @@ export const login = async (
         throw new ApiError('Tài khoản không có quyền truy cập hệ thống quản trị', 403);
     }
 
-    const { roles, permissionCodes } = await loadUserAccess(user.id);
+    const { roles, permissionCodes, programScope } = await loadUserAccess(user.id);
     if (roles.length === 0) {
         throw new ApiError('Tài khoản không có vai trò đang hoạt động', 403);
     }
@@ -228,30 +194,32 @@ export const login = async (
         userId: user.id,
         username: user.username,
         full_name: authenticatedUser.fullName || user.name,
-        roles: roles.map((role) => ({
+        roles: roles.map((role: any) => ({
             id: role.id.toString(),
             code: role.code,
             name: role.name,
             fieldPolicy: role.fieldPolicy,
         })),
         permissions: permissionCodes,
+        programScope,
         ...tokens,
     };
 };
 
 export const getMe = async (userId: number) => {
-    const { user, roles, permissionCodes } = await loadUserAccess(userId);
+    const { user, roles, permissionCodes, programScope } = await loadUserAccess(userId);
     return {
         userId: user.id,
         username: user.username,
         full_name: user.name,
-        roles: roles.map((role) => ({
+        roles: roles.map((role: any) => ({
             id: role.id.toString(),
             code: role.code,
             name: role.name,
             fieldPolicy: role.fieldPolicy,
         })),
         permissions: permissionCodes,
+        programScope,
     };
 };
 

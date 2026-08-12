@@ -36,30 +36,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getLessonExportContentType = exports.buildLessonExportBuffer = exports.parseLessonImportFile = exports.buildLessonTemplateBuffer = exports.buildLessonCsvBuffer = exports.buildLessonWorkbookBuffer = exports.LESSON_EXPORT_COLUMNS = void 0;
 const XLSX = __importStar(require("xlsx"));
 const LESSON_BASIC_COLUMNS = [
-    { key: 'grade', header: 'Khối' },
-    { key: 'subject_name', header: 'Môn học' },
-    { key: 'subject_code', header: 'Mã môn học' },
     { key: 'learn_number', header: 'Số thứ tự bài' },
     { key: 'lesson_name', header: 'Tên bài học' },
-];
-const LESSON_CONTENT_COLUMNS = [
-    { key: 'evg_banner', header: 'Banner' },
-    { key: 'evg_stream', header: 'EVG Stream' },
-    { key: 'lesson_link', header: 'Link bài học' },
-    { key: 'lesson_baitap', header: 'Bài tập' },
-    { key: 'lesson_tomtat', header: 'Tóm tắt' },
-    { key: 'lesson_phuongphap', header: 'Phương pháp' },
-    { key: 'lesson_luuy', header: 'Lưu ý' },
-    { key: 'lesson_ketqua', header: 'Kết quả' },
     { key: 'status', header: 'Trạng thái' },
 ];
-// Giữ export này cho các nơi đang dùng danh sách cột cũ. Các cột tài liệu được
-// tạo động ở bên dưới vì mỗi bài học có thể có nhiều tài liệu.
-exports.LESSON_EXPORT_COLUMNS = [
-    ...LESSON_BASIC_COLUMNS,
-    { key: 'lesson_document', header: 'Tài liệu bài học' },
-    ...LESSON_CONTENT_COLUMNS,
-];
+exports.LESSON_EXPORT_COLUMNS = LESSON_BASIC_COLUMNS;
 const HEADER_ALIASES = {
     grade: 'grade',
     khối: 'grade',
@@ -161,14 +142,7 @@ const buildDocumentColumns = (count) => Array.from({ length: Math.max(count, 1) 
     documentColumn(index, 'type'),
     documentColumn(index, 'link'),
 ]);
-const getExportColumns = (rows, minimumDocumentCount = 1) => {
-    const maximumDocumentCount = rows.reduce((maximum, row) => Math.max(maximum, parseLessonDocuments(row.lesson_document).length), minimumDocumentCount);
-    return [
-        ...LESSON_BASIC_COLUMNS,
-        ...buildDocumentColumns(maximumDocumentCount),
-        ...LESSON_CONTENT_COLUMNS,
-    ];
-};
+const getExportColumns = () => LESSON_BASIC_COLUMNS;
 const parseCsvLine = (line) => {
     const values = [];
     let current = '';
@@ -248,18 +222,10 @@ const normalizeImportRows = (rows) => rows.map((row) => {
     return normalized;
 });
 const toExportRow = (row, columns) => {
-    const documents = parseLessonDocuments(row.lesson_document);
-    const values = { ...row };
-    documents.forEach((document, offset) => {
-        const index = offset + 1;
-        values[`lesson_document_${index}_title`] = document.title;
-        values[`lesson_document_${index}_type`] = document.type;
-        values[`lesson_document_${index}_link`] = document.link;
-    });
-    return Object.fromEntries(columns.map((column) => [column.header, values[column.key] ?? '']));
+    return Object.fromEntries(columns.map((column) => [column.header, row[column.key] ?? '']));
 };
 const buildLessonWorkbookBuffer = (rows, minimumDocumentCount = 1) => {
-    const columns = getExportColumns(rows, minimumDocumentCount);
+    const columns = getExportColumns();
     const worksheet = XLSX.utils.json_to_sheet(rows.map((row) => toExportRow(row, columns)), {
         header: columns.map((column) => column.header),
     });
@@ -278,7 +244,7 @@ const escapeCsvValue = (value) => {
     return text;
 };
 const buildLessonCsvBuffer = (rows, minimumDocumentCount = 1) => {
-    const columns = getExportColumns(rows, minimumDocumentCount);
+    const columns = getExportColumns();
     const lines = [
         columns.map((column) => escapeCsvValue(column.header)).join(','),
         ...rows.map((row) => {
@@ -291,28 +257,13 @@ const buildLessonCsvBuffer = (rows, minimumDocumentCount = 1) => {
 exports.buildLessonCsvBuffer = buildLessonCsvBuffer;
 const buildLessonTemplateBuffer = (format) => {
     const example = [{
-            grade: 6,
-            subject_name: 'Toán',
-            subject_code: 'toan-6-2027',
             learn_number: '',
             lesson_name: 'Bài học mẫu',
-            lesson_document: JSON.stringify([
-                { title: 'Phiếu học tập', type: 'pdf', link: 'https://example.com/phieu-hoc-tap.pdf' },
-                { title: 'Video hướng dẫn', type: 'video', link: 'https://example.com/video' },
-            ]),
-            evg_banner: '',
-            evg_stream: '',
-            lesson_link: '',
-            lesson_baitap: '',
-            lesson_tomtat: '',
-            lesson_phuongphap: '',
-            lesson_luuy: '',
-            lesson_ketqua: '',
             status: 1,
         }];
     return format === 'csv'
-        ? (0, exports.buildLessonCsvBuffer)(example, 3)
-        : (0, exports.buildLessonWorkbookBuffer)(example, 3);
+        ? (0, exports.buildLessonCsvBuffer)(example)
+        : (0, exports.buildLessonWorkbookBuffer)(example);
 };
 exports.buildLessonTemplateBuffer = buildLessonTemplateBuffer;
 const parseLessonImportFile = (buffer, originalName) => {

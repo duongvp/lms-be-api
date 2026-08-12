@@ -71,7 +71,7 @@ export const getQuizOptions = () => ({
   duration_unit: 'seconds',
 });
 
-export const getQuizClassOptions = async () => serializeBigInt(await findQuizClassOptions());
+export const getQuizClassOptions = async (allowedPrograms: string[] | null = null) => serializeBigInt(await findQuizClassOptions(allowedPrograms));
 
 export const getQuizLessonOptions = async (code: string) => (
   serializeBigInt(await findQuizLessonOptions(code))
@@ -85,8 +85,8 @@ export const getQuizIndexSuggestion = async (query: QuizIndexSuggestionQuery) =>
   });
 };
 
-export const getQuizzes = async (query: QuizListQuery) => {
-  const result = await findQuizzes(query);
+export const getQuizzes = async (query: QuizListQuery, allowedPrograms: string[] | null = null) => {
+  const result = await findQuizzes(query, allowedPrograms);
   return serializeBigInt({ ...result, data: result.data.map(normalizeQuiz) });
 };
 
@@ -99,7 +99,11 @@ export const getQuizDetail = async (quizId: string) => {
 export const createNewQuiz = async (payload: QuizCreatePayload, creator: string) => {
   const quizId = payload.quiz_id ?? randomUUID();
   try {
-    return normalizeQuizResult(await createQuiz(quizId, payload, creator));
+    const { next_index } = await findQuizIndexSuggestion({
+      code: payload.code,
+      learn_number: payload.learn_number,
+    });
+    return normalizeQuizResult(await createQuiz(quizId, { ...payload, quiz_index: next_index }, creator));
   } catch (error) {
     return translatePersistenceError(error);
   }
@@ -142,20 +146,21 @@ export const reorderExistingQuizzes = async (payload: QuizReorderPayload) => {
   const existing = await findEnabledQuizzesByGroup(payload.code, payload.learn_number);
   const currentIds = existing.map((quiz) => quiz.quiz_id);
   if (currentIds.length !== payload.ordered_quiz_ids.length) {
-    throw new ApiError('Danh sách sắp xếp phải bao gồm toàn bộ quiz đang hoạt động trong lớp và buổi học', 400);
+    throw new ApiError('Danh sách sắp xếp phải bao gồm toàn bộ câu hỏi đang hoạt động trong Chương trình và bài học', 400);
   }
   const currentSet = new Set(currentIds);
   if (payload.ordered_quiz_ids.some((id) => !currentSet.has(id))) {
-    throw new ApiError('Danh sách sắp xếp chứa quiz không thuộc lớp hoặc buổi học', 400);
+    throw new ApiError('Danh sách sắp xếp chứa câu hỏi không thuộc Chương trình hoặc bài học', 400);
   }
   return serializeBigInt((await reorderQuizzes(payload)).map(normalizeQuiz));
 };
 
 export const exportQuizzes = async (
   query: QuizExportQuery,
-  filterVisible: (rows: any[]) => Promise<any[]> = async (rows) => rows
+  filterVisible: (rows: any[]) => Promise<any[]> = async (rows) => rows,
+  allowedPrograms: string[] | null = null
 ) => {
-  const rows = await findQuizzesForExport(query, query.quiz_ids);
+  const rows = await findQuizzesForExport(query, query.quiz_ids, allowedPrograms);
   const visibleRows = await filterVisible(rows.map(normalizeQuiz));
   const buffer = buildQuizExportBuffer(visibleRows, query.format);
   return {

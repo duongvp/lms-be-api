@@ -18,15 +18,6 @@ export interface LessonPayload {
   subject_name: string;
   learn_number?: number;
   lesson_name: string;
-  lesson_document?: string | null;
-  evg_banner?: string | null;
-  evg_stream?: string | null;
-  lesson_link?: string | null;
-  lesson_baitap?: string | null;
-  lesson_tomtat?: string | null;
-  lesson_phuongphap?: string | null;
-  lesson_luuy?: string | null;
-  lesson_ketqua?: string | null;
   status?: number;
 }
 

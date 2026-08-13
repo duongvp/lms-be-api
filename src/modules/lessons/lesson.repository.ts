@@ -155,7 +155,15 @@ export const findLessonProgramOptions = async (allowedPrograms: string[] | null 
     subject_code: string;
   }>>(
     `SELECT program.subject_code,
-            MAX(program.subject_name) AS subject_name,
+            COALESCE(
+              MAX(CASE
+                WHEN program.subject_name IS NOT NULL
+                 AND TRIM(program.subject_name) <> ''
+                 AND TRIM(program.subject_name) <> TRIM(program.subject_code)
+                THEN program.subject_name
+              END),
+              MAX(program.subject_name)
+            ) AS subject_name,
             MIN(program.grade) AS grade
      FROM (
        SELECT subject_code, subject_name, grade

@@ -1,6 +1,6 @@
 export const QUIZ_TYPES = [1, 2, 3] as const;
 export const QUIZ_SCORE_TYPES = [1, 2] as const;
-export const QUIZ_STATUSES = ['active', 'done', 'disable'] as const;
+export const QUIZ_STATUSES = ['done', 'disable'] as const;
 
 export const QUIZ_TYPE_OPTIONS = [
   { value: 1, label: 'Trắc nghiệm' },
@@ -14,7 +14,6 @@ export const QUIZ_SCORE_TYPE_OPTIONS = [
 ];
 
 export const QUIZ_STATUS_OPTIONS = [
-  { value: 'active', label: 'Đang hoạt động' },
   { value: 'done', label: 'Đã hoàn thiện' },
   { value: 'disable', label: 'Đã vô hiệu hóa' },
 ];

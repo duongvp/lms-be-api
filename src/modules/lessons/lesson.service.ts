@@ -94,6 +94,17 @@ export const getLessonDetail = async (id: bigint) => {
 };
 
 export const createNewLesson = async (payload: LessonPayload) => {
+  // Bài mới thuộc một Chương trình có sẵn phải luôn dùng tên môn chuẩn của
+  // Chương trình đó. Client tạo nhanh chỉ cần gửi mã Chương trình; không thể
+  // làm subject_name bị ghi nhầm thành chính mã chương trình.
+  const existingProgram = await findLessonProgramByCode(payload.subject_code);
+  if (existingProgram?.subject_name) {
+    payload = {
+      ...payload,
+      grade: Number(existingProgram.grade ?? payload.grade),
+      subject_name: String(existingProgram.subject_name).trim(),
+    };
+  }
   if (payload.learn_number !== undefined) {
     const existing = await findLessonByIdentity(payload.grade, payload.subject_code, payload.learn_number);
     if (existing) {

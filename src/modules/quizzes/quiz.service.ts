@@ -14,11 +14,9 @@ import {
   findQuizIndexSuggestion,
   findQuizLessonOptions,
   findQuizById,
-  findQuizSubmissions,
   findQuizzes,
   findQuizzesByIds,
   findQuizzesForExport,
-  getQuizAnalytics,
   importQuizzes,
   reorderQuizzes,
   setQuizStatus,
@@ -34,7 +32,6 @@ import {
   QuizListQuery,
   QuizPayload,
   QuizReorderPayload,
-  QuizSubmissionQuery,
   QuizType,
 } from './quiz.types';
 import { finalizeQuizUpdateAnswers } from './quiz.validation';
@@ -54,7 +51,12 @@ const normalizeStoredAnswers = (value: unknown) => {
   }
 };
 
-const normalizeQuiz = (quiz: any) => quiz ? { ...quiz, ans: normalizeStoredAnswers(quiz.ans) } : quiz;
+const normalizeQuiz = (quiz: any) => quiz ? {
+  ...quiz,
+  // `active` tồn tại ở dữ liệu cũ, nhưng nghiệp vụ hiện chỉ còn done/disable.
+  quiz_status: quiz.quiz_status === 'active' ? 'done' : quiz.quiz_status,
+  ans: normalizeStoredAnswers(quiz.ans),
+} : quiz;
 const normalizeQuizResult = (value: any) => serializeBigInt(normalizeQuiz(value));
 
 const translatePersistenceError = (error: any): never => {
@@ -187,14 +189,4 @@ export const importQuizRows = async (rows: QuizImportRow[], mode: QuizImportMode
   } catch (error) {
     return translatePersistenceError(error);
   }
-};
-
-export const getQuizSubmissions = async (quizId: string, query: QuizSubmissionQuery) => {
-  await getQuizDetail(quizId);
-  return serializeBigInt(await findQuizSubmissions(quizId, query));
-};
-
-export const getExistingQuizAnalytics = async (quizId: string) => {
-  await getQuizDetail(quizId);
-  return serializeBigInt(await getQuizAnalytics(quizId));
 };

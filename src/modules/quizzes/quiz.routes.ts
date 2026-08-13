@@ -41,8 +41,6 @@ router.patch(
   authorizeFields('quiz', () => ['quiz_index']),
   quizController.reorder
 );
-router.get('/:quizId/submissions', authorize(['quiz.grade']), authorizePrograms('quiz.grade', (req) => quizCodesByIds([req.params.quizId])), quizController.submissions);
-router.get('/:quizId/analytics', authorize(['quiz.grade']), authorizePrograms('quiz.grade', (req) => quizCodesByIds([req.params.quizId])), quizController.analytics);
 router.post(
   '/:quizId/restore',
   authorize(['quiz.update']),

@@ -7,6 +7,11 @@ import prisma from '../../lib/prisma';
 
 const router = Router();
 const { authenticate, authorize, authorizeFields, authorizeProgram, authorizePrograms } = authMiddleware;
+// Khối/môn/mã chương trình là ngữ cảnh nghiệp vụ, không nằm trong quyền dữ liệu
+// của màn Quản lý đề cương. Chỉ hai field người dùng thao tác trực tiếp được kiểm tra.
+const CURRICULUM_EDITABLE_FIELDS = new Set(['learn_number', 'lesson_name']);
+const curriculumEditableFields = (payload: unknown) => Object.keys((payload || {}) as Record<string, unknown>)
+  .filter((fieldCode) => CURRICULUM_EDITABLE_FIELDS.has(fieldCode));
 const lessonCodesByIds = async (ids: unknown[]) => (
   (await prisma.lessons.findMany({
     where: { id: { in: ids.map((id) => BigInt(String(id))) } },
@@ -31,7 +36,7 @@ router.post(
   '/options/programs',
   authorize(['lessons.create']),
   authorizeProgram('lessons.create', (req) => String(req.body?.subject_code || '')),
-  authorizeFields('lessons', (req) => Object.keys(req.body || {})),
+  authorizeFields('lessons', (req) => curriculumEditableFields(req.body)),
   lessonController.createProgram
 );
 router.get('/course-mappings', authorize(['lessons.view']), authorizeProgram('lessons.view', (req) => String(req.query.program_code || '')), lessonController.courseMappings);
@@ -40,7 +45,7 @@ router.patch(
   '/bulk',
   authorize(['lessons.update']),
   authorizePrograms('lessons.update', (req) => lessonCodesByIds(req.body?.ids || [])),
-  authorizeFields('lessons', (req) => Object.keys(req.body?.data || {})),
+  authorizeFields('lessons', (req) => curriculumEditableFields(req.body?.data)),
   lessonController.bulkUpdate
 );
 router.patch(
@@ -67,14 +72,14 @@ router.post(
   '/',
   authorize(['lessons.create']),
   authorizeProgram('lessons.create', (req) => String(req.body?.subject_code || '')),
-  authorizeFields('lessons', (req) => Object.keys(req.body || {})),
+  authorizeFields('lessons', (req) => curriculumEditableFields(req.body)),
   lessonController.create
 );
 router.put(
   '/:id',
   authorize(['lessons.update']),
   authorizePrograms('lessons.update', (req) => lessonCodesByIds([req.params.id])),
-  authorizeFields('lessons', (req) => Object.keys(req.body || {})),
+  authorizeFields('lessons', (req) => curriculumEditableFields(req.body)),
   lessonController.update
 );
 router.delete('/:id', authorize(['lessons.delete']), authorizePrograms('lessons.delete', (req) => lessonCodesByIds([req.params.id])), lessonController.remove);

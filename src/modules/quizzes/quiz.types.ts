@@ -29,7 +29,7 @@ export interface QuizListQuery {
   limit?: number;
   code?: string;
   learn_number?: number;
-  quiz_type?: QuizType;
+  quiz_type?: QuizType | QuizType[];
   score_type?: QuizScoreType;
   quiz_status?: QuizStatus;
   keyword?: string;
@@ -89,13 +89,4 @@ export interface QuizImportResult {
   created: number;
   updated: number;
   skipped: number;
-}
-
-export interface QuizSubmissionQuery {
-  page: number;
-  limit: number;
-  username?: string;
-  class_id?: string;
-  latest: boolean;
-  sort_order: 'asc' | 'desc';
 }

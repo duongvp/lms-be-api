@@ -95,7 +95,8 @@ const normalizeFriendlyScoreType = (value: unknown) => {
 
 const normalizeFriendlyStatus = (value: unknown) => {
   const text = normalizeHeader(value);
-  if (['1', 'active', 'đang hoạt động', 'dang hoat dong', 'hoạt động', 'hoat dong'].includes(text)) return 'active';
+  // Nhận diện giá trị cũ khi import nhưng chuẩn hóa về một trong hai trạng thái hiện hành.
+  if (['1', 'active', 'đang hoạt động', 'dang hoat dong', 'hoạt động', 'hoat dong'].includes(text)) return 'done';
   if (['done', 'đã hoàn thiện', 'da hoan thien'].includes(text)) return 'done';
   if (['0', '2', 'disable', 'đã vô hiệu hóa', 'da vo hieu hoa', 'ngừng hoạt động', 'ngung hoat dong'].includes(text)) return 'disable';
   return value;

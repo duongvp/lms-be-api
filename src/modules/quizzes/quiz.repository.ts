@@ -9,7 +9,6 @@ import {
   QuizListQuery,
   QuizPayload,
   QuizReorderPayload,
-  QuizSubmissionQuery,
 } from './quiz.types';
 
 const buildQuizWhere = (query: QuizListQuery, allowedPrograms: string[] | null = null) => {
@@ -19,7 +18,9 @@ const buildQuizWhere = (query: QuizListQuery, allowedPrograms: string[] | null =
     ? query.code
     : (allowedPrograms.includes(query.code) ? query.code : { in: [] });
   if (query.learn_number !== undefined) where.learn_number = query.learn_number;
-  if (query.quiz_type !== undefined) where.quiz_type = query.quiz_type;
+  if (query.quiz_type !== undefined) {
+    where.quiz_type = Array.isArray(query.quiz_type) ? { in: query.quiz_type } : query.quiz_type;
+  }
   if (query.score_type !== undefined) where.score_type = query.score_type;
   if (query.quiz_status) where.quiz_status = query.quiz_status;
   if (query.keyword) where.quiz_name = { contains: query.keyword };
@@ -275,83 +276,4 @@ export const importQuizzes = async (
     }
   });
   return { total: rows.length, created, updated, skipped };
-};
-
-const buildSubmissionFilter = (quizId: string, query: QuizSubmissionQuery, alias = '') => {
-  const prefix = alias ? `${alias}.` : '';
-  const clauses = [`${prefix}quiz_id = ?`];
-  const values: any[] = [quizId];
-  if (query.username) {
-    clauses.push(`${prefix}username = ?`);
-    values.push(query.username);
-  }
-  if (query.class_id) {
-    clauses.push(`${prefix}class_id = ?`);
-    values.push(query.class_id);
-  }
-  return { sql: clauses.join(' AND '), values };
-};
-
-export const findQuizSubmissions = async (quizId: string, query: QuizSubmissionQuery) => {
-  const offset = (query.page - 1) * query.limit;
-  const order = query.sort_order.toUpperCase();
-  const filter = buildSubmissionFilter(quizId, query);
-
-  if (query.latest) {
-    const countRows = await prisma.$queryRawUnsafe<Array<{ total: bigint }>>(
-      `SELECT COUNT(*) AS total FROM (
-         SELECT MAX(id) AS id FROM quiz_logs WHERE ${filter.sql} GROUP BY username
-       ) latest_rows`,
-      ...filter.values
-    );
-    const data = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT ql.*,
-              CASE WHEN CAST(ql.ans_info AS CHAR) LIKE '%star%' THEN 1 ELSE 0 END AS is_star
-       FROM quiz_logs ql
-       INNER JOIN (
-         SELECT MAX(id) AS id FROM quiz_logs WHERE ${filter.sql} GROUP BY username
-       ) latest_rows ON latest_rows.id = ql.id
-       ORDER BY ql.created_at ${order}, ql.id ${order}
-       LIMIT ? OFFSET ?`,
-      ...filter.values,
-      query.limit,
-      offset
-    );
-    return { total: Number(countRows[0]?.total ?? 0), page: query.page, limit: query.limit, data };
-  }
-
-  const countRows = await prisma.$queryRawUnsafe<Array<{ total: bigint }>>(
-    `SELECT COUNT(*) AS total FROM quiz_logs WHERE ${filter.sql}`,
-    ...filter.values
-  );
-  const data = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT quiz_logs.*,
-            CASE WHEN CAST(ans_info AS CHAR) LIKE '%star%' THEN 1 ELSE 0 END AS is_star
-     FROM quiz_logs WHERE ${filter.sql}
-     ORDER BY created_at ${order}, id ${order}
-     LIMIT ? OFFSET ?`,
-    ...filter.values,
-    query.limit,
-    offset
-  );
-  return { total: Number(countRows[0]?.total ?? 0), page: query.page, limit: query.limit, data };
-};
-
-export const getQuizAnalytics = async (quizId: string) => {
-  const rows = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT
-       COUNT(*) AS submission_count,
-       COUNT(DISTINCT username) AS student_count,
-       COALESCE(AVG(score), 0) AS average_score,
-       COALESCE(MIN(score), 0) AS minimum_score,
-       COALESCE(MAX(score), 0) AS maximum_score,
-       COALESCE(AVG(duration), 0) AS average_duration,
-       SUM(CASE WHEN CAST(ans_info AS CHAR) LIKE '%star%' THEN 1 ELSE 0 END) AS star_record_count,
-       MIN(created_at) AS first_submission_at,
-       MAX(created_at) AS last_submission_at
-     FROM quiz_logs
-     WHERE quiz_id = ?`,
-    quizId
-  );
-  return rows[0] ?? null;
 };

@@ -16,7 +16,6 @@ const permissions = [
   ['room_config.view', 'Xem cấu hình phòng học'],
   ['room_config.create', 'Thêm mới cấu hình phòng học'],
   ['room_config.update', 'Cập nhật cấu hình phòng học'],
-  ['room_config.delete', 'Xóa cấu hình phòng học'],
   ['room_config.import', 'Import cấu hình phòng học'],
 ] as const;
 

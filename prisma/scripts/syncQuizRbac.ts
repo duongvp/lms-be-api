@@ -26,7 +26,6 @@ const permissions = [
   ['quiz.delete', 'Vô hiệu hóa câu hỏi'],
   ['quiz.import', 'Import câu hỏi'],
   ['quiz.export', 'Export câu hỏi'],
-  ['quiz.grade', 'Xem kết quả câu hỏi'],
 ] as const;
 
 async function main() {

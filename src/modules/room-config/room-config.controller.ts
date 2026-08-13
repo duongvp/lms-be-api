@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import service, { RoomConfigService } from './room-config.service';
 import { getFirstProgramScopeFilter } from '../../services/authorization.service';
+import FieldPermissionService from '../roles/field-permission.service';
 
 export class RoomConfigController {
   constructor(private roomConfigService: RoomConfigService = service) {}
@@ -14,11 +15,16 @@ export class RoomConfigController {
         learn_number: learn_number ? Number(learn_number) : undefined,
         page: page ? Number(page) : 1,
         limit: limit ? Number(limit) : 20,
-      }, getFirstProgramScopeFilter(req.user, ['room_config.view', 'calendar.view', 'lessons.view']));
+      }, getFirstProgramScopeFilter(req.user, ['room_config.view']));
 
+      const items = await FieldPermissionService.filterVisibleRecords(
+        req.user?.roleIds || [],
+        'room_config',
+        result.items as any[]
+      );
       return res.status(200).json({
         success: true,
-        data: result,
+        data: { ...result, items },
       });
     } catch (error) {
       next(error);
@@ -33,9 +39,14 @@ export class RoomConfigController {
         Number(learn_number)
       );
 
+      const data = await FieldPermissionService.filterVisibleRecord(
+        req.user?.roleIds || [],
+        'room_config',
+        result as any
+      );
       return res.status(200).json({
         success: true,
-        data: result,
+        data,
       });
     } catch (error) {
       next(error);

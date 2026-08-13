@@ -185,7 +185,7 @@ router.post(
   '/single',
   authorize(['calendar.create']),
   authorizePrograms('calendar.create', (req) => calendarCreateCodes([req.body || {}])),
-  authorizeTeachingAssignment('calendar.teacher.assign'),
+  authorizeTeachingAssignment('calendar.teacher.manage'),
   authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))),
   livestreamController.createSingle
 );
@@ -193,7 +193,7 @@ router.post(
   '/bulk',
   authorize(['calendar.create']),
   authorizePrograms('calendar.create', (req) => calendarCreateCodes(req.body?.calendars || [])),
-  authorizeTeachingAssignment('calendar.teacher.assign'),
+  authorizeTeachingAssignment('calendar.teacher.manage'),
   authorizeFields('calendar', (req) => normalizeCalendarFields(
     (req.body?.calendars || []).flatMap((item: any) => Object.keys(item || {}))
   )),
@@ -209,7 +209,7 @@ router.post(
   '/auto-schedule/commit',
   authorize(['calendar.create']),
   authorizeProgram('calendar.create', (req) => String(req.body?.program_code || req.body?.code || '')),
-  authorizeTeachingAssignment('calendar.teacher.assign'),
+  authorizeTeachingAssignment('calendar.teacher.manage'),
   livestreamController.commitAutoSchedule
 );
 
@@ -218,7 +218,7 @@ router.put(
   '/bulk',
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),
-  authorizeTeachingAssignment('calendar.teacher.update'),
+  authorizeTeachingAssignment('calendar.teacher.manage'),
   authorizeFields('calendar', (req) => normalizeCalendarFields(
     Array.isArray(req.body?.update_data)
       ? req.body.update_data.flatMap((item: any) => Object.keys(item || {}))
@@ -230,7 +230,7 @@ router.put(
   '/:id/reschedule',
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', calendarCodeById),
-  authorizeTeachingAssignment('calendar.teacher.update'),
+  authorizeTeachingAssignment('calendar.teacher.manage'),
   authorizeFields('calendar', (req) => normalizeCalendarFields(
     Object.keys(req.body?.new_session || {})
   )),
@@ -243,7 +243,7 @@ router.put(
     ...await calendarCodeById(req),
     ...await calendarCreateCodes([req.body || {}]),
   ]),
-  authorizeTeachingAssignment('calendar.teacher.update'),
+  authorizeTeachingAssignment('calendar.teacher.manage'),
   authorizeFields('calendar', (req) => normalizeCalendarFields([
     ...Object.keys(req.body || {}),
     ...Object.keys(req.body?.new_session || {}),

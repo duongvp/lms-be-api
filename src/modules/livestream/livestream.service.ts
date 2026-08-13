@@ -1080,7 +1080,16 @@ export const getSchedulingPrograms = async (allowedPrograms: string[] | null = n
     code: string;
     subject_name: string | null;
   }>>(Prisma.sql`
-    SELECT program.code, MAX(program.subject_name) AS subject_name
+    SELECT program.code,
+           COALESCE(
+             MAX(CASE
+               WHEN program.subject_name IS NOT NULL
+                AND TRIM(program.subject_name) <> ''
+                AND TRIM(program.subject_name) <> TRIM(program.code)
+               THEN program.subject_name
+             END),
+             MAX(program.subject_name)
+           ) AS subject_name
     FROM (
       SELECT subject_code AS code, subject_name
       FROM lessons

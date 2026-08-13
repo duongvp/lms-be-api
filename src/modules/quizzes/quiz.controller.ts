@@ -6,14 +6,12 @@ import {
   createNewQuiz,
   disableExistingQuiz,
   exportQuizzes,
-  getExistingQuizAnalytics,
   getQuizDetail,
   getQuizClassOptions,
   getQuizIndexSuggestion,
   getQuizLessonOptions,
   getQuizImportTemplate,
   getQuizOptions,
-  getQuizSubmissions,
   getQuizzes,
   importQuizRows,
   reorderExistingQuizzes,
@@ -31,7 +29,6 @@ import {
   validateQuizListQuery,
   validateQuizPayload,
   validateQuizReorderPayload,
-  validateQuizSubmissionQuery,
 } from './quiz.validation';
 import { parseQuizImportFile } from './quiz.io';
 import { QUIZ_MUTABLE_FIELDS } from './quiz.constants';
@@ -224,27 +221,7 @@ const importFile = async (req: Request, res: Response) => {
   }
 };
 
-const submissions = async (req: Request, res: Response) => {
-  try {
-    return SuccessResponse(
-      res,
-      'Success',
-      await getQuizSubmissions(validateQuizId(req.params.quizId), validateQuizSubmissionQuery(req.query))
-    );
-  } catch (error: any) {
-    return ErrorResponse(res, error.message, error.statusCode || 400);
-  }
-};
-
-const analytics = async (req: Request, res: Response) => {
-  try {
-    return SuccessResponse(res, 'Success', await getExistingQuizAnalytics(validateQuizId(req.params.quizId)));
-  } catch (error: any) {
-    return ErrorResponse(res, error.message, error.statusCode || 400);
-  }
-};
-
 export default {
   list, options, classes, lessons, indexSuggestion, detail, create, update, remove, restore, bulkUpdate, reorder,
-  exportFile, template, importFile, submissions, analytics,
+  exportFile, template, importFile,
 };

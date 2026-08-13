@@ -20,7 +20,7 @@ async function main() {
   const modulesData = [
     { code: 'users', name: 'Quản lý người dùng' },
     { code: 'calendar', name: 'Lịch học' },
-    { code: 'lessons', name: 'Nội dung bài học' },
+    { code: 'lessons', name: 'Quản lý đề cương' },
     { code: 'quiz', name: 'Quản lý câu hỏi' },
     { code: 'logs', name: 'Nhật ký truy cập' },
     { code: 'stream', name: 'Livestream' },
@@ -31,7 +31,7 @@ async function main() {
   for (const mod of modulesData) {
     await prisma.modules.upsert({
       where: { code: mod.code },
-      update: {},
+      update: { name: mod.name },
       create: mod,
     });
   }
@@ -69,24 +69,8 @@ async function main() {
     { moduleCode: 'calendar', fieldCode: 'lesson_status', fieldLabel: 'Trạng thái', fieldType: 'number', sortOrder: 13 },
 
     // Lessons
-    { moduleCode: 'lessons', fieldCode: 'id', fieldLabel: 'ID', fieldType: 'number', sortOrder: 1 },
-    { moduleCode: 'lessons', fieldCode: 'grade', fieldLabel: 'Khối', fieldType: 'select', sortOrder: 2 },
-    { moduleCode: 'lessons', fieldCode: 'subject_name', fieldLabel: 'Tên môn học', fieldType: 'select', sortOrder: 3 },
-    { moduleCode: 'lessons', fieldCode: 'subject_code', fieldLabel: 'Mã môn học', fieldType: 'text', sortOrder: 4 },
-    { moduleCode: 'lessons', fieldCode: 'learn_number', fieldLabel: 'Số thứ tự bài', fieldType: 'number', sortOrder: 5 },
-    { moduleCode: 'lessons', fieldCode: 'lesson_name', fieldLabel: 'Tên bài học', fieldType: 'text', sortOrder: 6 },
-    { moduleCode: 'lessons', fieldCode: 'lesson_document', fieldLabel: 'Tài liệu bài học', fieldType: 'textarea', sortOrder: 7 },
-    { moduleCode: 'lessons', fieldCode: 'evg_banner', fieldLabel: 'Banner', fieldType: 'text', sortOrder: 8 },
-    { moduleCode: 'lessons', fieldCode: 'evg_stream', fieldLabel: 'EVG Stream', fieldType: 'text', sortOrder: 9 },
-    { moduleCode: 'lessons', fieldCode: 'lesson_link', fieldLabel: 'Link bài học', fieldType: 'text', sortOrder: 10 },
-    { moduleCode: 'lessons', fieldCode: 'lesson_baitap', fieldLabel: 'Bài tập', fieldType: 'textarea', sortOrder: 11 },
-    { moduleCode: 'lessons', fieldCode: 'lesson_tomtat', fieldLabel: 'Tóm tắt', fieldType: 'textarea', sortOrder: 12 },
-    { moduleCode: 'lessons', fieldCode: 'lesson_phuongphap', fieldLabel: 'Phương pháp', fieldType: 'textarea', sortOrder: 13 },
-    { moduleCode: 'lessons', fieldCode: 'lesson_luuy', fieldLabel: 'Lưu ý', fieldType: 'textarea', sortOrder: 14 },
-    { moduleCode: 'lessons', fieldCode: 'lesson_ketqua', fieldLabel: 'Kết quả', fieldType: 'textarea', sortOrder: 15 },
-    { moduleCode: 'lessons', fieldCode: 'status', fieldLabel: 'Trạng thái', fieldType: 'number', sortOrder: 16 },
-    { moduleCode: 'lessons', fieldCode: 'created_at', fieldLabel: 'Ngày tạo', fieldType: 'datetime', sortOrder: 17 },
-    { moduleCode: 'lessons', fieldCode: 'updated_at', fieldLabel: 'Ngày cập nhật', fieldType: 'datetime', sortOrder: 18 },
+    { moduleCode: 'lessons', fieldCode: 'learn_number', fieldLabel: 'Số thứ tự bài', fieldType: 'number', sortOrder: 1 },
+    { moduleCode: 'lessons', fieldCode: 'lesson_name', fieldLabel: 'Tên bài học', fieldType: 'text', sortOrder: 2 },
 
     // Quiz
     { moduleCode: 'quiz', fieldCode: 'id', fieldLabel: 'ID', fieldType: 'number', sortOrder: 1 },
@@ -191,14 +175,9 @@ async function main() {
   // Thêm một vài permission đặc thù (nếu cần)
   // Ví dụ: duyệt, hủy, bắt đầu, kết thúc...
   permissionsData.push(
-    { code: 'calendar.approve', name: 'Duyệt lịch', description: 'Duyệt lịch học' },
-    { code: 'quiz.grade', name: 'Chấm điểm', description: 'Chấm điểm bài kiểm tra' },
     { code: 'users.reset_password', name: 'Đặt lại mật khẩu', description: 'Cho phép đặt lại mật khẩu người dùng' },
     { code: 'teacher_profile.status', name: 'Thay đổi trạng thái nhân sự', description: 'Kích hoạt hoặc vô hiệu hóa nhân sự giảng dạy' },
-    { code: 'calendar.teacher.view', name: 'Xem phân công giáo viên', description: 'Xem giáo viên và trợ giảng được phân công' },
-    { code: 'calendar.teacher.assign', name: 'Gán giáo viên và trợ giảng', description: 'Phân công khi tạo lịch' },
-    { code: 'calendar.teacher.update', name: 'Cập nhật phân công', description: 'Thay đổi phân công trong lịch' },
-    { code: 'calendar.teacher.remove', name: 'Gỡ phân công', description: 'Gỡ giáo viên và trợ giảng khỏi lịch' },
+    { code: 'calendar.teacher.manage', name: 'Quản lý phân công', description: 'Gán, thay đổi hoặc gỡ giáo viên và trợ giảng trong lịch học' },
   );
 
   for (const perm of permissionsData) {
@@ -290,7 +269,7 @@ async function main() {
           p.code.startsWith('stream.') ||
           p.code === 'teacher.view' ||
           p.code === 'teacher_profile.view' ||
-          p.code === 'calendar.teacher.view'
+          p.code === 'calendar.teacher.manage'
         )
         .map(p => p.id),
     },
@@ -350,7 +329,7 @@ async function main() {
           p.code === 'quiz.view' ||
           p.code === 'stream.view' ||
           p.code === 'teacher_profile.view' ||
-          p.code === 'calendar.teacher.view'
+          p.code === 'calendar.teacher.manage'
         )
         .map(p => p.id),
     },

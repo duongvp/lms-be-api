@@ -23,7 +23,6 @@ import {
   QuizReorderPayload,
   QuizScoreType,
   QuizStatus,
-  QuizSubmissionQuery,
   QuizType,
 } from './quiz.types';
 
@@ -75,6 +74,15 @@ const parseEnumNumber = <T extends number>(value: unknown, field: string, allowe
   const parsed = requiredInteger(value, field) as T;
   if (!allowed.includes(parsed)) throw new ApiError(`${field} không hợp lệ`, 400);
   return parsed;
+};
+
+const parseEnumNumberList = <T extends number>(value: unknown, field: string, allowed: readonly T[]): T | T[] => {
+  const values = Array.isArray(value)
+    ? value
+    : String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+  if (!values.length) throw new ApiError(`${field} không hợp lệ`, 400);
+  const parsed = values.map((item) => parseEnumNumber(item, field, allowed));
+  return parsed.length === 1 ? parsed[0] : Array.from(new Set(parsed));
 };
 
 const parseStatus = (value: unknown, required = true): QuizStatus | undefined => {
@@ -235,7 +243,7 @@ export const validateQuizListQuery = (query: any): QuizListQuery => {
   if (sortOrder && !['asc', 'desc', 'ascend', 'descend'].includes(sortOrder)) {
     throw new ApiError('sort_order không hợp lệ', 400);
   }
-  const quizType = query.quiz_type === undefined ? undefined : parseEnumNumber(query.quiz_type, 'quiz_type', QUIZ_TYPES);
+  const quizType = query.quiz_type === undefined ? undefined : parseEnumNumberList(query.quiz_type, 'quiz_type', QUIZ_TYPES);
   const scoreType = query.score_type === undefined ? undefined : parseEnumNumber(query.score_type, 'score_type', QUIZ_SCORE_TYPES);
   const status = query.quiz_status === undefined ? undefined : parseStatus(query.quiz_status);
   const learnNumber = optionalInteger(query.learn_number, 'learn_number');
@@ -299,24 +307,6 @@ export const validateQuizExportQuery = (query: any): QuizExportQuery => {
   return { ...list, format, quiz_ids: quizIds };
 };
 
-export const validateQuizSubmissionQuery = (query: any): QuizSubmissionQuery => {
-  const page = optionalInteger(query.page, 'page') ?? 1;
-  const limit = optionalInteger(query.limit, 'limit') ?? 20;
-  if (page < 1) throw new ApiError('page phải lớn hơn 0', 400);
-  if (limit < 1 || limit > 100) throw new ApiError('limit phải nằm trong khoảng 1-100', 400);
-  const latestText = stringValue(query.latest)?.toLowerCase();
-  if (latestText && !['true', 'false', '1', '0'].includes(latestText)) throw new ApiError('latest không hợp lệ', 400);
-  const order = stringValue(query.sort_order);
-  return {
-    page,
-    limit,
-    username: stringValue(query.username),
-    class_id: stringValue(query.class_id),
-    latest: latestText === undefined ? true : latestText === 'true' || latestText === '1',
-    sort_order: order === 'asc' || order === 'ascend' ? 'asc' : 'desc',
-  };
-};
-
 export const validateQuizImportRows = (rows: Record<string, unknown>[]) => {
   const errors: QuizImportValidationError[] = [];
   const validRows: QuizImportRow[] = [];
@@ -337,7 +327,7 @@ export const validateQuizImportRows = (rows: Record<string, unknown>[]) => {
         ans: row.ans,
         score_type: row.score_type ?? 1,
         ans_duration: row.ans_duration ?? 60,
-        quiz_status: row.quiz_status ?? 'active',
+        quiz_status: row.quiz_status ?? 'done',
         quiz_index: row.quiz_index ?? 0,
       }) as QuizCreatePayload;
       if (!payload.quiz_id) delete payload.quiz_id;

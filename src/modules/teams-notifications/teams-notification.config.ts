@@ -24,7 +24,16 @@ export const isTeamsNotificationEnabled = () => (
 );
 
 export const getTeamsWebhookDestinations = (): TeamsWebhookDestination[] => {
-  const json = process.env.TEAMS_WEBHOOKS_JSON?.trim();
+  const configuredJson = process.env.TEAMS_WEBHOOKS_JSON?.trim();
+  // Render lưu nguyên giá trị nhập trong Dashboard; nếu copy cú pháp .env
+  // `'[...]'` vào đó thì dấu nháy đơn cũng trở thành một phần của biến.
+  // Chấp nhận cả hai cách để deployment không lỗi vì khác biệt môi trường.
+  const json = configuredJson && (
+    (configuredJson.startsWith("'") && configuredJson.endsWith("'"))
+    || (configuredJson.startsWith('"') && configuredJson.endsWith('"'))
+  )
+    ? configuredJson.slice(1, -1).trim()
+    : configuredJson;
   let rawDestinations: any[] = [];
 
   if (json) {

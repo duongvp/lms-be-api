@@ -35,8 +35,8 @@ export const issueLessonSecondaryToken = (req: Request, password: unknown) => {
 
   const configuredMinutes = Number(process.env.LESSONS_REAUTH_TTL_MINUTES);
   const ttlMinutes = Number.isInteger(configuredMinutes)
-    ? Math.min(Math.max(configuredMinutes, 1), 60)
-    : 15;
+    ? Math.min(Math.max(configuredMinutes, 1), 480)
+    : 60;
   const token = jwt.sign({
     type: TOKEN_SCOPE,
     userId: Number(req.user?.userId),

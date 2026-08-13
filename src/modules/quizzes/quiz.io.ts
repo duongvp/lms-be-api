@@ -13,7 +13,7 @@ export const QUIZ_EXPORT_COLUMNS: Column[] = [
   { key: 'ans', header: 'Đáp án JSON' },
   { key: 'score_type', header: 'Cách tính điểm' },
   { key: 'ans_duration', header: 'Thời gian (giây)' },
-  { key: 'quiz_status', header: 'Status (1: Hoạt động, 0: Ngừng hoạt động)' },
+  { key: 'quiz_status', header: 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)' },
   { key: 'creator', header: 'Người tạo' },
   { key: 'created_at', header: 'Ngày tạo' },
   { key: 'updated_at', header: 'Ngày cập nhật' },
@@ -52,6 +52,8 @@ const HEADER_ALIASES: Record<string, string> = {
   quiz_status: 'quiz_status',
   'trạng thái': 'quiz_status',
   'trang thai': 'quiz_status',
+  'trạng thái (1: đã hoàn thiện, 0: đã vô hiệu hóa)': 'quiz_status',
+  'trang thai (1: da hoan thien, 0: da vo hieu hoa)': 'quiz_status',
   'status (1: hoạt động, 0: ngừng hoạt động)': 'quiz_status',
   'status (1: hoat dong, 0: ngung hoat dong)': 'quiz_status',
   'status (1: hoạt động, 2: ngừng hoạt động)': 'quiz_status',
@@ -233,7 +235,7 @@ const TEMPLATE_HEADERS = [
   'Mã quiz', 'Bài học', 'Thứ tự', 'Câu hỏi', 'Loại câu hỏi',
   ...TEMPLATE_ANSWER_HEADERS, 'Đáp án đúng (VD: B hoặc A;C;F)',
   'Gợi ý ô trống', 'Đáp án điền từ', 'Đáp án trả lời ngắn',
-  'Cách tính điểm', 'Thời gian (giây)', 'Status (1: Hoạt động, 0: Ngừng hoạt động)',
+  'Cách tính điểm', 'Thời gian (giây)', 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)',
   'Hướng dẫn theo loại (không nhập)',
 ];
 
@@ -245,7 +247,7 @@ const templateRows = [
     'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
     'Đáp án đúng (VD: B hoặc A;C;F)': 'B', 'Gợi ý ô trống': '', 'Đáp án điền từ': '',
     'Đáp án trả lời ngắn': '', 'Cách tính điểm': 'Toàn câu',
-    'Thời gian (giây)': 60, 'Status (1: Hoạt động, 0: Ngừng hoạt động)': 1,
+    'Thời gian (giây)': 60, 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)': 1,
     'Hướng dẫn theo loại (không nhập)': 'Nhập từ A đến đáp án cuối. Một đáp án đúng: B. Nhiều đáp án đúng: A;C;F.',
   },
   {
@@ -255,7 +257,7 @@ const templateRows = [
     'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
     'Đáp án đúng (VD: B hoặc A;C;F)': '', 'Gợi ý ô trống': 'Tên thủ đô', 'Đáp án điền từ': 'Hà Nội; Ha Noi',
     'Đáp án trả lời ngắn': '', 'Cách tính điểm': 'Toàn câu',
-    'Thời gian (giây)': 60, 'Status (1: Hoạt động, 0: Ngừng hoạt động)': 1,
+    'Thời gian (giây)': 60, 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)': 1,
     'Hướng dẫn theo loại (không nhập)': 'Nhập gợi ý và các cách viết được chấp nhận; phân tách đáp án bằng dấu ;',
   },
   {
@@ -265,7 +267,7 @@ const templateRows = [
     'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
     'Đáp án đúng (VD: B hoặc A;C;F)': '', 'Gợi ý ô trống': '', 'Đáp án điền từ': '',
     'Đáp án trả lời ngắn': 'Chiều dài nhân chiều rộng', 'Cách tính điểm': 'Toàn câu',
-    'Thời gian (giây)': 120, 'Status (1: Hoạt động, 0: Ngừng hoạt động)': 1,
+    'Thời gian (giây)': 120, 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)': 1,
     'Hướng dẫn theo loại (không nhập)': 'Chỉ nhập nội dung vào cột Đáp án trả lời ngắn.',
   },
 ];

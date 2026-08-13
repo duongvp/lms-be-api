@@ -184,7 +184,9 @@ const reorder = async (req: Request, res: Response) => {
 const exportFile = async (req: Request, res: Response) => {
   try {
     const query = validateLessonExportQuery(req.query);
-    const result = await exportLessons(query);
+    const result = await exportLessons(query, (rows) => (
+      FieldPermissionService.filterVisibleRecords(req.user?.roleIds || [], 'lessons', rows)
+    ));
     res.setHeader('Content-Type', result.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
     return res.send(result.buffer);

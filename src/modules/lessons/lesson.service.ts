@@ -241,9 +241,16 @@ export const reorderExistingLessons = async (payload: LessonReorderPayload) => {
   ));
 };
 
-export const exportLessons = async (query: LessonExportQuery) => {
+export const exportLessons = async (
+  query: LessonExportQuery,
+  filterVisibleRows?: (rows: any[]) => Promise<any[]> | any[]
+) => {
   const rows = await findLessonsForExport(query);
-  const buffer = buildLessonExportBuffer(serializeBigInt(rows) as any[], query.format);
+  const serializedRows = serializeBigInt(rows) as any[];
+  const visibleRows = filterVisibleRows
+    ? await filterVisibleRows(serializedRows)
+    : serializedRows;
+  const buffer = buildLessonExportBuffer(visibleRows, query.format);
   const extension = query.format;
 
   return {

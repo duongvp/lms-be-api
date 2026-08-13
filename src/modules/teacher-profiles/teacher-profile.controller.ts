@@ -115,7 +115,12 @@ const exportFile = async (req: Request, res: Response) => {
       can_view_stream_key: query.can_view_stream_key,
       status: query.status,
     });
-    const buffer = buildTeacherProfileFile(rows, format);
+    const visibleRows = await FieldPermissionService.filterVisibleRecords(
+      req.user?.roleIds || [],
+      'teacher_profile',
+      rows as any[]
+    );
+    const buffer = buildTeacherProfileFile(visibleRows, format);
     res.setHeader('Content-Type', getTeacherProfileFileContentType(format));
     res.setHeader(
       'Content-Disposition',
@@ -145,6 +150,14 @@ const importFile = async (req: Request, res: Response) => {
     const parsedRows = parseTeacherProfileFile(
       req.file.buffer,
       req.file.originalname
+    );
+
+    // Import ghi đè đầy đủ các trường nghiệp vụ có trong file, nên phải áp
+    // dụng cùng field-level permission như luồng tạo/sửa trực tiếp.
+    await FieldPermissionService.assertEditableFields(
+      req.user?.roleIds || [],
+      'teacher_profile',
+      ['username', 'display_name', 'can_view_stream_key', 'status']
     );
 
     const { data, errors } = validateTeacherProfileImportRows(parsedRows);

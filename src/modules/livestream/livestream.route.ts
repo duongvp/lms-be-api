@@ -167,14 +167,14 @@ router.put(
 );
 router.post(
   '/mapping/import/preview',
-  authorize(['calendar.import', 'calendar.update']),
+  authorize(['calendar.update']),
   upload.single('file'),
-  authorizeProgram('calendar.import', (req) => String(req.body?.program_code || '')),
+  authorizeProgram('calendar.update', (req) => String(req.body?.program_code || '')),
   livestreamController.previewMappingImport
 );
 router.put(
   '/mapping/import',
-  authorize(['calendar.import', 'calendar.update']),
+  authorize(['calendar.update']),
   authorizeProgram('calendar.update', (req) => String(req.body?.program_code || '')),
   authorizePrograms('calendar.update', (req) => calendarCodesByIds(
     (req.body?.updates || []).map((item: any) => item?.id)

@@ -7,6 +7,14 @@ import { Prisma } from '@prisma/client';
 
 const router = Router();
 const { authenticate, authorize, authorizeFields, authorizeProgram, authorizePrograms } = authMiddleware;
+const authorizeCalendarList = (req: any, res: any, next: any) => {
+  const programCode = String(req.query.code_exact || req.query.code || '').trim();
+  const isAdmin = req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin');
+  // Admin được phép rà lịch nhiều chương trình theo khoảng thời gian. Các vai
+  // trò khác vẫn buộc phải chọn chương trình để không vượt phạm vi phân quyền.
+  if (!programCode && isAdmin) return next();
+  return authorizeProgram('calendar.view', () => programCode)(req, res, next);
+};
 const calendarCodesByIds = async (ids: unknown[]) => {
   const validIds = ids.map(Number).filter((id) => Number.isInteger(id) && id > 0);
   if (!validIds.length) return [];
@@ -125,7 +133,7 @@ router.use(authenticate);
 router.get(
   '/',
   authorize(['calendar.view']),
-  authorizeProgram('calendar.view', (req) => String(req.query.code_exact || req.query.code || '')),
+  authorizeCalendarList,
   livestreamController.getCalendar
 );
 router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);

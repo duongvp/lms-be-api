@@ -160,7 +160,8 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
   try {
     const result = await livestreamService.getCalendar(
       req.query,
-      getProgramScopeFilter(req.user, 'calendar.view')
+      getProgramScopeFilter(req.user, 'calendar.view'),
+      Boolean(req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin'))
     );
     const data = await FieldPermissionService.filterVisibleRecords(
       req.user?.roleIds || [],

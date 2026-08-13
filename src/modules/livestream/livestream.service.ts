@@ -1860,7 +1860,11 @@ export const assertCalendarIdsInProgram = async (ids: number[], programCode: str
 };
 
 // 3. Lấy danh sách lịch
-export const getCalendar = async (query: any, allowedPrograms: string[] | null = null) => {
+export const getCalendar = async (
+  query: any,
+  allowedPrograms: string[] | null = null,
+  allowAllPrograms = false
+) => {
   const page = normalizeNumber(query.page, 'page') ?? 1;
   const limit = normalizeNumber(query.limit, 'limit') ?? 10;
 
@@ -1880,7 +1884,7 @@ export const getCalendar = async (query: any, allowedPrograms: string[] | null =
   const timeStatus = normalizeString(query.time_status);
   const startTime = normalizeDate(query.start_time, 'start_time');
   const endTime = normalizeDate(query.end_time, 'end_time');
-  if (!exactCode && !code) {
+  if (!exactCode && !code && !allowAllPrograms) {
     throw new Error('Vui lòng chọn Chương trình');
   }
   const sortFields = (normalizeString(query.sort_by) || '')
@@ -2463,6 +2467,7 @@ export const updateBulk = async (
 
           const dataToUpdate: any = {};
           if (item.teacher) dataToUpdate.teacher = item.teacher;
+          if (typeof item.lesson_name === 'string') dataToUpdate.lesson_name = item.lesson_name.trim();
           if (item.assistant_teacher !== undefined) {
             dataToUpdate.assistant_teacher = item.assistant_teacher;
           }

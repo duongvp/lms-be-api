@@ -13,6 +13,10 @@ import {
   enqueueManyCalendarTeamsNotifications,
 } from '../teams-notifications';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
+import {
+  resolveCalendarTeacherProfile,
+  syncCalendarTeachingUsers,
+} from './calendar-user-sync.service';
 
 const prisma = new PrismaClient();
 const hmoSectionsCache = new Map<string, { expiresAt: number; data: any[] }>();
@@ -205,22 +209,12 @@ const normalizeTeachingAssignments = async (client: any, data: any) => {
   }
 
   if (teacher) {
-    const teacherProfiles = await client.$queryRaw(Prisma.sql`
-      SELECT username, display_name
-      FROM teacher_profiles
-      WHERE username = ${teacher}
-        AND can_view_stream_key = 1
-        AND status = 1
-      LIMIT 1
-    `) as Array<{ username: string; display_name: string | null }>;
-    const teacherProfile = teacherProfiles[0];
-    if (teacherProfile) {
-      teacher = String(teacherProfile.display_name || teacherProfile.username).trim();
-    }
+    const teacherProfile = await resolveCalendarTeacherProfile(client, teacher);
+    teacher = String(teacherProfile?.username || '').trim();
   }
 
-  // calendar.teacher is free text/display_name, not a teacher_profile username.
-  // Only assistants are account assignments and need profile validation.
+  // Từ đây calendar.teacher và calendar.assistant_teacher đều lưu username.
+  // Các bản ghi legacy có display_name vẫn được xử lý trong user synchronizer.
   if (assistants.length) {
     const profiles = await client.$queryRaw(Prisma.sql`
       SELECT username, can_view_stream_key
@@ -275,7 +269,11 @@ const hydrateAssistantTeachers = async (client: any, records: any[]) => {
   return records;
 };
 
-const createCalendarRecord = async (client: any, data: any) => {
+const createCalendarRecord = async (
+  client: any,
+  data: any,
+  previousTeachingCalendar: any | null = null
+) => {
   const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
   const assistantTeacher = data.assistant_teacher ?? null;
   const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'session_id');
@@ -300,6 +298,7 @@ const createCalendarRecord = async (client: any, data: any) => {
   }
   const result = { ...created };
   await hydrateAssistantTeachers(client, [result]);
+  await syncCalendarTeachingUsers(client, previousTeachingCalendar, result);
   return result;
 };
 
@@ -308,6 +307,9 @@ const updateCalendarRecord = async (
   id: number,
   data: any
 ) => {
+  const before = await client.calendar.findUnique({ where: { id } });
+  if (!before) throw new Error('Not found');
+  await hydrateAssistantTeachers(client, [before]);
   const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
   const assistantTeacher = data.assistant_teacher ?? null;
   const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'session_id');
@@ -332,6 +334,7 @@ const updateCalendarRecord = async (
   }
   const result = { ...updated };
   await hydrateAssistantTeachers(client, [result]);
+  await syncCalendarTeachingUsers(client, before, result);
   return result;
 };
 
@@ -1281,9 +1284,9 @@ export const createValidatedCalendarImport = async (
 };
 
 const cancelWithoutMakeup = async (tx: any, current: any, reason: string) => {
-  return await tx.calendar.update({
-    where: { id: current.id },
-    data: { lesson_status: 1, cancel_reason: reason },
+  return updateCalendarRecord(tx, current.id, {
+    lesson_status: 1,
+    cancel_reason: reason,
   });
 };
 
@@ -1329,15 +1332,12 @@ const cancelWithMakeup = async (tx: any, current: any, payload: any, reason: str
 
   // Giải phóng key gốc trước, sau đó gắn chính key đó cho lịch học bù.
   // Mapping không đổi vì vẫn trỏ đến key gốc đang hoạt động.
-  const updatedCurrent = await tx.calendar.update({
-    where: { id: current.id },
-    data: {
-      lesson_status: 1,
-      cancel_reason: reason,
-      key: canceledKey,
-    },
+  const updatedCurrent = await updateCalendarRecord(tx, current.id, {
+    lesson_status: 1,
+    cancel_reason: reason,
+    key: canceledKey,
   });
-  const createdSession = await createCalendarRecord(tx, newSessionData);
+  const createdSession = await createCalendarRecord(tx, newSessionData, current);
 
   return { canceled_session: updatedCurrent, created_session: createdSession };
 };
@@ -1394,15 +1394,12 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any, reason: 
   });
 
   const canceledKey = await generateUniqueCanceledKey(tx, current.key);
-  const updatedCurrent = await tx.calendar.update({
-    where: { id: current.id },
-    // Key gốc đi cùng lesson xuống slot kế tiếp. Row nghỉ dùng key riêng để
-    // lưu lịch sử và không chiếm key đang hoạt động của lesson.
-    data: {
-      lesson_status: 1,
-      cancel_reason: reason,
-      key: canceledKey,
-    },
+  // Key gốc đi cùng lesson xuống slot kế tiếp. Row nghỉ dùng key riêng để
+  // lưu lịch sử và không chiếm key đang hoạt động của lesson.
+  const updatedCurrent = await updateCalendarRecord(tx, current.id, {
+    lesson_status: 1,
+    cancel_reason: reason,
+    key: canceledKey,
   });
 
   const shiftedSessions = [];
@@ -1678,6 +1675,21 @@ export const updateSchedule = async (
     throw new Error('Chỉ được đánh dấu nghỉ học qua thao tác Nghỉ học để bắt buộc lưu lý do');
   }
 
+  const current = await prisma.calendar.findUnique({ where: { id } });
+  if (!current) throw new Error("Not found");
+  await hydrateAssistantTeachers(prisma, [current]);
+  assertCanUpdateSession(current);
+
+  if (data.code !== undefined && String(data.code) !== String(current.code)) {
+    throw new Error('Không được thay đổi code khi cập nhật lịch học');
+  }
+  if (
+    data.learn_number !== undefined
+    && Number(data.learn_number) !== Number(current.learn_number)
+  ) {
+    throw new Error('Không được thay đổi learn_number khi cập nhật lịch học');
+  }
+
   const rawMappingUpdate = data?.package_lesson_mappings;
   const auditReason = data?.reason ?? data?.change_reason;
   const hasMappingUpdate = Array.isArray(rawMappingUpdate);
@@ -1691,6 +1703,12 @@ export const updateSchedule = async (
     || data.lesson_id !== undefined
   ) {
     data = await hydrateLessonData(prisma, data);
+    if (
+      String(data.code) !== String(current.code)
+      || Number(data.learn_number) !== Number(current.learn_number)
+    ) {
+      throw new Error('Bài học mới phải giữ nguyên code và learn_number của lịch hiện tại');
+    }
   }
   normalizeRoom(data);
   await normalizeTeachingAssignments(prisma, data);
@@ -1699,11 +1717,8 @@ export const updateSchedule = async (
   delete data.new_session;
   delete data.reason;
   delete data.change_reason;
-
-  const current = await prisma.calendar.findUnique({ where: { id } });
-  if (!current) throw new Error("Not found");
-  await hydrateAssistantTeachers(prisma, [current]);
-  assertCanUpdateSession(current);
+  delete data.code;
+  delete data.learn_number;
   delete data.allow_past;
 
   if (data.start_time) data.start_time = new Date(data.start_time);
@@ -1762,6 +1777,7 @@ export const deleteSession = async (
   withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
     const current = await tx.calendar.findUnique({ where: { id } });
     if (!current) throw new Error("Not found");
+    await hydrateAssistantTeachers(tx, [current]);
     assertCanUpdateSession(current);
 
     if (current.key) {
@@ -1770,6 +1786,11 @@ export const deleteSession = async (
       });
     }
 
+    // Xóa lịch cũng phải thu hồi user room_id = 1 giống thao tác nghỉ học.
+    await syncCalendarTeachingUsers(tx, current, {
+      ...current,
+      lesson_status: 1,
+    });
     const deleted = await tx.calendar.delete({ where: { id } });
     await enqueueCalendarTeamsNotification(tx, {
       eventType: 'deleted',

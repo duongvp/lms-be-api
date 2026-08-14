@@ -2,7 +2,7 @@ export const SUBJECT_OPTIONS = [
   { subject_name: 'Toán', subject_code: 'TOAN' },
   { subject_name: 'Ngữ văn', subject_code: 'VAN' },
   { subject_name: 'Tiếng Anh', subject_code: 'ANH' },
-  { subject_name: 'Vật lý', subject_code: 'LY' },
+  { subject_name: 'Vật lí', subject_code: 'LY' },
   { subject_name: 'Hóa học', subject_code: 'HOA' },
   { subject_name: 'Sinh học', subject_code: 'SINH' },
   { subject_name: 'Lịch sử', subject_code: 'SU' },

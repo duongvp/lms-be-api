@@ -539,8 +539,10 @@ export const validateCalendarImportRows = (rows: Record<string, unknown>[]) => {
       learnNumbersByCode.set(code, learnNumber);
       const date = parseLiveDate(row.live_date);
       const time = parseTimeRange(row.time_range);
-      const startTime = `${date}T${time.start}:00+07:00`;
-      const endTime = `${date}T${time.end}:00+07:00`;
+      // Calendar dùng UTC components như giờ Việt Nam wall-clock, giống payload
+      // từ frontend. Không gắn +07:00 vì Date sẽ đổi ngày/giờ trước khi Prisma lưu.
+      const startTime = `${date}T${time.start}:00.000Z`;
+      const endTime = `${date}T${time.end}:00.000Z`;
       if (new Date(startTime) >= new Date(endTime)) {
         throw new Error('Giờ kết thúc phải sau giờ bắt đầu');
       }

@@ -82,13 +82,9 @@ export class RoomConfigService {
         throw new ApiError(`Dòng ${index + 1}: Cấu hình phải là JSON object`, 400);
       }
       return {
-        ...item,
         code,
         learn_number: learnNumber,
         config: config || {},
-        // Giáo viên và trợ giảng là dữ liệu của Lịch học, không được import ở đây.
-        teacher: undefined,
-        assistant_teacher: undefined,
         updated_by: updatedBy || item.updated_by || 'import',
       };
     });

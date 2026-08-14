@@ -1878,7 +1878,8 @@ export const getCalendar = async (
   const limit = normalizeNumber(query.limit, 'limit') ?? 10;
 
   if (page < 1) throw new Error('page phải lớn hơn 0');
-  if (limit < 1 || limit > 100) throw new Error('limit phải nằm trong khoảng 1-100');
+  // Bảng Quản lý lịch học cho phép người dùng theo dõi tối đa 300 buổi/trang.
+  if (limit < 1 || limit > 300) throw new Error('limit phải nằm trong khoảng 1-300');
 
   const skip = (page - 1) * limit;
   const take = limit;
@@ -1890,7 +1891,12 @@ export const getCalendar = async (
   const subject = normalizeString(query.subject);
   const classroom = normalizeString(query.classroom);
   const systemType = normalizeString(query.system_type);
-  const timeStatus = normalizeString(query.time_status);
+  const timeStatuses = Array.from(new Set(
+    String(query.time_status ?? '')
+      .split(',')
+      .map((status) => status.trim())
+      .filter(Boolean)
+  ));
   const startTime = normalizeDate(query.start_time, 'start_time');
   const endTime = normalizeDate(query.end_time, 'end_time');
   if (!exactCode && !code && !allowAllPrograms) {
@@ -1922,7 +1928,7 @@ export const getCalendar = async (
     throw new Error('system_type không hợp lệ');
   }
 
-  if (timeStatus && !['upcoming', 'ongoing', 'completed'].includes(timeStatus)) {
+  if (timeStatuses.some((status) => !['upcoming', 'ongoing', 'completed'].includes(status))) {
     throw new Error('time_status không hợp lệ');
   }
 
@@ -1967,17 +1973,24 @@ export const getCalendar = async (
       ...(endTime ? { lte: endTime } : {}),
     };
   }
-  if (timeStatus) {
+  if (timeStatuses.length && timeStatuses.length < 3) {
     const now = getVietnamWallClockDate();
-    const timeConditions: Prisma.calendarWhereInput[] = timeStatus === 'upcoming'
-      ? [{ start_time: { gt: now } }]
-      : timeStatus === 'completed'
-        ? [{ end_time: { lt: now } }]
-        : [
-            { start_time: { lte: now } },
-            { end_time: { gte: now } },
-          ];
-    where.AND = [...(Array.isArray(where.AND) ? where.AND : []), ...timeConditions];
+    const timeConditions: Prisma.calendarWhereInput[] = timeStatuses.map((status) => (
+      status === 'upcoming'
+        ? { start_time: { gt: now } }
+        : status === 'completed'
+          ? { end_time: { lt: now } }
+          : {
+              AND: [
+                { start_time: { lte: now } },
+                { end_time: { gte: now } },
+              ],
+            }
+    ));
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
+      { OR: timeConditions },
+    ];
   }
 
   const orderBy: Prisma.calendarOrderByWithRelationInput[] = sortFields.length

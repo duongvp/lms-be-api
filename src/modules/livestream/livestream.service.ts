@@ -1911,7 +1911,12 @@ export const getCalendar = async (
   let teacher = normalizeString(query.teacher);
   const subject = normalizeString(query.subject);
   const classroom = normalizeString(query.classroom);
-  const systemType = normalizeString(query.system_type);
+  const systemTypes = Array.from(new Set(
+    String(query.system_type ?? '')
+      .split(',')
+      .map((systemType) => systemType.trim())
+      .filter(Boolean)
+  ));
   const timeStatuses = Array.from(new Set(
     String(query.time_status ?? '')
       .split(',')
@@ -1945,7 +1950,7 @@ export const getCalendar = async (
     }
   }
 
-  if (systemType && !CALENDAR_SYSTEM_TYPES.includes(systemType)) {
+  if (systemTypes.some((systemType) => !CALENDAR_SYSTEM_TYPES.includes(systemType))) {
     throw new Error('system_type không hợp lệ');
   }
 
@@ -1987,7 +1992,8 @@ export const getCalendar = async (
   if (teacher) where.teacher = { contains: teacher };
   if (subject) where.subject = { contains: subject };
   if (classroom) where.channel_name = { contains: classroom };
-  if (systemType) where.system_type = systemType as any;
+  // Chọn cả Topclass và Topuni tương đương không lọc hệ thống.
+  if (systemTypes.length === 1) where.system_type = systemTypes[0] as any;
   if (startTime || endTime) {
     where.start_time = {
       ...(startTime ? { gte: startTime } : {}),

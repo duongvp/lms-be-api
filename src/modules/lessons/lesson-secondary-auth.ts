@@ -33,17 +33,16 @@ export const issueLessonSecondaryToken = (req: Request, password: unknown) => {
     throw new ApiError('Mật khẩu cấp 2 không đúng', 401);
   }
 
-  const configuredMinutes = Number(process.env.LESSONS_REAUTH_TTL_MINUTES);
-  const ttlMinutes = Number.isInteger(configuredMinutes)
-    ? Math.min(Math.max(configuredMinutes, 1), 480)
-    : 60;
+  // Token gắn với session đăng nhập hiện tại. Không đặt TTL để người dùng
+  // không bị yêu cầu nhập lại mật khẩu giữa phiên; đăng xuất sẽ đổi sessionId
+  // nên token cũ tự mất hiệu lực.
   const token = jwt.sign({
     type: TOKEN_SCOPE,
     userId: Number(req.user?.userId),
     sessionId: String(req.user?.sessionId || ''),
-  }, secret, { expiresIn: `${ttlMinutes}m` });
+  }, secret);
 
-  return { token, expiresInSeconds: ttlMinutes * 60 };
+  return { token, expiresInSeconds: null };
 };
 
 export const requireLessonSecondaryAuth = (

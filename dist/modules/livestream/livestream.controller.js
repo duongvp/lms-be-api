@@ -36,7 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
+exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const livestream_io_1 = require("./livestream.io");
@@ -181,7 +181,7 @@ const deleteSession = async (req, res, next) => {
 exports.deleteSession = deleteSession;
 const getCalendar = async (req, res, next) => {
     try {
-        const result = await livestreamService.getCalendar(req.query, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view'));
+        const result = await livestreamService.getCalendar(req.query, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view'), Boolean(req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin')));
         const data = await field_permission_service_1.default.filterVisibleRecords(req.user?.roleIds || [], 'calendar', result.data);
         const now = new Date();
         const dataWithSystemMetadata = data.map((record, index) => {
@@ -226,30 +226,62 @@ const importTemplate = async (req, res) => {
     res.send((0, livestream_io_1.buildCalendarTemplate)(format));
 };
 exports.importTemplate = importTemplate;
+const getGoogleSheetCsv = async (sheetUrl) => {
+    let parsed;
+    try {
+        parsed = new URL(sheetUrl);
+    }
+    catch {
+        throw new Error('Link Google Sheets không hợp lệ');
+    }
+    if (parsed.hostname !== 'docs.google.com')
+        throw new Error('Chỉ hỗ trợ link Google Sheets từ docs.google.com');
+    const match = parsed.pathname.match(/^\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+    if (!match)
+        throw new Error('Link Google Sheets không hợp lệ');
+    const gid = parsed.searchParams.get('gid') || '0';
+    const response = await fetch(`https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${encodeURIComponent(gid)}`, { signal: AbortSignal.timeout(15_000) });
+    if (!response.ok)
+        throw new Error('Không thể đọc Google Sheets. Hãy kiểm tra quyền chia sẻ công khai.');
+    return Buffer.from(await response.arrayBuffer());
+};
 const importFile = async (req, res) => {
     try {
-        if (!req.file) {
-            res.status(400).json({ success: false, message: 'Vui lòng chọn file import' });
+        const sheetUrl = String(req.body?.sheet_url || '').trim();
+        if (!req.file && !sheetUrl) {
+            res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
             return;
         }
-        const rows = (0, livestream_io_1.parseCalendarImportFile)(req.file.buffer, req.file.originalname);
+        const buffer = req.file?.buffer ?? await getGoogleSheetCsv(sheetUrl);
+        const originalName = req.file?.originalname ?? 'google-sheet.csv';
+        const rows = (0, livestream_io_1.parseCalendarImportFile)(buffer, originalName);
         const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
         const programCode = String(req.body?.program_code || '').trim();
-        if (!programCode) {
-            res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
+        const isAdmin = Boolean(req.user?.permissions?.includes('*')
+            || req.user?.roles?.some((role) => (String(role?.code || role?.name || role).toLowerCase() === 'admin')));
+        if (!isAdmin && !programCode) {
+            res.status(400).json({
+                success: false,
+                message: 'Vui lòng lọc đúng Chương trình trước khi import lịch học',
+            });
             return;
         }
-        await livestreamService.assertSchedulingProgramExists(programCode);
-        importRows.forEach((row) => {
-            if (String(row.calendar.code) !== programCode) {
-                errors.push({
-                    row: row.row,
-                    field: 'Mã buổi học',
-                    errorCode: 'INVALID_ROW',
-                    message: `Dòng import không thuộc Chương trình ${programCode}`,
-                });
-            }
-        });
+        if (!isAdmin) {
+            importRows.forEach((row) => {
+                if (row.calendar.code !== programCode)
+                    errors.push({
+                        row: row.row,
+                        field: 'code',
+                        errorCode: 'INVALID_ROW',
+                        message: `Dòng này thuộc Chương trình ${row.calendar.code}; chỉ được import ${programCode}`,
+                    });
+            });
+            (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.import', programCode);
+        }
+        else {
+            Array.from(new Set(importRows.map((row) => row.calendar.code)))
+                .forEach((code) => (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.import', code));
+        }
         if (errors.length) {
             const invalidRows = new Set(errors.map((error) => error.row)).size;
             res.status(400).json({
@@ -288,6 +320,81 @@ const importFile = async (req, res) => {
     }
 };
 exports.importFile = importFile;
+const updateImportFile = async (req, res) => {
+    try {
+        const sheetUrl = String(req.body?.sheet_url || '').trim();
+        if (!req.file && !sheetUrl) {
+            res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
+            return;
+        }
+        const buffer = req.file?.buffer ?? await getGoogleSheetCsv(sheetUrl);
+        const originalName = req.file?.originalname ?? 'google-sheet.csv';
+        const rows = (0, livestream_io_1.parseCalendarImportFile)(buffer, originalName);
+        const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
+        const programCode = String(req.body?.program_code || '').trim();
+        const isAdmin = Boolean(req.user?.permissions?.includes('*')
+            || req.user?.roles?.some((role) => (String(role?.code || role?.name || role).toLowerCase() === 'admin')));
+        if (!isAdmin && !programCode) {
+            res.status(400).json({
+                success: false,
+                message: 'Vui lòng lọc đúng Chương trình trước khi cập nhật lịch học',
+            });
+            return;
+        }
+        if (!isAdmin) {
+            importRows.forEach((row) => {
+                if (row.calendar.code !== programCode)
+                    errors.push({
+                        row: row.row,
+                        field: 'code',
+                        errorCode: 'INVALID_ROW',
+                        message: `Dòng này thuộc Chương trình ${row.calendar.code}; chỉ được cập nhật ${programCode}`,
+                    });
+            });
+            (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.update', programCode);
+        }
+        else {
+            Array.from(new Set(importRows.map((row) => row.calendar.code)))
+                .forEach((code) => (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.update', code));
+        }
+        if (errors.length) {
+            const invalidRows = new Set(errors.map((error) => error.row)).size;
+            res.status(400).json({
+                success: false,
+                status: 'validation_error',
+                message: 'File cập nhật có dữ liệu không hợp lệ',
+                summary: {
+                    totalRows: rows.length,
+                    validRows: Math.max(0, rows.length - invalidRows),
+                    invalidRows,
+                },
+                errors,
+            });
+            return;
+        }
+        const result = await (0, calendar_import_service_1.updateCalendarsFromSheet)(importRows, getChangeActor(req));
+        if (result.status === 'validation_error') {
+            res.status(400).json({
+                success: false,
+                status: result.status,
+                message: 'File cập nhật có dữ liệu không hợp lệ',
+                summary: result.summary,
+                errors: result.errors,
+            });
+            return;
+        }
+        res.status(200).json({
+            success: true,
+            status: result.status,
+            message: 'Cập nhật lịch học thành công',
+            data: result,
+        });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.updateImportFile = updateImportFile;
 const previewMappingUpdates = async (req, res) => {
     try {
         const result = await livestreamService.previewCalendarMappingUpdates(req.body);

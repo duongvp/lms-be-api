@@ -11,6 +11,13 @@ const LESSON_BASIC_COLUMNS: LessonExportColumn[] = [
   { key: 'lesson_name', header: 'Tên bài học' },
   { key: 'status', header: 'Trạng thái' },
 ];
+const PROGRAM_IMPORT_COLUMNS: LessonExportColumn[] = [
+  { key: 'system_type', header: 'Hệ thống' },
+  { key: 'grade', header: 'Khối' },
+  { key: 'subject_name', header: 'Môn học' },
+  { key: 'subject_code', header: 'Mã chương trình' },
+  ...LESSON_BASIC_COLUMNS,
+];
 
 export const LESSON_EXPORT_COLUMNS = LESSON_BASIC_COLUMNS;
 
@@ -24,8 +31,15 @@ const HEADER_ALIASES: Record<string, string> = {
   subject_name: 'subject_name',
   'mã môn học': 'subject_code',
   'ma mon hoc': 'subject_code',
+  'mã chương trình': 'subject_code',
+  'ma chuong trinh': 'subject_code',
+  'program code': 'subject_code',
+  program_code: 'subject_code',
   'subject code': 'subject_code',
   subject_code: 'subject_code',
+  system_type: 'system_type',
+  'hệ thống': 'system_type',
+  'he thong': 'system_type',
   'learn number': 'learn_number',
   learn_number: 'learn_number',
   'số thứ tự bài': 'learn_number',
@@ -225,8 +239,7 @@ const toExportRow = (row: any, columns: LessonExportColumn[]) => {
   return Object.fromEntries(columns.map((column) => [column.header, row[column.key] ?? '']));
 };
 
-export const buildLessonWorkbookBuffer = (rows: any[], minimumDocumentCount = 1) => {
-  const columns = getExportColumns();
+export const buildLessonWorkbookBuffer = (rows: any[], minimumDocumentCount = 1, columns = getExportColumns()) => {
   const worksheet = XLSX.utils.json_to_sheet(rows.map((row) => toExportRow(row, columns)), {
     header: columns.map((column) => column.header),
   });
@@ -244,8 +257,7 @@ const escapeCsvValue = (value: unknown) => {
   return text;
 };
 
-export const buildLessonCsvBuffer = (rows: any[], minimumDocumentCount = 1) => {
-  const columns = getExportColumns();
+export const buildLessonCsvBuffer = (rows: any[], minimumDocumentCount = 1, columns = getExportColumns()) => {
   const lines = [
     columns.map((column) => escapeCsvValue(column.header)).join(','),
     ...rows.map((row) => {
@@ -265,6 +277,16 @@ export const buildLessonTemplateBuffer = (format: LessonExportFormat) => {
   return format === 'csv'
     ? buildLessonCsvBuffer(example)
     : buildLessonWorkbookBuffer(example);
+};
+
+export const buildProgramImportTemplateBuffer = (format: LessonExportFormat) => {
+  const example = [{
+    system_type: 'topuni', grade: 12, subject_name: 'Toán', subject_code: 'toan-12-2027',
+    learn_number: 1, lesson_name: 'Bài học mẫu', status: 1,
+  }];
+  return format === 'csv'
+    ? buildLessonCsvBuffer(example, 1, PROGRAM_IMPORT_COLUMNS)
+    : buildLessonWorkbookBuffer(example, 1, PROGRAM_IMPORT_COLUMNS);
 };
 
 export const parseLessonImportFile = (buffer: Buffer, originalName: string) => {

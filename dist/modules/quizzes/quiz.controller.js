@@ -174,23 +174,7 @@ const importFile = async (req, res) => {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
     }
 };
-const submissions = async (req, res) => {
-    try {
-        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, quiz_service_1.getQuizSubmissions)((0, quiz_validation_1.validateQuizId)(req.params.quizId), (0, quiz_validation_1.validateQuizSubmissionQuery)(req.query)));
-    }
-    catch (error) {
-        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
-    }
-};
-const analytics = async (req, res) => {
-    try {
-        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, quiz_service_1.getExistingQuizAnalytics)((0, quiz_validation_1.validateQuizId)(req.params.quizId)));
-    }
-    catch (error) {
-        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
-    }
-};
 exports.default = {
     list, options, classes, lessons, indexSuggestion, detail, create, update, remove, restore, bulkUpdate, reorder,
-    exportFile, template, importFile, submissions, analytics,
+    exportFile, template, importFile,
 };

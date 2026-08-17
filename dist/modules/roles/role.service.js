@@ -20,10 +20,7 @@ const ACTION_LABELS = {
     grade: 'Chấm điểm',
     reset_password: 'Đặt lại mật khẩu',
     status: 'Đổi trạng thái',
-    'teacher.view': 'Xem phân công',
-    'teacher.assign': 'Gán phân công',
-    'teacher.update': 'Sửa phân công',
-    'teacher.remove': 'Gỡ phân công',
+    'teacher.manage': 'Quản lý phân công',
     // thêm các action khác nếu cần
 };
 // Hàm lấy tên hiển thị từ action code

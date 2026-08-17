@@ -90,6 +90,8 @@ const normalizeHeader = (value) => String(value ?? '')
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ');
 const HEADER_ALIASES = {
+    code: 'code',
+    subject: 'subject',
     mon: 'subject',
     'mon hoc': 'subject',
     'ma buoi hoc': 'code',
@@ -102,6 +104,26 @@ const HEADER_ALIASES = {
     'tro giang': 'assistant_name',
     'email gv': 'teacher_email',
     'email tg': 'assistant_email',
+    'start time': 'start_time',
+    'end time': 'end_time',
+    'learn number': 'learn_number',
+    teacher: 'teacher',
+    'lesson name': 'lesson_name',
+    'lesson document': 'lesson_document',
+    'evg banner': 'evg_banner',
+    'evg stream': 'evg_stream',
+    'lesson count': 'lesson_count',
+    'system type': 'system_type',
+    'package id': 'package_ids',
+    'package ids': 'package_ids',
+    packageid: 'package_ids',
+    'course id': 'course_ids',
+    'course ids': 'course_ids',
+    courseid: 'course_ids',
+    'lesson id': 'lesson_ids',
+    'lesson ids': 'lesson_ids',
+    lessonid: 'lesson_ids',
+    key: 'key',
 };
 const mapImportHeader = (value) => {
     const header = normalizeHeader(value);
@@ -133,6 +155,8 @@ const DATA_MARKER_KEYS = new Set([
     'course_ids',
     'lesson_ids',
     'package_ids',
+    'start_time',
+    'end_time',
 ]);
 const isRestRow = (row) => ([row.code, row.lesson_name].some((value) => (normalizeHeader(value).startsWith('nghi'))));
 const normalizeMatrixRows = (matrix) => {
@@ -150,16 +174,19 @@ const normalizeMatrixRows = (matrix) => {
             score: keys.size,
             requiredCount,
             hasCode: keys.has('code'),
+            keys,
         };
     })
-        .filter((candidate) => candidate.hasCode && candidate.requiredCount >= 3)
+        .filter((candidate) => (candidate.hasCode
+        && (candidate.requiredCount >= 3
+            || (candidate.keys.has('start_time') && candidate.keys.has('end_time')))))
         .sort((left, right) => (right.requiredCount - left.requiredCount
         || right.score - left.score
         || left.index - right.index));
     const header = candidates[0];
     if (!header) {
-        throw new Error('Không tìm thấy hàng tiêu đề hợp lệ. File cần có các cột Mã buổi học, '
-            + 'Ngày live, Khung giờ, ID course và ID Bài giảng.');
+        throw new Error('Không tìm thấy hàng tiêu đề hợp lệ. File cần có code + start_time + end_time, '
+            + 'hoặc format vận hành gồm Mã buổi học, Ngày live, Khung giờ và HMO ID.');
     }
     return matrix
         .slice(header.index + 1)
@@ -464,7 +491,35 @@ const normalizeOptionalTeacher = (value) => {
 };
 const toDocumentJson = (value) => {
     const document = String(value ?? '').trim();
-    return document ? JSON.stringify([document]) : undefined;
+    if (!document)
+        return undefined;
+    try {
+        const parsed = JSON.parse(document);
+        if (Array.isArray(parsed))
+            return JSON.stringify(parsed);
+    }
+    catch {
+        // Giá trị link/text đơn vẫn được hỗ trợ như format vận hành cũ.
+    }
+    return JSON.stringify([document]);
+};
+const parseDirectDateTime = (value, field) => {
+    const text = requiredText(value, field).replace(' ', 'T');
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (!match)
+        throw new Error(`${field} phải có định dạng YYYY-MM-DD HH:mm:ss`);
+    const normalized = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6] || '00'}.000Z`;
+    if (Number.isNaN(new Date(normalized).getTime()))
+        throw new Error(`${field} không hợp lệ`);
+    return normalized;
+};
+const optionalNonNegativeInteger = (value, field) => {
+    if (value === undefined || value === null || value === '')
+        return undefined;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 0)
+        throw new Error(`${field} không hợp lệ`);
+    return parsed;
 };
 const validateCalendarImportRows = (rows) => {
     const errors = [];
@@ -484,7 +539,7 @@ const validateCalendarImportRows = (rows) => {
     const configuredMaxRows = Number(process.env.CALENDAR_IMPORT_MAX_ROWS);
     const maxRows = Number.isInteger(configuredMaxRows) && configuredMaxRows > 0
         ? configuredMaxRows
-        : 1000;
+        : 300;
     if (rows.length > maxRows) {
         return {
             importRows,
@@ -505,30 +560,52 @@ const validateCalendarImportRows = (rows) => {
             const code = requiredText(row.code, 'Mã buổi học');
             if (code.length > 30)
                 throw new Error('Mã buổi học không được vượt quá 30 ký tự');
-            const learnNumber = (learnNumbersByCode.get(code) ?? 0) + 1;
+            const directFormat = Boolean(String(row.start_time ?? '').trim() || String(row.end_time ?? '').trim());
+            const suppliedLearnNumber = optionalNonNegativeInteger(row.learn_number, 'Số thứ tự bài');
+            if (suppliedLearnNumber !== undefined && suppliedLearnNumber < 1)
+                throw new Error('Số thứ tự bài phải lớn hơn 0');
+            const learnNumber = suppliedLearnNumber ?? (learnNumbersByCode.get(code) ?? 0) + 1;
             learnNumbersByCode.set(code, learnNumber);
-            const date = parseLiveDate(row.live_date);
-            const time = parseTimeRange(row.time_range);
-            const startTime = `${date}T${time.start}:00+07:00`;
-            const endTime = `${date}T${time.end}:00+07:00`;
+            let startTime;
+            let endTime;
+            if (directFormat) {
+                startTime = parseDirectDateTime(row.start_time, 'start_time');
+                endTime = parseDirectDateTime(row.end_time, 'end_time');
+            }
+            else {
+                const date = parseLiveDate(row.live_date);
+                const time = parseTimeRange(row.time_range);
+                startTime = `${date}T${time.start}:00.000Z`;
+                endTime = `${date}T${time.end}:00.000Z`;
+            }
             if (new Date(startTime) >= new Date(endTime)) {
                 throw new Error('Giờ kết thúc phải sau giờ bắt đầu');
             }
-            const courseIds = parseIds(row.course_ids, 'ID course', 'INVALID_COURSE_ID');
-            const lessonIds = parseIds(row.lesson_ids, 'ID Bài giảng', 'INVALID_LESSON_ID');
-            const packageIds = parsePackageIds(row.package_ids);
-            const teacher = normalizeOptionalTeacher(row.teacher_email);
+            // Format tạo lịch trực tiếp chỉ xác định bài học nội bộ bằng code và
+            // learn_number. Package/Course đã quản lý tại bài học; Lesson ID HMO
+            // được gán ở nghiệp vụ đồng bộ sau khi lịch đã được tạo.
+            const courseIds = directFormat ? [] : parseIds(row.course_ids, 'Course ID', 'INVALID_COURSE_ID');
+            const lessonIds = directFormat ? [] : parseIds(row.lesson_ids, 'Lesson ID', 'INVALID_LESSON_ID');
+            const packageIds = directFormat ? [] : parsePackageIds(row.package_ids);
+            const teacher = directFormat
+                ? limitedText(row.teacher, 'Giáo viên', 150)
+                : normalizeOptionalTeacher(row.teacher_email);
             const assistantTeacher = normalizeAssignment(row.assistant_email);
             const subject = limitedText(row.subject, 'Môn', 100, true);
             const lessonName = limitedText(row.lesson_name, 'Tên bài giảng', 400, true);
             const lessonExercise = limitedText(row.lesson_baitap, 'Nhiệm vụ học tập', 500);
+            const systemType = String(row.system_type || (directFormat ? '' : 'topclass')).trim().toLowerCase();
+            if (systemType !== 'topclass' && systemType !== 'topuni')
+                throw new Error('system_type chỉ nhận topclass hoặc topuni');
             importRows.push({
                 row: excelRow,
+                sourceFormat: directFormat ? 'direct' : 'operational',
+                sourceKey: limitedText(row.key, 'key', 100),
                 packageIds,
                 courseIds,
                 lessonIds,
                 calendar: {
-                    system_type: 'topclass',
+                    system_type: systemType,
                     code,
                     learn_number: learnNumber,
                     subject,
@@ -536,6 +613,9 @@ const validateCalendarImportRows = (rows) => {
                     assistant_teacher: assistantTeacher || undefined,
                     lesson_name: lessonName,
                     lesson_document: toDocumentJson(row.lesson_document),
+                    evg_banner: limitedText(row.evg_banner, 'evg_banner', 500),
+                    evg_stream: limitedText(row.evg_stream, 'evg_stream', 500),
+                    lesson_count: optionalNonNegativeInteger(row.lesson_count, 'lesson_count'),
                     lesson_baitap: lessonExercise,
                     start_time: startTime,
                     end_time: endTime,
@@ -597,58 +677,45 @@ const getCalendarFileContentType = (format) => (format === 'csv'
     : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 exports.getCalendarFileContentType = getCalendarFileContentType;
 const buildCalendarTemplate = (format) => {
+    const headers = [
+        'code', 'subject', 'start_time', 'end_time', 'learn_number', 'teacher',
+        'lesson_name', 'lesson_document', 'evg_banner', 'evg_stream',
+        'lesson_count', 'system_type', 'key',
+    ];
     const sample = [
-        'Toán',
-        'TOV_TC_T02',
-        'Các dạng câu hỏi điển hình về hàm số',
-        'Nguyễn Văn A',
-        '01/08/2026',
-        '7',
-        '19:00-21:00',
-        'https://example.com/tai-lieu-live.pdf',
-        'https://example.com/nhiem-vu-hoc-tap',
-        '',
-        '',
-        'Trần Thị B',
-        '',
-        '3108,3117',
-        '168357,168572',
-        '9025,9028',
-        'giaovien@example.com',
-        'trogiang@example.com',
+        'tongon2dinhluonghsav2027', 'Định lượng', '2026-08-17 21:00:00',
+        '2026-08-17 22:00:00', 1, 'Phạm Thái Sơn',
+        'Nhập môn HSA - phần Tư duy định lượng',
+        '[{"link":"https://example.com/tai-lieu.pdf","title":"Tài liệu","type":"pdf"}]',
+        '', '', '', 'topuni', 'tu_2627_tongon2dinhluonghsav2027_1',
     ];
     if (format === 'csv') {
         return Buffer.from(`\uFEFF${[
-            exports.CALENDAR_IMPORT_FILE_COLUMNS.map(escapeCsvValue).join(','),
+            headers.map(escapeCsvValue).join(','),
             sample.map(escapeCsvValue).join(','),
         ].join('\n')}`, 'utf8');
     }
     const worksheet = XLSX.utils.aoa_to_sheet([
-        [...exports.CALENDAR_IMPORT_FILE_COLUMNS],
+        headers,
         sample,
     ]);
     worksheet['!cols'] = [
-        { wch: 16 },
+        { wch: 32 },
         { wch: 20 },
-        { wch: 42 },
-        { wch: 24 },
+        { wch: 22 },
+        { wch: 22 },
         { wch: 14 },
-        { wch: 8 },
-        { wch: 18 },
+        { wch: 24 },
         { wch: 38 },
         { wch: 38 },
         { wch: 28 },
         { wch: 16 },
-        { wch: 24 },
-        { wch: 28 },
-        { wch: 36 },
-        { wch: 36 },
-        { wch: 36 },
-        { wch: 30 },
-        { wch: 30 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 38 },
     ];
     worksheet['!autofilter'] = {
-        ref: `A1:${XLSX.utils.encode_col(exports.CALENDAR_IMPORT_FILE_COLUMNS.length - 1)}2`,
+        ref: `A1:${XLSX.utils.encode_col(headers.length - 1)}2`,
     };
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Import Calendar');

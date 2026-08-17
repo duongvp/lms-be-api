@@ -26,11 +26,13 @@ export type CalendarImportError = {
 
 export type CalendarImportRow = {
   row: number;
+  sourceFormat: 'direct' | 'operational';
+  sourceKey?: string;
   packageIds: string[];
   courseIds: string[];
   lessonIds: string[];
   calendar: {
-    system_type: 'topclass';
+    system_type: 'topclass' | 'topuni';
     code: string;
     learn_number: number;
     subject?: string;
@@ -42,6 +44,11 @@ export type CalendarImportRow = {
     start_time: string;
     end_time: string;
     lesson_status: number;
+    session_id?: bigint;
+    lesson_count?: number;
+    evg_banner?: string;
+    evg_stream?: string;
+    skip_teacher_profile_validation?: boolean;
   };
 };
 
@@ -74,6 +81,7 @@ export type CalendarImportSummary = {
   invalidRows: number;
   successRows?: number;
   failedRows?: number;
+  unchangedRows?: number;
   uniquePackageIds: number;
   uniqueCourseIds: number;
   uniqueLessonIds: number;

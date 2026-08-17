@@ -14,6 +14,7 @@ import {
   findLessonsByGroup,
   findPastScheduledLessonIds,
   importLessons,
+  importNewProgramLessons,
   reorderLessonsInGroup,
   deleteLessonIfUnscheduled,
   updateLesson,
@@ -35,6 +36,7 @@ import {
 import {
   buildLessonExportBuffer,
   buildLessonTemplateBuffer,
+  buildProgramImportTemplateBuffer,
   getLessonExportContentType,
 } from './lesson.io';
 
@@ -101,14 +103,15 @@ export const createNewLesson = async (payload: LessonPayload) => {
   if (existingProgram?.subject_name) {
     payload = {
       ...payload,
-      grade: Number(existingProgram.grade ?? payload.grade),
+      grade: existingProgram.grade ?? payload.grade,
+      system_type: existingProgram.system_type ?? payload.system_type,
       subject_name: String(existingProgram.subject_name).trim(),
     };
   }
   if (payload.learn_number !== undefined) {
     const existing = await findLessonByIdentity(payload.grade, payload.subject_code, payload.learn_number);
     if (existing) {
-      throw new ApiError('Bài học với khối, môn học và learn_number này đã tồn tại', 400);
+      throw new ApiError('Bài học với mã chương trình và số thứ tự này đã tồn tại', 400);
     }
   }
 
@@ -140,6 +143,7 @@ export const createNewProgram = async (payload: LessonPayload) => {
   });
   return {
     grade: payload.grade,
+    system_type: payload.system_type ?? 'topclass',
     subject_code: payload.subject_code,
     subject_name: payload.subject_name,
     first_lesson: firstLesson,
@@ -266,13 +270,19 @@ export const getLessonImportTemplate = (format: 'csv' | 'xlsx') => ({
   filename: `lessons-import-template.${format}`,
 });
 
+export const getProgramImportTemplate = (format: 'csv' | 'xlsx') => ({
+  buffer: buildProgramImportTemplateBuffer(format),
+  contentType: getLessonExportContentType(format),
+  filename: `program-import-template.${format}`,
+});
+
 const findFirstMissingLearnNumber = (learnNumbers: Set<number>) => {
   let expected = 1;
   while (learnNumbers.has(expected)) expected += 1;
   return expected;
 };
 
-export const validateLessonImportSequence = async (rows: LessonImportRow[], mode: LessonImportMode) => {
+export const validateLessonImportSequence = async (rows: LessonImportRow[], mode: LessonImportMode, assumeEmpty = false) => {
   const errors: LessonImportValidationError[] = [];
   const rowsByGroup = new Map<string, LessonImportRow[]>();
 
@@ -283,7 +293,7 @@ export const validateLessonImportSequence = async (rows: LessonImportRow[], mode
 
   for (const groupRows of rowsByGroup.values()) {
     const firstRow = groupRows[0];
-    const existingLessons = await findLessonsByGroup(firstRow.grade, firstRow.subject_code);
+    const existingLessons = assumeEmpty ? [] : await findLessonsByGroup(firstRow.grade, firstRow.subject_code);
     const activeLearnNumbers = new Set<number>(
       existingLessons.map((lesson) => Number(lesson.learn_number))
     );
@@ -328,4 +338,9 @@ export const importLessonRows = async (rows: LessonImportRow[], mode: LessonImpo
   }
 
   return serializeBigInt(await importLessons(rows, mode));
+};
+
+export const importNewProgramLessonRows = async (rows: LessonImportRow[]) => {
+  if (!rows.length) throw new ApiError('File import không có dữ liệu', 400);
+  return serializeBigInt(await importNewProgramLessons(rows));
 };

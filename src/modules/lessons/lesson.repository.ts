@@ -3,7 +3,7 @@ import { LessonExportQuery, LessonImportMode, LessonImportResult, LessonImportRo
 
 // Các trường tài liệu/nội dung buổi học vẫn được giữ ở DB để không mất dữ liệu
 // cũ, nhưng không còn là dữ liệu của đề cương và không được trả về từ module này.
-const LESSON_COLUMNS = 'id, grade, subject_code, subject_name, learn_number, lesson_name, status, created_at, updated_at';
+const LESSON_COLUMNS = 'id, grade, system_type, subject_code, subject_name, learn_number, lesson_name, status, created_at, updated_at';
 
 const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => {
   if (lessonIds.length === 0) return;
@@ -26,7 +26,7 @@ const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => {
  */
 const syncCalendarSlotsAfterLessonReorder = async (
   tx: any,
-  grade: number,
+  grade: number | undefined,
   subjectCode: string,
   lessonIds: bigint[],
   learnNumbers: number[]
@@ -38,7 +38,7 @@ const syncCalendarSlotsAfterLessonReorder = async (
   await tx.$executeRawUnsafe(
     `UPDATE calendar AS calendar_row
      INNER JOIN lessons AS lesson
-       ON lesson.grade = ?
+       ON lesson.grade <=> ?
       AND lesson.subject_code = ?
       AND lesson.learn_number = calendar_row.learn_number
       AND lesson.status <> 0
@@ -151,6 +151,7 @@ export const findLessonSubjectOptions = async () => {
 export const findLessonProgramOptions = async (allowedPrograms: string[] | null = null) => {
   const rows = await prisma.$queryRawUnsafe<Array<{
     grade: number | null;
+    system_type: 'topclass' | 'topuni' | null;
     subject_name: string | null;
     subject_code: string;
   }>>(
@@ -164,13 +165,14 @@ export const findLessonProgramOptions = async (allowedPrograms: string[] | null 
               END),
               MAX(program.subject_name)
             ) AS subject_name,
-            MIN(program.grade) AS grade
+            MIN(program.grade) AS grade,
+            MAX(program.system_type) AS system_type
      FROM (
-       SELECT subject_code, subject_name, grade
+       SELECT subject_code, subject_name, grade, system_type
        FROM lessons
        WHERE subject_code IS NOT NULL AND TRIM(subject_code) <> ''
        UNION ALL
-       SELECT code AS subject_code, subject AS subject_name, NULL AS grade
+       SELECT code AS subject_code, subject AS subject_name, NULL AS grade, NULL AS system_type
        FROM calendar
        WHERE code IS NOT NULL AND TRIM(code) <> ''
      ) AS program
@@ -184,11 +186,12 @@ export const findLessonProgramOptions = async (allowedPrograms: string[] | null 
 
 export const findLessonProgramByCode = async (programCode: string) => {
   const rows = await prisma.$queryRawUnsafe<Array<{
-    grade: number;
+    grade: number | null;
+    system_type: 'topclass' | 'topuni';
     subject_name: string;
     subject_code: string;
   }>>(
-    `SELECT grade, subject_name, subject_code
+    `SELECT grade, system_type, subject_name, subject_code
      FROM lessons
      WHERE status <> 0 AND subject_code = ?
      ORDER BY id ASC
@@ -298,14 +301,14 @@ export const findLessonById = async (id: bigint) => {
 };
 
 export const findLessonByIdentity = async (
-  grade: number,
+  _grade: number | undefined,
   subjectCode: string,
   learnNumber: number,
   excludeId?: bigint
 ) => {
   const rows = await prisma.$queryRawUnsafe<any[]>(
-    `SELECT ${LESSON_COLUMNS} FROM lessons WHERE grade = ? AND subject_code = ? AND learn_number = ? AND status <> 0${excludeId ? ' AND id <> ?' : ''} LIMIT 1`,
-    ...(excludeId ? [grade, subjectCode, learnNumber, excludeId] : [grade, subjectCode, learnNumber])
+    `SELECT ${LESSON_COLUMNS} FROM lessons WHERE subject_code = ? AND learn_number = ? AND status <> 0${excludeId ? ' AND id <> ?' : ''} LIMIT 1`,
+    ...(excludeId ? [subjectCode, learnNumber, excludeId] : [subjectCode, learnNumber])
   );
   return rows[0] ?? null;
 };
@@ -319,10 +322,9 @@ export const findNextLearnNumber = async (grade: number, subjectCode: string) =>
   return Number(rows[0]?.next_learn_number ?? 1);
 };
 
-export const findLessonsByGroup = async (grade: number, subjectCode: string) => {
+export const findLessonsByGroup = async (_grade: number | undefined, subjectCode: string) => {
   return prisma.$queryRawUnsafe<any[]>(
-    `SELECT ${LESSON_COLUMNS} FROM lessons WHERE grade = ? AND subject_code = ? AND status <> 0 ORDER BY learn_number ASC, id ASC`,
-    grade,
+    `SELECT ${LESSON_COLUMNS} FROM lessons WHERE subject_code = ? AND status <> 0 ORDER BY learn_number ASC, id ASC`,
     subjectCode
   );
 };
@@ -351,8 +353,7 @@ export const createLesson = async (payload: LessonPayload) => {
     let learnNumber = payload.learn_number;
     if (learnNumber === undefined) {
       const nextRows = await tx.$queryRawUnsafe<any[]>(
-        'SELECT COALESCE(MAX(learn_number), 0) + 1 AS next_learn_number FROM lessons WHERE grade = ? AND subject_code = ? AND status <> 0',
-        payload.grade,
+        'SELECT COALESCE(MAX(learn_number), 0) + 1 AS next_learn_number FROM lessons WHERE subject_code = ? AND status <> 0',
         payload.subject_code
       );
       learnNumber = Number(nextRows[0]?.next_learn_number ?? 1);
@@ -360,10 +361,11 @@ export const createLesson = async (payload: LessonPayload) => {
 
     await tx.$executeRawUnsafe(
       `INSERT INTO lessons (
-        grade, subject_code, subject_name, learn_number,
+        grade, system_type, subject_code, subject_name, learn_number,
         lesson_name, status, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
       payload.grade,
+      payload.system_type ?? 'topclass',
       payload.subject_code,
       payload.subject_name,
       learnNumber,
@@ -417,7 +419,7 @@ export const bulkUpdateLessons = async (ids: bigint[], payload: Partial<LessonPa
 };
 
 export const reorderLessonsInGroup = async (
-  grade: number,
+  grade: number | undefined,
   subjectCode: string,
   orderedIds: bigint[],
   learnNumbers: number[]
@@ -435,7 +437,7 @@ export const reorderLessonsInGroup = async (
       `UPDATE lessons
        SET learn_number = -learn_number, updated_at = CURRENT_TIMESTAMP(3)
        WHERE id IN (${idPlaceholders})
-         AND grade = ? AND subject_code = ? AND status <> 0`,
+         AND grade <=> ? AND subject_code = ? AND status <> 0`,
       ...orderedIds,
       grade,
       subjectCode
@@ -448,7 +450,7 @@ export const reorderLessonsInGroup = async (
        SET learn_number = CASE id ${cases} ELSE learn_number END,
            updated_at = CURRENT_TIMESTAMP(3)
        WHERE id IN (${idPlaceholders})
-         AND grade = ? AND subject_code = ? AND status <> 0`,
+         AND grade <=> ? AND subject_code = ? AND status <> 0`,
       ...caseValues,
       ...orderedIds,
       grade,
@@ -486,8 +488,7 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
       if (learnNumber === undefined) {
         if (!nextLearnNumberByGroup.has(groupKey)) {
           const maxRows = await tx.$queryRawUnsafe<any[]>(
-            'SELECT COALESCE(MAX(learn_number), 0) + 1 AS next_learn_number FROM lessons WHERE grade = ? AND subject_code = ? AND status <> 0',
-            row.grade,
+            'SELECT COALESCE(MAX(learn_number), 0) + 1 AS next_learn_number FROM lessons WHERE subject_code = ? AND status <> 0',
             row.subject_code
           );
           nextLearnNumberByGroup.set(groupKey, Number(maxRows[0]?.next_learn_number ?? 1));
@@ -497,8 +498,7 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
       }
 
       const existingRows = await tx.$queryRawUnsafe<any[]>(
-        `SELECT ${LESSON_COLUMNS} FROM lessons WHERE grade = ? AND subject_code = ? AND learn_number = ? AND status <> 0 LIMIT 1`,
-        row.grade,
+          `SELECT ${LESSON_COLUMNS} FROM lessons WHERE subject_code = ? AND learn_number = ? AND status <> 0 LIMIT 1`,
         row.subject_code,
         learnNumber
       );
@@ -537,9 +537,10 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
         } else {
           await tx.$executeRawUnsafe(
             `UPDATE lessons SET
-              subject_name = ?, lesson_name = ?, status = ?,
+              system_type = ?, subject_name = ?, lesson_name = ?, status = ?,
               updated_at = CURRENT_TIMESTAMP(3)
             WHERE id = ?`,
+            row.system_type ?? 'topclass',
             row.subject_name,
             row.lesson_name,
             row.status ?? 1,
@@ -553,10 +554,11 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
 
       await tx.$executeRawUnsafe(
         `INSERT INTO lessons (
-          grade, subject_code, subject_name, learn_number,
+          grade, system_type, subject_code, subject_name, learn_number,
           lesson_name, status, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
         row.grade,
+        row.system_type ?? 'topclass',
         row.subject_code,
         row.subject_name,
         learnNumber,
@@ -572,6 +574,11 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
 
       created += 1;
     }
+  }, {
+    // Import Google Sheets có thể vài trăm dòng; timeout mặc định 5 giây làm
+    // transaction bị Prisma đóng khi còn đang xử lý các dòng sau.
+    maxWait: 10_000,
+    timeout: 120_000,
   });
 
   return {
@@ -580,6 +587,54 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
     updated,
     skipped,
   };
+};
+
+export const importNewProgramLessons = async (rows: LessonImportRow[]): Promise<LessonImportResult> => {
+  const usedNumbers = new Map<string, Set<number>>();
+  const normalizedRows = rows.map((row) => {
+    const key = row.subject_code;
+    const used = usedNumbers.get(key) ?? new Set<number>();
+    let learnNumber = row.learn_number;
+    if (learnNumber === undefined) {
+      learnNumber = 1;
+      while (used.has(learnNumber)) learnNumber += 1;
+    }
+    if (row.status !== 0) used.add(learnNumber);
+    usedNumbers.set(key, used);
+    return { ...row, learn_number: learnNumber };
+  });
+
+  const placeholders = normalizedRows.map(() => '(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))').join(', ');
+  const values = normalizedRows.flatMap((row) => [
+    row.grade ?? null,
+    row.system_type ?? 'topclass',
+    row.subject_code,
+    row.subject_name,
+    row.learn_number,
+    row.lesson_name,
+    row.status ?? 1,
+  ]);
+  const programCodes = Array.from(new Set(normalizedRows.map((row) => row.subject_code)));
+
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(
+      `INSERT INTO lessons (
+        grade, system_type, subject_code, subject_name, learn_number,
+        lesson_name, status, updated_at
+      ) VALUES ${placeholders}`,
+      ...values
+    );
+    if (normalizedRows.some((row) => row.status === 0)) {
+      const codePlaceholders = programCodes.map(() => '?').join(', ');
+      await tx.$executeRawUnsafe(
+        `UPDATE lessons SET learn_number = -CAST(id AS SIGNED), updated_at = CURRENT_TIMESTAMP(3)
+         WHERE status = 0 AND learn_number > 0 AND subject_code IN (${codePlaceholders})`,
+        ...programCodes
+      );
+    }
+  }, { maxWait: 10_000, timeout: 30_000 });
+
+  return { total: rows.length, created: rows.length, updated: 0, skipped: 0 };
 };
 
 export const deleteLessonIfUnscheduled = async (id: bigint) => {

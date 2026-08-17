@@ -274,11 +274,13 @@ const createCalendarRecord = async (
   data: any,
   previousTeachingCalendar: any | null = null
 ) => {
+  const skipTeacherUserSync = data.skip_teacher_user_sync === true;
   const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
   const assistantTeacher = data.assistant_teacher ?? null;
   const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'session_id');
   const sessionId = data.session_id ?? null;
   const prismaData = { ...data };
+  delete prismaData.skip_teacher_user_sync;
   delete prismaData.assistant_teacher;
   delete prismaData.session_id;
   const created = await client.calendar.create({ data: prismaData });
@@ -298,7 +300,9 @@ const createCalendarRecord = async (
   }
   const result = { ...created };
   await hydrateAssistantTeachers(client, [result]);
-  await syncCalendarTeachingUsers(client, previousTeachingCalendar, result);
+  if (!skipTeacherUserSync) {
+    await syncCalendarTeachingUsers(client, previousTeachingCalendar, result);
+  }
   return result;
 };
 
@@ -395,15 +399,6 @@ const hydrateLessonData = async (tx: any, input: any) => {
     learn_number: lesson.learn_number,
     subject: lesson.subject_name,
     lesson_name: customLessonName || lesson.lesson_name,
-    lesson_document: lesson.lesson_document,
-    evg_banner: lesson.evg_banner,
-    evg_stream: lesson.evg_stream,
-    lesson_link: lesson.lesson_link,
-    lesson_baitap: lesson.lesson_baitap,
-    lesson_tomtat: lesson.lesson_tomtat,
-    lesson_phuongphap: lesson.lesson_phuongphap,
-    lesson_luuy: lesson.lesson_luuy,
-    lesson_ketqua: lesson.lesson_ketqua,
   };
 };
 
@@ -593,7 +588,15 @@ const prepareCalendarCreateData = async (
   reservedCounts?: Map<string, Set<number>>
 ) => {
   const data = normalizeRoom(await hydrateLessonData(tx, input));
-  await normalizeTeachingAssignments(tx, data);
+  const skipTeacherProfileValidation = data.skip_teacher_profile_validation === true;
+  delete data.skip_teacher_profile_validation;
+  if (!skipTeacherProfileValidation) {
+    await normalizeTeachingAssignments(tx, data);
+  } else {
+    // Import trực tiếp đang lưu nguyên tên giáo viên; chưa đồng bộ teacher user
+    // cho đến khi bước đối chiếu teacher_profiles được bật lại.
+    data.skip_teacher_user_sync = true;
+  }
   if (!data.code) {
     throw new Error("Vui lòng cung cấp mã khóa học");
   }
@@ -1234,53 +1237,170 @@ export const createValidatedCalendarImport = async (
     throw new Error('Không có lịch hợp lệ để import');
   }
 
-  const reservedCounts = new Map<string, Set<number>>();
-  const timeout = Number(process.env.CALENDAR_IMPORT_TRANSACTION_TIMEOUT_MS || 60_000);
+  const timeout = Number(process.env.CALENDAR_IMPORT_TRANSACTION_TIMEOUT_MS || 180_000);
 
-  return withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => withManualHocmaiQueue(tx, async () => {
-    const createdCalendars: any[] = [];
-    for (const row of rows) {
+  return withCalendarTriggerErrorHint(async () => {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        const { calendarData } = await prepareCalendarCreateData(
-          tx,
-          row.calendar,
-          reservedCounts
-        );
-        await checkConflict({
-          teacher: calendarData.teacher,
-          assistant_teacher: calendarData.assistant_teacher,
-          channel_name: calendarData.channel_name,
-          code: calendarData.code,
-          start_time: calendarData.start_time,
-          end_time: calendarData.end_time,
-          client: tx,
+        return await prisma.$transaction(async (tx) => withManualHocmaiQueue(tx, async () => {
+          // Khởi tạo lại ở mỗi lần retry để lesson_count không bị giữ từ
+          // transaction trước đã rollback.
+          const reservedCounts = new Map<string, Set<number>>();
+          const createdCalendars: any[] = [];
+          for (const row of rows) {
+            try {
+              const { calendarData } = await prepareCalendarCreateData(tx, row.calendar, reservedCounts);
+              await checkConflict({
+                teacher: calendarData.teacher,
+                assistant_teacher: calendarData.assistant_teacher,
+                channel_name: calendarData.channel_name,
+                code: calendarData.code,
+                start_time: calendarData.start_time,
+                end_time: calendarData.end_time,
+                client: tx,
+              });
+              const calendar = await createCalendarRecord(tx, calendarData);
+              await createPackageLessonMappingForCalendar(tx, calendar, row.mappings);
+              if (row.mappings.length) {
+                await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'create', calendar);
+              }
+              await enqueueCalendarTeamsNotification(tx, {
+                eventType: 'created', after: calendar, actor: changeActor,
+              });
+              createdCalendars.push(calendar);
+            } catch (error: any) {
+              throw new Error(`Dòng ${row.row}: ${error?.message || 'Không thể tạo lịch học'}`);
+            }
+          }
+          return { count: createdCalendars.length, calendars: createdCalendars };
+        }), {
+          isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+          maxWait: 10_000,
+          timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 180_000,
         });
-        const calendar = await createCalendarRecord(tx, calendarData);
-        await createPackageLessonMappingForCalendar(tx, calendar, row.mappings);
-        if (row.mappings.length) {
-          await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'create', calendar);
-        }
-        await enqueueCalendarTeamsNotification(tx, {
-          eventType: 'created',
-          after: calendar,
-          actor: changeActor,
-        });
-        createdCalendars.push(calendar);
-      } catch (error: any) {
-        throw new Error(
-          `Dòng ${row.row}: ${error?.message || 'Không thể tạo lịch học'}`
-        );
+      } catch (error) {
+        if (!isTransactionConflict(error) || attempt === 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 150));
       }
     }
-    return {
-      count: createdCalendars.length,
-      calendars: createdCalendars,
-    };
-  }), {
-    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-    maxWait: 10_000,
-    timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 60_000,
-  }));
+    throw new Error('Không thể hoàn tất import lịch học sau 3 lần thử');
+  });
+};
+
+export const createValidatedInternalCalendarImport = async (
+  rows: ResolvedCalendarImportRow[],
+  changeActor?: CalendarChangeActor
+) => {
+  if (!rows.length) throw new Error('Không có lịch hợp lệ để import');
+  const codes = Array.from(new Set(rows.map((row) => row.calendar.code)));
+
+  return withCalendarTriggerErrorHint(() => prisma.$transaction(
+    async (tx) => withManualHocmaiQueue(tx, async () => {
+      const existingCounts = await tx.$queryRaw<Array<{
+        code: string;
+        system_type: string;
+        learn_number: number;
+        max_count: number | bigint | null;
+      }>>(Prisma.sql`
+        SELECT code, system_type, learn_number,
+               MAX(COALESCE(lesson_count, -1)) AS max_count
+        FROM calendar
+        WHERE code IN (${Prisma.join(codes)})
+        GROUP BY code, system_type, learn_number
+      `);
+      const nextCounts = new Map(existingCounts.map((item) => [
+        lessonIdentityKey(item.code, item.system_type, item.learn_number),
+        Number(item.max_count ?? -1) + 1,
+      ]));
+
+      const prepared = rows.map((row) => {
+        const calendar = row.calendar;
+        const startTime = new Date(calendar.start_time);
+        const endTime = new Date(calendar.end_time);
+        ensureValidTimeRange(startTime, endTime);
+        const identity = lessonIdentityKey(
+          calendar.code,
+          calendar.system_type,
+          calendar.learn_number
+        );
+        const lessonCount = calendar.lesson_count ?? nextCounts.get(identity) ?? 0;
+        nextCounts.set(identity, lessonCount + 1);
+        return {
+          ...calendar,
+          start_time: startTime,
+          end_time: endTime,
+          lesson_count: lessonCount,
+          key: generateKey(
+            calendar.system_type,
+            startTime,
+            calendar.code,
+            calendar.learn_number,
+            lessonCount
+          ),
+        };
+      });
+
+      const placeholders = prepared.map(() => (
+        '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+      )).join(', ');
+      const values = prepared.flatMap((calendar) => [
+        calendar.session_id ?? null,
+        calendar.code,
+        calendar.learn_number,
+        calendar.subject ?? null,
+        calendar.start_time,
+        calendar.end_time,
+        calendar.teacher ?? null,
+        calendar.assistant_teacher ?? null,
+        calendar.lesson_name ?? null,
+        calendar.lesson_document ?? null,
+        calendar.evg_banner ?? null,
+        calendar.evg_stream ?? null,
+        calendar.lesson_count,
+        calendar.lesson_status ?? 0,
+        calendar.key,
+        calendar.system_type,
+      ]);
+      await tx.$executeRawUnsafe(
+        `INSERT INTO calendar (
+          session_id, code, learn_number, subject, start_time, end_time,
+          teacher, assistant_teacher, lesson_name, lesson_document,
+          evg_banner, evg_stream, lesson_count, lesson_status, \`key\`,
+          system_type, created_at, updated_at
+        ) VALUES ${placeholders}`,
+        ...values
+      );
+
+      const createdCalendars = await tx.calendar.findMany({
+        where: { key: { in: prepared.map((calendar) => calendar.key) } },
+      });
+      const createdByKey = new Map(
+        createdCalendars
+          .filter((calendar) => calendar.key)
+          .map((calendar) => [calendar.key!, calendar])
+      );
+      await enqueueManyCalendarTeamsNotifications(
+        tx,
+        prepared.flatMap((calendar) => {
+          const created = createdByKey.get(calendar.key);
+          return created ? [{
+            eventType: 'created' as const,
+            after: created,
+            actor: changeActor,
+          }] : [];
+        })
+      );
+
+      // Calendar và outbox Teams được ghi trong cùng transaction; lỗi ở bất kỳ
+      // bước nào đều rollback toàn bộ import.
+      return { count: prepared.length };
+    }),
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      maxWait: 10_000,
+      timeout: 30_000,
+    }
+  ));
 };
 
 const cancelWithoutMakeup = async (tx: any, current: any, reason: string) => {

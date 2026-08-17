@@ -60,11 +60,11 @@ router.get('/export', authorize(['lessons.export']), authorizePrograms('lessons.
   return ids.length ? lessonCodesByIds(ids) : [String(req.query.subject_code || req.query.course_code || '')];
 }), lessonController.exportFile);
 router.get('/template', authorize(['lessons.import']), authorizeProgram('lessons.import', (req) => String(req.query.program_code || '')), lessonController.template);
+router.get('/program-template', authorize(['lessons.import']), lessonController.programTemplate);
 router.post(
   '/import',
   authorize(['lessons.import']),
   upload.single('file'),
-  authorizeProgram('lessons.import', (req) => String(req.body?.program_code || '')),
   lessonController.importFile
 );
 router.get('/:id', authorize(['lessons.view']), authorizePrograms('lessons.view', (req) => lessonCodesByIds([req.params.id])), lessonController.detail);

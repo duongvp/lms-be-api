@@ -7,6 +7,7 @@ import {
   deleteExistingLesson,
   exportLessons,
   getLessonImportTemplate,
+  getProgramImportTemplate,
   getLessonDetail,
   getLessonSubjects,
   getLessonPrograms,
@@ -14,6 +15,7 @@ import {
   changeLessonCourseMappings,
   getLessons,
   importLessonRows,
+  importNewProgramLessonRows,
   reorderExistingLessons,
   updateExistingLesson,
   validateLessonImportSequence,
@@ -35,7 +37,7 @@ import { LessonImportMode, LessonPayload } from './lesson.types';
 import FieldPermissionService from '../roles/field-permission.service';
 import { issueLessonSecondaryToken } from './lesson-secondary-auth';
 import { findLessonProgramByCode } from './lesson.repository';
-import { getProgramScopeFilter } from '../../services/authorization.service';
+import { assertProgramAccess, getProgramScopeFilter } from '../../services/authorization.service';
 
 const reauthenticate = async (req: Request, res: Response) => {
   try {
@@ -211,36 +213,82 @@ const template = async (req: Request, res: Response) => {
   }
 };
 
+const programTemplate = async (req: Request, res: Response) => {
+  try {
+    const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+    const result = getProgramImportTemplate(format);
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="program-import-template.${format}"`);
+    return res.send(result.buffer);
+  } catch (error: any) {
+    return ErrorResponse(res, error.message, error.statusCode || 400);
+  }
+};
+
+const getGoogleSheetCsv = async (sheetUrl: string) => {
+  let parsed: URL;
+  try { parsed = new URL(sheetUrl); } catch { throw new Error('Link Google Sheets không hợp lệ'); }
+  if (parsed.hostname !== 'docs.google.com') throw new Error('Chỉ hỗ trợ link Google Sheets từ docs.google.com');
+  const match = parsed.pathname.match(/^\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (!match) throw new Error('Link Google Sheets không hợp lệ');
+  const gid = parsed.searchParams.get('gid') || '0';
+  const exportUrl = `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${encodeURIComponent(gid)}`;
+  const response = await fetch(exportUrl, { signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error('Không thể đọc Google Sheets. Hãy kiểm tra quyền chia sẻ công khai của sheet.');
+  return Buffer.from(await response.arrayBuffer());
+};
+
 const importFile = async (req: Request, res: Response) => {
   try {
     const file = req.file;
-    if (!file) {
-      return ErrorResponse(res, 'Vui lòng chọn file import', 400);
-    }
-
-    const extension = file.originalname.split('.').pop()?.toLowerCase();
-    if (extension !== 'xlsx' && extension !== 'csv') {
+    const sheetUrl = String(req.body?.sheet_url || '').trim();
+    if (!file && !sheetUrl) return ErrorResponse(res, 'Vui lòng chọn file hoặc dán link Google Sheets', 400);
+    const extension = file?.originalname.split('.').pop()?.toLowerCase();
+    if (file && extension !== 'xlsx' && extension !== 'csv') {
       return ErrorResponse(res, 'Chỉ hỗ trợ file .xlsx hoặc .csv', 400);
     }
 
-    const programCode = String(req.body?.program_code || '').trim();
-    if (!programCode) {
+    let programCode = String(req.body?.program_code || '').trim();
+    if (!programCode && String(req.body?.create_program || '') !== 'true') {
       return ErrorResponse(res, 'Vui lòng chọn Chương trình trước khi import', 400);
     }
-    const program = await findLessonProgramByCode(programCode);
-    if (!program) {
+    const creatingProgram = String(req.body?.create_program || '') === 'true';
+    const existingProgram = programCode ? await findLessonProgramByCode(programCode) : null;
+    if (!creatingProgram && !existingProgram) {
       return ErrorResponse(res, 'Chương trình không tồn tại hoặc chưa có đề cương', 404);
     }
+    if (creatingProgram && existingProgram) {
+      return ErrorResponse(res, 'Mã chương trình đã tồn tại', 409);
+    }
+    const program = existingProgram!;
 
     const mode: LessonImportMode = req.body?.mode === 'skip' ? 'skip' : 'overwrite';
-    const rawRows = parseLessonImportFile(file.buffer, file.originalname).map((row) => ({
-      ...row,
-      grade: program.grade,
-      subject_code: program.subject_code,
-      subject_name: program.subject_name,
-    }));
+    const importBuffer = file?.buffer ?? await getGoogleSheetCsv(sheetUrl);
+    const importName = file?.originalname ?? 'google-sheet.csv';
+    const rawRows = parseLessonImportFile(importBuffer, importName).map((row) => (
+      creatingProgram ? row : {
+        ...row, grade: program.grade, system_type: program.system_type,
+        subject_code: program.subject_code, subject_name: program.subject_name,
+      }
+    ));
     const { validRows, errors } = validateLessonImportRows(rawRows);
-    const sequenceErrors = errors.length ? [] : await validateLessonImportSequence(validRows, mode);
+    if (creatingProgram && validRows.length) {
+      const programs = Array.from(new Set(validRows.map((row) => row.subject_code)));
+      programs.forEach((code) => assertProgramAccess(req.user, 'lessons.import', code));
+      const existingPrograms = await Promise.all(programs.map(async (code) => ({
+        code,
+        existing: await findLessonProgramByCode(code),
+      })));
+      for (const { code, existing } of existingPrograms) {
+        if (existing) {
+          const firstRow = validRows.find((row) => row.subject_code === code)!;
+          errors.push({ row: firstRow.row_number, field: 'subject_code', message: `Mã chương trình ${code} đã tồn tại` });
+        }
+      }
+    }
+    const resolvedProgramCode = creatingProgram ? '' : program.subject_code;
+    if (resolvedProgramCode) assertProgramAccess(req.user, 'lessons.import', resolvedProgramCode);
+    const sequenceErrors = errors.length ? [] : await validateLessonImportSequence(validRows, mode, creatingProgram);
     const allErrors = [...errors, ...sequenceErrors];
 
     if (allErrors.length) {
@@ -251,8 +299,13 @@ const importFile = async (req: Request, res: Response) => {
       });
     }
 
-    const result = await importLessonRows(validRows, mode);
-    return SuccessResponse(res, 'Imported', result);
+    const result = creatingProgram
+      ? await importNewProgramLessonRows(validRows)
+      : await importLessonRows(validRows, mode);
+    return SuccessResponse(res, 'Imported', { ...result, program: validRows[0] ? {
+      grade: validRows[0].grade, system_type: validRows[0].system_type,
+      subject_code: validRows[0].subject_code, subject_name: validRows[0].subject_name,
+    } : undefined });
   } catch (error: any) {
     return ErrorResponse(res, error.message, error.statusCode || 400);
   }
@@ -284,6 +337,7 @@ export default {
   reorder,
   exportFile,
   template,
+  programTemplate,
   importFile,
   remove,
 };

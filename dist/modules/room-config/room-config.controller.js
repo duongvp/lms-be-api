@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.RoomConfigController = void 0;
 const room_config_service_1 = __importDefault(require("./room-config.service"));
 const authorization_service_1 = require("../../services/authorization.service");
+const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 class RoomConfigController {
     roomConfigService;
     constructor(roomConfigService = room_config_service_1.default) {
@@ -20,10 +21,11 @@ class RoomConfigController {
                 learn_number: learn_number ? Number(learn_number) : undefined,
                 page: page ? Number(page) : 1,
                 limit: limit ? Number(limit) : 20,
-            }, (0, authorization_service_1.getFirstProgramScopeFilter)(req.user, ['room_config.view', 'calendar.view', 'lessons.view']));
+            }, (0, authorization_service_1.getFirstProgramScopeFilter)(req.user, ['room_config.view']));
+            const items = await field_permission_service_1.default.filterVisibleRecords(req.user?.roleIds || [], 'room_config', result.items);
             return res.status(200).json({
                 success: true,
-                data: result,
+                data: { ...result, items },
             });
         }
         catch (error) {
@@ -34,9 +36,10 @@ class RoomConfigController {
         try {
             const { code, learn_number } = req.params;
             const result = await this.roomConfigService.getDetail(String(code), Number(learn_number));
+            const data = await field_permission_service_1.default.filterVisibleRecord(req.user?.roleIds || [], 'room_config', result);
             return res.status(200).json({
                 success: true,
-                data: result,
+                data,
             });
         }
         catch (error) {

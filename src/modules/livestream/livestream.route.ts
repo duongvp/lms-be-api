@@ -150,8 +150,13 @@ router.post(
   '/import',
   authorize(['calendar.import']),
   upload.single('file'),
-  authorizeProgram('calendar.import', (req) => String(req.body?.program_code || '')),
   livestreamController.importFile
+);
+router.post(
+  '/import/update',
+  authorize(['calendar.update']),
+  upload.single('file'),
+  livestreamController.updateImportFile
 );
 router.post(
   '/mapping/preview',

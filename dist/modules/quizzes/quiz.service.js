@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getExistingQuizAnalytics = exports.getQuizSubmissions = exports.importQuizRows = exports.getQuizImportTemplate = exports.exportQuizzes = exports.reorderExistingQuizzes = exports.bulkUpdateExistingQuizzes = exports.restoreExistingQuiz = exports.disableExistingQuiz = exports.updateExistingQuiz = exports.createNewQuiz = exports.getQuizDetail = exports.getQuizzes = exports.getQuizIndexSuggestion = exports.getQuizLessonOptions = exports.getQuizClassOptions = exports.getQuizOptions = void 0;
+exports.importQuizRows = exports.getQuizImportTemplate = exports.exportQuizzes = exports.reorderExistingQuizzes = exports.bulkUpdateExistingQuizzes = exports.restoreExistingQuiz = exports.disableExistingQuiz = exports.updateExistingQuiz = exports.createNewQuiz = exports.getQuizDetail = exports.getQuizzes = exports.getQuizIndexSuggestion = exports.getQuizLessonOptions = exports.getQuizClassOptions = exports.getQuizOptions = void 0;
 const crypto_1 = require("crypto");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const serializer_1 = require("../../lib/serializer");
@@ -22,7 +22,12 @@ const normalizeStoredAnswers = (value) => {
         return value;
     }
 };
-const normalizeQuiz = (quiz) => quiz ? { ...quiz, ans: normalizeStoredAnswers(quiz.ans) } : quiz;
+const normalizeQuiz = (quiz) => quiz ? {
+    ...quiz,
+    // `active` tồn tại ở dữ liệu cũ, nhưng nghiệp vụ hiện chỉ còn done/disable.
+    quiz_status: quiz.quiz_status === 'active' ? 'done' : quiz.quiz_status,
+    ans: normalizeStoredAnswers(quiz.ans),
+} : quiz;
 const normalizeQuizResult = (value) => (0, serializer_1.serializeBigInt)(normalizeQuiz(value));
 const translatePersistenceError = (error) => {
     if (error?.code === 'P2002' || String(error?.message ?? '').includes('Duplicate entry')) {
@@ -159,13 +164,3 @@ const importQuizRows = async (rows, mode, creator) => {
     }
 };
 exports.importQuizRows = importQuizRows;
-const getQuizSubmissions = async (quizId, query) => {
-    await (0, exports.getQuizDetail)(quizId);
-    return (0, serializer_1.serializeBigInt)(await (0, quiz_repository_1.findQuizSubmissions)(quizId, query));
-};
-exports.getQuizSubmissions = getQuizSubmissions;
-const getExistingQuizAnalytics = async (quizId) => {
-    await (0, exports.getQuizDetail)(quizId);
-    return (0, serializer_1.serializeBigInt)(await (0, quiz_repository_1.getQuizAnalytics)(quizId));
-};
-exports.getExistingQuizAnalytics = getExistingQuizAnalytics;

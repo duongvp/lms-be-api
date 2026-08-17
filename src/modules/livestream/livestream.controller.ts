@@ -10,8 +10,11 @@ import {
   validateCalendarImportRows,
 } from './livestream.io';
 import { previewAutoSchedule as buildAutoSchedulePreview } from './auto-schedule.service';
-import { importCalendarFromSheet } from './calendar-import.service';
-import { getProgramScopeFilter } from '../../services/authorization.service';
+import {
+  importCalendarFromSheet,
+  updateCalendarsFromSheet,
+} from './calendar-import.service';
+import { assertProgramAccess, getProgramScopeFilter } from '../../services/authorization.service';
 
 const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => ({
   userId: Number(req.user?.userId),
@@ -218,30 +221,60 @@ export const importTemplate = async (req: Request, res: Response): Promise<void>
   res.send(buildCalendarTemplate(format));
 };
 
+const getGoogleSheetCsv = async (sheetUrl: string) => {
+  let parsed: URL;
+  try { parsed = new URL(sheetUrl); } catch { throw new Error('Link Google Sheets không hợp lệ'); }
+  if (parsed.hostname !== 'docs.google.com') throw new Error('Chỉ hỗ trợ link Google Sheets từ docs.google.com');
+  const match = parsed.pathname.match(/^\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (!match) throw new Error('Link Google Sheets không hợp lệ');
+  const gid = parsed.searchParams.get('gid') || '0';
+  const response = await fetch(
+    `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${encodeURIComponent(gid)}`,
+    { signal: AbortSignal.timeout(15_000) }
+  );
+  if (!response.ok) throw new Error('Không thể đọc Google Sheets. Hãy kiểm tra quyền chia sẻ công khai.');
+  return Buffer.from(await response.arrayBuffer());
+};
+
 export const importFile = async (req: Request, res: Response): Promise<void> => {
   try {
-    if (!req.file) {
-      res.status(400).json({ success: false, message: 'Vui lòng chọn file import' });
+    const sheetUrl = String(req.body?.sheet_url || '').trim();
+    if (!req.file && !sheetUrl) {
+      res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
       return;
     }
-    const rows = parseCalendarImportFile(req.file.buffer, req.file.originalname);
+    const buffer = req.file?.buffer ?? await getGoogleSheetCsv(sheetUrl);
+    const originalName = req.file?.originalname ?? 'google-sheet.csv';
+    const rows = parseCalendarImportFile(buffer, originalName);
     const { importRows, errors } = validateCalendarImportRows(rows);
     const programCode = String(req.body?.program_code || '').trim();
-    if (!programCode) {
-      res.status(400).json({ success: false, message: 'Vui lòng chọn Chương trình trước khi import' });
+    const isAdmin = Boolean(
+      req.user?.permissions?.includes('*')
+      || req.user?.roles?.some((role: any) => (
+        String(role?.code || role?.name || role).toLowerCase() === 'admin'
+      ))
+    );
+    if (!isAdmin && !programCode) {
+      res.status(400).json({
+        success: false,
+        message: 'Vui lòng lọc đúng Chương trình trước khi import lịch học',
+      });
       return;
     }
-    await livestreamService.assertSchedulingProgramExists(programCode);
-    importRows.forEach((row) => {
-      if (String(row.calendar.code) !== programCode) {
-        errors.push({
+    if (!isAdmin) {
+      importRows.forEach((row) => {
+        if (row.calendar.code !== programCode) errors.push({
           row: row.row,
-          field: 'Mã buổi học',
+          field: 'code',
           errorCode: 'INVALID_ROW',
-          message: `Dòng import không thuộc Chương trình ${programCode}`,
+          message: `Dòng này thuộc Chương trình ${row.calendar.code}; chỉ được import ${programCode}`,
         });
-      }
-    });
+      });
+      assertProgramAccess(req.user, 'calendar.import', programCode);
+    } else {
+      Array.from(new Set(importRows.map((row) => row.calendar.code)))
+        .forEach((code) => assertProgramAccess(req.user, 'calendar.import', code));
+    }
     if (errors.length) {
       const invalidRows = new Set(errors.map((error) => error.row)).size;
       res.status(400).json({
@@ -274,6 +307,86 @@ export const importFile = async (req: Request, res: Response): Promise<void> => 
       success: true,
       status: result.status,
       message: 'Import lịch học thành công',
+      data: result,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const updateImportFile = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const sheetUrl = String(req.body?.sheet_url || '').trim();
+    if (!req.file && !sheetUrl) {
+      res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
+      return;
+    }
+    const buffer = req.file?.buffer ?? await getGoogleSheetCsv(sheetUrl);
+    const originalName = req.file?.originalname ?? 'google-sheet.csv';
+    const rows = parseCalendarImportFile(buffer, originalName);
+    const { importRows, errors } = validateCalendarImportRows(rows);
+    const programCode = String(req.body?.program_code || '').trim();
+    const isAdmin = Boolean(
+      req.user?.permissions?.includes('*')
+      || req.user?.roles?.some((role: any) => (
+        String(role?.code || role?.name || role).toLowerCase() === 'admin'
+      ))
+    );
+
+    if (!isAdmin && !programCode) {
+      res.status(400).json({
+        success: false,
+        message: 'Vui lòng lọc đúng Chương trình trước khi cập nhật lịch học',
+      });
+      return;
+    }
+    if (!isAdmin) {
+      importRows.forEach((row) => {
+        if (row.calendar.code !== programCode) errors.push({
+          row: row.row,
+          field: 'code',
+          errorCode: 'INVALID_ROW',
+          message: `Dòng này thuộc Chương trình ${row.calendar.code}; chỉ được cập nhật ${programCode}`,
+        });
+      });
+      assertProgramAccess(req.user, 'calendar.update', programCode);
+    } else {
+      Array.from(new Set(importRows.map((row) => row.calendar.code)))
+        .forEach((code) => assertProgramAccess(req.user, 'calendar.update', code));
+    }
+
+    if (errors.length) {
+      const invalidRows = new Set(errors.map((error) => error.row)).size;
+      res.status(400).json({
+        success: false,
+        status: 'validation_error',
+        message: 'File cập nhật có dữ liệu không hợp lệ',
+        summary: {
+          totalRows: rows.length,
+          validRows: Math.max(0, rows.length - invalidRows),
+          invalidRows,
+        },
+        errors,
+      });
+      return;
+    }
+
+    const result = await updateCalendarsFromSheet(importRows, getChangeActor(req));
+    if (result.status === 'validation_error') {
+      res.status(400).json({
+        success: false,
+        status: result.status,
+        message: 'File cập nhật có dữ liệu không hợp lệ',
+        summary: result.summary,
+        errors: result.errors,
+      });
+      return;
+    }
+
+    res.status(200).json({
+      success: true,
+      status: result.status,
+      message: 'Cập nhật lịch học thành công',
       data: result,
     });
   } catch (err: any) {

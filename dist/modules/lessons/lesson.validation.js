@@ -48,6 +48,14 @@ const requiredString = (value, fieldName, maxLength) => {
     }
     return parsed;
 };
+const optionalSystemType = (value) => {
+    if (value === undefined || value === null || value === '')
+        return undefined;
+    if (value !== 'topclass' && value !== 'topuni') {
+        throw new ApiError_1.default('system_type chỉ hỗ trợ topclass hoặc topuni', 400);
+    }
+    return value;
+};
 const valueToString = (value) => {
     if (value === undefined || value === null)
         return undefined;
@@ -129,8 +137,19 @@ const validateLessonIds = (value) => {
 const validateLessonPayload = (body, isUpdate = false) => {
     rejectCalendarOnlyFields(body ?? {});
     const payload = {};
-    if (!isUpdate || body.grade !== undefined)
-        payload.grade = requiredInteger(body.grade, 'grade');
+    const systemType = optionalSystemType(body.system_type) ?? (isUpdate ? undefined : 'topclass');
+    if (systemType !== undefined)
+        payload.system_type = systemType;
+    const effectiveSystemType = systemType ?? body.current_system_type ?? 'topclass';
+    if (!isUpdate || body.grade !== undefined) {
+        const grade = optionalInteger(body.grade, 'grade');
+        if (effectiveSystemType === 'topclass' && grade === undefined) {
+            throw new ApiError_1.default('Vui lòng cung cấp grade cho Topclass', 400);
+        }
+        // Topuni hiện chưa chọn khối trên giao diện. Vẫn lưu lớp 12 mặc định để
+        // có thể hỗ trợ lớp khác trong tương lai mà không đổi cấu trúc dữ liệu.
+        payload.grade = grade ?? (effectiveSystemType === 'topuni' ? 12 : undefined);
+    }
     if (!isUpdate || body.subject_name !== undefined) {
         payload.subject_name = requiredString(body.subject_name, 'subject_name', 100);
     }
@@ -210,12 +229,23 @@ const validateLessonImportRows = (rows) => {
     const errors = [];
     const validRows = [];
     const seenKeys = new Set();
+    const configuredMaxRows = Number(process.env.LESSON_IMPORT_MAX_ROWS);
+    const maxRows = Number.isInteger(configuredMaxRows) && configuredMaxRows > 0
+        ? configuredMaxRows
+        : 500;
+    if (rows.length > maxRows) {
+        return {
+            validRows,
+            errors: [{ row: 1, field: 'file', message: `Mỗi lần chỉ được import tối đa ${maxRows} dòng` }],
+        };
+    }
     rows.forEach((row, index) => {
         const rowNumber = index + 2;
         const addError = (field, message) => errors.push({ row: rowNumber, field, message });
+        const systemType = optionalSystemType(row.system_type) ?? 'topclass';
         const grade = optionalInteger(row.grade, 'grade');
-        if (grade === undefined)
-            addError('grade', 'Vui lòng cung cấp Grade');
+        if (systemType === 'topclass' && grade === undefined)
+            addError('grade', 'Vui lòng cung cấp Grade cho Topclass');
         if (grade !== undefined && (grade < 1 || grade > 12))
             addError('grade', 'Grade phải nằm trong khoảng 1-12');
         const subjectName = valueToString(row.subject_name);
@@ -239,15 +269,13 @@ const validateLessonImportRows = (rows) => {
             : optionalInteger(row.status, 'status');
         if (status !== undefined && ![0, 1].includes(status))
             addError('status', 'Status chỉ nhận 0 hoặc 1');
-        if (grade !== undefined && subjectCode && learnNumber !== undefined) {
-            const key = `${grade}|${subjectCode}|${learnNumber}`;
+        if (subjectCode && learnNumber !== undefined) {
+            const key = `${subjectCode}|${learnNumber}`;
             if (seenKeys.has(key))
-                addError('learn_number', 'Trùng Grade + Subject + Learn Number trong file import');
+                addError('learn_number', 'Trùng Mã chương trình + Số thứ tự bài trong file import');
             seenKeys.add(key);
         }
-        if (grade !== undefined &&
-            grade >= 1 &&
-            grade <= 12 &&
+        if ((systemType === 'topuni' || (grade !== undefined && grade >= 1 && grade <= 12)) &&
             subjectName &&
             subjectCode &&
             lessonName &&
@@ -258,6 +286,7 @@ const validateLessonImportRows = (rows) => {
             validRows.push({
                 row_number: rowNumber,
                 grade,
+                system_type: systemType,
                 subject_code: subjectCode,
                 subject_name: subjectName,
                 learn_number: learnNumber,

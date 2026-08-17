@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importLessonRows = exports.validateLessonImportSequence = exports.getLessonImportTemplate = exports.exportLessons = exports.reorderExistingLessons = exports.bulkUpdateExistingLessons = exports.deleteExistingLesson = exports.updateExistingLesson = exports.createNewProgram = exports.createNewLesson = exports.getLessonDetail = exports.changeLessonCourseMappings = exports.getCourseMappingsByProgram = exports.getLessonPrograms = exports.getLessonSubjects = exports.getLessons = void 0;
+exports.importNewProgramLessonRows = exports.importLessonRows = exports.validateLessonImportSequence = exports.getProgramImportTemplate = exports.getLessonImportTemplate = exports.exportLessons = exports.reorderExistingLessons = exports.bulkUpdateExistingLessons = exports.deleteExistingLesson = exports.updateExistingLesson = exports.createNewProgram = exports.createNewLesson = exports.getLessonDetail = exports.changeLessonCourseMappings = exports.getCourseMappingsByProgram = exports.getLessonPrograms = exports.getLessonSubjects = exports.getLessons = void 0;
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const serializer_1 = require("../../lib/serializer");
 const lesson_repository_1 = require("./lesson.repository");
@@ -60,10 +60,22 @@ const getLessonDetail = async (id) => {
 };
 exports.getLessonDetail = getLessonDetail;
 const createNewLesson = async (payload) => {
+    // Bài mới thuộc một Chương trình có sẵn phải luôn dùng tên môn chuẩn của
+    // Chương trình đó. Client tạo nhanh chỉ cần gửi mã Chương trình; không thể
+    // làm subject_name bị ghi nhầm thành chính mã chương trình.
+    const existingProgram = await (0, lesson_repository_1.findLessonProgramByCode)(payload.subject_code);
+    if (existingProgram?.subject_name) {
+        payload = {
+            ...payload,
+            grade: existingProgram.grade ?? payload.grade,
+            system_type: existingProgram.system_type ?? payload.system_type,
+            subject_name: String(existingProgram.subject_name).trim(),
+        };
+    }
     if (payload.learn_number !== undefined) {
         const existing = await (0, lesson_repository_1.findLessonByIdentity)(payload.grade, payload.subject_code, payload.learn_number);
         if (existing) {
-            throw new ApiError_1.default('Bài học với khối, môn học và learn_number này đã tồn tại', 400);
+            throw new ApiError_1.default('Bài học với mã chương trình và số thứ tự này đã tồn tại', 400);
         }
     }
     try {
@@ -91,6 +103,7 @@ const createNewProgram = async (payload) => {
     });
     return {
         grade: payload.grade,
+        system_type: payload.system_type ?? 'topclass',
         subject_code: payload.subject_code,
         subject_name: payload.subject_name,
         first_lesson: firstLesson,
@@ -171,9 +184,13 @@ const reorderExistingLessons = async (payload) => {
     return (0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.reorderLessonsInGroup)(payload.grade, payload.subject_code, payload.ordered_ids, learnNumbers));
 };
 exports.reorderExistingLessons = reorderExistingLessons;
-const exportLessons = async (query) => {
+const exportLessons = async (query, filterVisibleRows) => {
     const rows = await (0, lesson_repository_1.findLessonsForExport)(query);
-    const buffer = (0, lesson_io_1.buildLessonExportBuffer)((0, serializer_1.serializeBigInt)(rows), query.format);
+    const serializedRows = (0, serializer_1.serializeBigInt)(rows);
+    const visibleRows = filterVisibleRows
+        ? await filterVisibleRows(serializedRows)
+        : serializedRows;
+    const buffer = (0, lesson_io_1.buildLessonExportBuffer)(visibleRows, query.format);
     const extension = query.format;
     return {
         buffer,
@@ -188,13 +205,19 @@ const getLessonImportTemplate = (format) => ({
     filename: `lessons-import-template.${format}`,
 });
 exports.getLessonImportTemplate = getLessonImportTemplate;
+const getProgramImportTemplate = (format) => ({
+    buffer: (0, lesson_io_1.buildProgramImportTemplateBuffer)(format),
+    contentType: (0, lesson_io_1.getLessonExportContentType)(format),
+    filename: `program-import-template.${format}`,
+});
+exports.getProgramImportTemplate = getProgramImportTemplate;
 const findFirstMissingLearnNumber = (learnNumbers) => {
     let expected = 1;
     while (learnNumbers.has(expected))
         expected += 1;
     return expected;
 };
-const validateLessonImportSequence = async (rows, mode) => {
+const validateLessonImportSequence = async (rows, mode, assumeEmpty = false) => {
     const errors = [];
     const rowsByGroup = new Map();
     rows.forEach((row) => {
@@ -203,7 +226,7 @@ const validateLessonImportSequence = async (rows, mode) => {
     });
     for (const groupRows of rowsByGroup.values()) {
         const firstRow = groupRows[0];
-        const existingLessons = await (0, lesson_repository_1.findLessonsByGroup)(firstRow.grade, firstRow.subject_code);
+        const existingLessons = assumeEmpty ? [] : await (0, lesson_repository_1.findLessonsByGroup)(firstRow.grade, firstRow.subject_code);
         const activeLearnNumbers = new Set(existingLessons.map((lesson) => Number(lesson.learn_number)));
         const simulatedLearnNumbers = new Set(activeLearnNumbers);
         for (const row of groupRows) {
@@ -243,3 +266,9 @@ const importLessonRows = async (rows, mode) => {
     return (0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.importLessons)(rows, mode));
 };
 exports.importLessonRows = importLessonRows;
+const importNewProgramLessonRows = async (rows) => {
+    if (!rows.length)
+        throw new ApiError_1.default('File import không có dữ liệu', 400);
+    return (0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.importNewProgramLessons)(rows));
+};
+exports.importNewProgramLessonRows = importNewProgramLessonRows;

@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.enqueueManyCalendarTeamsNotifications = exports.enqueueCalendarTeamsNotification = void 0;
 const crypto_1 = __importDefault(require("crypto"));
+const client_1 = require("@prisma/client");
 const teams_notification_config_1 = require("./teams-notification.config");
 const teams_notification_card_1 = require("./teams-notification.card");
 const stableCalendarSnapshot = (calendar) => {
@@ -68,8 +69,42 @@ const enqueueCalendarTeamsNotification = async (client, input) => {
 };
 exports.enqueueCalendarTeamsNotification = enqueueCalendarTeamsNotification;
 const enqueueManyCalendarTeamsNotifications = async (client, events) => {
-    for (const event of events) {
-        await (0, exports.enqueueCalendarTeamsNotification)(client, event);
-    }
+    if (!events.length || !(0, teams_notification_config_1.isTeamsNotificationEnabled)())
+        return;
+    const destinations = (0, teams_notification_config_1.getTeamsWebhookDestinations)();
+    if (!destinations.length)
+        return;
+    const rows = events.flatMap((input) => {
+        const before = input.before || null;
+        const after = input.after || null;
+        const calendarId = Number(after?.id ?? before?.id) || null;
+        const changes = (0, teams_notification_card_1.buildCalendarChanges)(before, after);
+        if (input.eventType === 'updated' && changes.length === 0)
+            return [];
+        const payload = {
+            eventType: input.eventType,
+            calendarId,
+            before: stableCalendarSnapshot(before),
+            after: stableCalendarSnapshot(after),
+            actor: input.actor || null,
+            changedAt: (input.changedAt || new Date()).toISOString(),
+            changes,
+        };
+        const eventKey = buildEventKey(input.eventType, calendarId, before, after, input.operationId);
+        const serializedPayload = JSON.stringify(payload);
+        return destinations.map((destination) => client_1.Prisma.sql `(
+      ${eventKey}, ${destination.name}, ${input.eventType}, ${calendarId},
+      ${serializedPayload}, 0, 0, NOW(3), NOW(3), NOW(3)
+    )`);
+    });
+    if (!rows.length)
+        return;
+    await client.$executeRaw(client_1.Prisma.sql `
+    INSERT INTO teams_notification_outbox (
+      event_key, destination, event_type, calendar_id, payload,
+      status, attempts, next_attempt_at, created_at, updated_at
+    ) VALUES ${client_1.Prisma.join(rows)}
+    ON DUPLICATE KEY UPDATE event_key = VALUES(event_key)
+  `);
 };
 exports.enqueueManyCalendarTeamsNotifications = enqueueManyCalendarTeamsNotifications;

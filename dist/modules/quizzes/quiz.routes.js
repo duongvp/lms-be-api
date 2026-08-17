@@ -30,8 +30,6 @@ router.get('/template', authorize(['quiz.import']), authorizeProgram('quiz.impor
 router.post('/import', authorize(['quiz.import']), upload.single('file'), authorizeProgram('quiz.import', (req) => String(req.body?.code || '')), quiz_controller_1.default.importFile);
 router.patch('/bulk', authorize(['quiz.update']), authorizePrograms('quiz.update', (req) => quizCodesByIds(req.body?.quiz_ids || [])), authorizeFields('quiz', (req) => Object.keys(req.body?.data || {})), quiz_controller_1.default.bulkUpdate);
 router.patch('/reorder', authorize(['quiz.update']), authorizeProgram('quiz.update', (req) => String(req.body?.code || '')), authorizeFields('quiz', () => ['quiz_index']), quiz_controller_1.default.reorder);
-router.get('/:quizId/submissions', authorize(['quiz.grade']), authorizePrograms('quiz.grade', (req) => quizCodesByIds([req.params.quizId])), quiz_controller_1.default.submissions);
-router.get('/:quizId/analytics', authorize(['quiz.grade']), authorizePrograms('quiz.grade', (req) => quizCodesByIds([req.params.quizId])), quiz_controller_1.default.analytics);
 router.post('/:quizId/restore', authorize(['quiz.update']), authorizePrograms('quiz.update', (req) => quizCodesByIds([req.params.quizId])), authorizeFields('quiz', () => ['quiz_status']), quiz_controller_1.default.restore);
 router.get('/:quizId', authorize(['quiz.view']), authorizePrograms('quiz.view', (req) => quizCodesByIds([req.params.quizId])), quiz_controller_1.default.detail);
 router.post('/', authorize(['quiz.create']), authorizeProgram('quiz.create', (req) => String(req.body?.code || '')), authorizeFields('quiz', quiz_validation_1.getQuizEditableBodyFields), quiz_controller_1.default.create);

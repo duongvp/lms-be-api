@@ -13,7 +13,8 @@ export interface LessonListQuery {
 }
 
 export interface LessonPayload {
-  grade: number;
+  grade?: number;
+  system_type?: 'topclass' | 'topuni';
   subject_code: string;
   subject_name: string;
   learn_number?: number;
@@ -27,7 +28,7 @@ export interface LessonBulkUpdatePayload {
 }
 
 export interface LessonReorderPayload {
-  grade: number;
+  grade?: number;
   subject_code: string;
   mode: 'insert' | 'swap';
   ordered_ids: bigint[];

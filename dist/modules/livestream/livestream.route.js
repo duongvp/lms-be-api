@@ -44,6 +44,15 @@ const prisma_1 = __importDefault(require("../../lib/prisma"));
 const client_1 = require("@prisma/client");
 const router = (0, express_1.Router)();
 const { authenticate, authorize, authorizeFields, authorizeProgram, authorizePrograms } = auth_middleware_1.default;
+const authorizeCalendarList = (req, res, next) => {
+    const programCode = String(req.query.code_exact || req.query.code || '').trim();
+    const isAdmin = req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin');
+    // Admin được phép rà lịch nhiều chương trình theo khoảng thời gian. Các vai
+    // trò khác vẫn buộc phải chọn chương trình để không vượt phạm vi phân quyền.
+    if (!programCode && isAdmin)
+        return next();
+    return authorizeProgram('calendar.view', () => programCode)(req, res, next);
+};
 const calendarCodesByIds = async (ids) => {
     const validIds = ids.map(Number).filter((id) => Number.isInteger(id) && id > 0);
     if (!validIds.length)
@@ -159,30 +168,31 @@ const normalizeCalendarFields = (fields) => Array.from(new Set(fields
     return field;
 })));
 router.use(authenticate);
-router.get('/', authorize(['calendar.view']), authorizeProgram('calendar.view', (req) => String(req.query.code_exact || req.query.code || '')), livestreamController.getCalendar);
+router.get('/', authorize(['calendar.view']), authorizeCalendarList, livestreamController.getCalendar);
 router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
 router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
 router.get('/programs', authorize(['calendar.view']), livestreamController.getPrograms);
 router.get('/programs/:code/lessons', authorize(['calendar.view']), authorizeProgram('calendar.view', (req) => String(req.params.code)), livestreamController.getProgramLessons);
 router.get('/programs/:code/lessons/:lessonId/hmo-sections', authorize(['calendar.view']), authorizeProgram('calendar.view', (req) => String(req.params.code)), livestreamController.getProgramLessonHocmaiSections);
-router.post('/import', authorize(['calendar.import']), upload.single('file'), authorizeProgram('calendar.import', (req) => String(req.body?.program_code || '')), livestreamController.importFile);
+router.post('/import', authorize(['calendar.import']), upload.single('file'), livestreamController.importFile);
+router.post('/import/update', authorize(['calendar.update']), upload.single('file'), livestreamController.updateImportFile);
 router.post('/mapping/preview', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesFromUpdates(req.body?.updates || [])), livestreamController.previewMappingUpdates);
 router.put('/mapping', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesFromUpdates(req.body?.updates || [])), livestreamController.updateMappings);
-router.post('/mapping/import/preview', authorize(['calendar.import', 'calendar.update']), upload.single('file'), authorizeProgram('calendar.import', (req) => String(req.body?.program_code || '')), livestreamController.previewMappingImport);
-router.put('/mapping/import', authorize(['calendar.import', 'calendar.update']), authorizeProgram('calendar.update', (req) => String(req.body?.program_code || '')), authorizePrograms('calendar.update', (req) => calendarCodesByIds((req.body?.updates || []).map((item) => item?.id))), livestreamController.importMappings);
-router.post('/single', authorize(['calendar.create']), authorizePrograms('calendar.create', (req) => calendarCreateCodes([req.body || {}])), authorizeTeachingAssignment('calendar.teacher.assign'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))), livestreamController.createSingle);
-router.post('/bulk', authorize(['calendar.create']), authorizePrograms('calendar.create', (req) => calendarCreateCodes(req.body?.calendars || [])), authorizeTeachingAssignment('calendar.teacher.assign'), authorizeFields('calendar', (req) => normalizeCalendarFields((req.body?.calendars || []).flatMap((item) => Object.keys(item || {})))), livestreamController.createBulk);
+router.post('/mapping/import/preview', authorize(['calendar.update']), upload.single('file'), authorizeProgram('calendar.update', (req) => String(req.body?.program_code || '')), livestreamController.previewMappingImport);
+router.put('/mapping/import', authorize(['calendar.update']), authorizeProgram('calendar.update', (req) => String(req.body?.program_code || '')), authorizePrograms('calendar.update', (req) => calendarCodesByIds((req.body?.updates || []).map((item) => item?.id))), livestreamController.importMappings);
+router.post('/single', authorize(['calendar.create']), authorizePrograms('calendar.create', (req) => calendarCreateCodes([req.body || {}])), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))), livestreamController.createSingle);
+router.post('/bulk', authorize(['calendar.create']), authorizePrograms('calendar.create', (req) => calendarCreateCodes(req.body?.calendars || [])), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields((req.body?.calendars || []).flatMap((item) => Object.keys(item || {})))), livestreamController.createBulk);
 router.post('/auto-schedule/preview', authorize(['calendar.create']), authorizeProgram('calendar.create', (req) => String(req.body?.program_code || req.body?.code || '')), livestreamController.previewAutoSchedule);
-router.post('/auto-schedule/commit', authorize(['calendar.create']), authorizeProgram('calendar.create', (req) => String(req.body?.program_code || req.body?.code || '')), authorizeTeachingAssignment('calendar.teacher.assign'), livestreamController.commitAutoSchedule);
+router.post('/auto-schedule/commit', authorize(['calendar.create']), authorizeProgram('calendar.create', (req) => String(req.body?.program_code || req.body?.code || '')), authorizeTeachingAssignment('calendar.teacher.manage'), livestreamController.commitAutoSchedule);
 // Thêm dòng này (Bắt buộc phải đặt trước các route có param /:id)
-router.put('/bulk', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), authorizeTeachingAssignment('calendar.teacher.update'), authorizeFields('calendar', (req) => normalizeCalendarFields(Array.isArray(req.body?.update_data)
+router.put('/bulk', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields(Array.isArray(req.body?.update_data)
     ? req.body.update_data.flatMap((item) => Object.keys(item || {}))
     : Object.keys(req.body?.update_data || {}))), livestreamController.updateBulk);
-router.put('/:id/reschedule', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), authorizeTeachingAssignment('calendar.teacher.update'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body?.new_session || {}))), livestreamController.rescheduleSession);
+router.put('/:id/reschedule', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body?.new_session || {}))), livestreamController.rescheduleSession);
 router.put('/:id', authorize(['calendar.update']), authorizePrograms('calendar.update', async (req) => [
     ...await calendarCodeById(req),
     ...await calendarCreateCodes([req.body || {}]),
-]), authorizeTeachingAssignment('calendar.teacher.update'), authorizeFields('calendar', (req) => normalizeCalendarFields([
+]), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields([
     ...Object.keys(req.body || {}),
     ...Object.keys(req.body?.new_session || {}),
 ])), livestreamController.updateSchedule);

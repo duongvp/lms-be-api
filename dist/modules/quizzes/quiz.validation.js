@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getQuizEditableBodyFields = exports.parseQuizImportMode = exports.validateQuizImportRows = exports.validateQuizSubmissionQuery = exports.validateQuizExportQuery = exports.validateQuizReorderPayload = exports.validateQuizBulkPayload = exports.validateQuizListQuery = exports.finalizeQuizUpdateAnswers = exports.validateQuizPayload = exports.validateQuizIndexSuggestionQuery = exports.validateQuizClassCode = exports.validateQuizId = exports.validateQuizAnswers = exports.normalizeQuizAnswers = void 0;
+exports.getQuizEditableBodyFields = exports.parseQuizImportMode = exports.validateQuizImportRows = exports.validateQuizExportQuery = exports.validateQuizReorderPayload = exports.validateQuizBulkPayload = exports.validateQuizListQuery = exports.finalizeQuizUpdateAnswers = exports.validateQuizPayload = exports.validateQuizIndexSuggestionQuery = exports.validateQuizClassCode = exports.validateQuizId = exports.validateQuizAnswers = exports.normalizeQuizAnswers = void 0;
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const quiz_constants_1 = require("./quiz.constants");
 const SORTABLE_FIELDS = new Set([
@@ -53,6 +53,15 @@ const parseEnumNumber = (value, field, allowed) => {
     if (!allowed.includes(parsed))
         throw new ApiError_1.default(`${field} không hợp lệ`, 400);
     return parsed;
+};
+const parseEnumNumberList = (value, field, allowed) => {
+    const values = Array.isArray(value)
+        ? value
+        : String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+    if (!values.length)
+        throw new ApiError_1.default(`${field} không hợp lệ`, 400);
+    const parsed = values.map((item) => parseEnumNumber(item, field, allowed));
+    return parsed.length === 1 ? parsed[0] : Array.from(new Set(parsed));
 };
 const parseStatus = (value, required = true) => {
     const parsed = stringValue(value);
@@ -227,7 +236,7 @@ const validateQuizListQuery = (query) => {
     if (sortOrder && !['asc', 'desc', 'ascend', 'descend'].includes(sortOrder)) {
         throw new ApiError_1.default('sort_order không hợp lệ', 400);
     }
-    const quizType = query.quiz_type === undefined ? undefined : parseEnumNumber(query.quiz_type, 'quiz_type', quiz_constants_1.QUIZ_TYPES);
+    const quizType = query.quiz_type === undefined ? undefined : parseEnumNumberList(query.quiz_type, 'quiz_type', quiz_constants_1.QUIZ_TYPES);
     const scoreType = query.score_type === undefined ? undefined : parseEnumNumber(query.score_type, 'score_type', quiz_constants_1.QUIZ_SCORE_TYPES);
     const status = query.quiz_status === undefined ? undefined : parseStatus(query.quiz_status);
     const learnNumber = optionalInteger(query.learn_number, 'learn_number');
@@ -302,27 +311,6 @@ const validateQuizExportQuery = (query) => {
     return { ...list, format, quiz_ids: quizIds };
 };
 exports.validateQuizExportQuery = validateQuizExportQuery;
-const validateQuizSubmissionQuery = (query) => {
-    const page = optionalInteger(query.page, 'page') ?? 1;
-    const limit = optionalInteger(query.limit, 'limit') ?? 20;
-    if (page < 1)
-        throw new ApiError_1.default('page phải lớn hơn 0', 400);
-    if (limit < 1 || limit > 100)
-        throw new ApiError_1.default('limit phải nằm trong khoảng 1-100', 400);
-    const latestText = stringValue(query.latest)?.toLowerCase();
-    if (latestText && !['true', 'false', '1', '0'].includes(latestText))
-        throw new ApiError_1.default('latest không hợp lệ', 400);
-    const order = stringValue(query.sort_order);
-    return {
-        page,
-        limit,
-        username: stringValue(query.username),
-        class_id: stringValue(query.class_id),
-        latest: latestText === undefined ? true : latestText === 'true' || latestText === '1',
-        sort_order: order === 'asc' || order === 'ascend' ? 'asc' : 'desc',
-    };
-};
-exports.validateQuizSubmissionQuery = validateQuizSubmissionQuery;
 const validateQuizImportRows = (rows) => {
     const errors = [];
     const validRows = [];
@@ -342,7 +330,7 @@ const validateQuizImportRows = (rows) => {
                 ans: row.ans,
                 score_type: row.score_type ?? 1,
                 ans_duration: row.ans_duration ?? 60,
-                quiz_status: row.quiz_status ?? 'active',
+                quiz_status: row.quiz_status ?? 'done',
                 quiz_index: row.quiz_index ?? 0,
             });
             if (!payload.quiz_id)

@@ -28,16 +28,15 @@ const issueLessonSecondaryToken = (req, password) => {
     if (!safeEqualHex(actualHash, expectedHash)) {
         throw new ApiError_1.default('Mật khẩu cấp 2 không đúng', 401);
     }
-    const configuredMinutes = Number(process.env.LESSONS_REAUTH_TTL_MINUTES);
-    const ttlMinutes = Number.isInteger(configuredMinutes)
-        ? Math.min(Math.max(configuredMinutes, 1), 60)
-        : 15;
+    // Token gắn với session đăng nhập hiện tại. Không đặt TTL để người dùng
+    // không bị yêu cầu nhập lại mật khẩu giữa phiên; đăng xuất sẽ đổi sessionId
+    // nên token cũ tự mất hiệu lực.
     const token = jsonwebtoken_1.default.sign({
         type: TOKEN_SCOPE,
         userId: Number(req.user?.userId),
         sessionId: String(req.user?.sessionId || ''),
-    }, secret, { expiresIn: `${ttlMinutes}m` });
-    return { token, expiresInSeconds: ttlMinutes * 60 };
+    }, secret);
+    return { token, expiresInSeconds: null };
 };
 exports.issueLessonSecondaryToken = issueLessonSecondaryToken;
 const requireLessonSecondaryAuth = (req, res, next) => {

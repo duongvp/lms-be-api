@@ -22,12 +22,11 @@ const parseSuccessfulResponse = (payload, pair) => {
     if (!Array.isArray(course.sections)) {
         throw new HmoCourseOutlineError('HMO_INVALID_RESPONSE', `HMO thiếu danh sách Section cho Package ${pair.packageId} / Course ${pair.courseId}`);
     }
-    // Theo hợp đồng HMO, `lesson_id` của lịch là ID của section trong outline.
-    // ID của các phần tử `section.lessons[]` là nội dung con và không được dùng
-    // làm external lesson_id của calendar.
-    const lessons = course.sections.map((section) => ({
-        lessonId: String(section?.id ?? section?.sectionId ?? '').trim(),
-        name: String(section?.name ?? '').trim() || undefined,
+    // `section.id` chỉ là ID nhóm nội dung. Lesson ID HMO cần dùng trong lịch là
+    // ID của phần tử nằm trong `section.lessons[]`.
+    const lessons = course.sections.flatMap((section) => (Array.isArray(section?.lessons) ? section.lessons : [])).map((lesson) => ({
+        lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
+        name: String(lesson?.name ?? '').trim() || undefined,
     })).filter((lesson) => lesson.lessonId);
     return {
         packageId: pair.packageId,
@@ -78,6 +77,21 @@ const fetchCourseOutline = async (baseUrl, token, timeoutMs, pair) => {
     }
     return parseSuccessfulResponse(payload, pair);
 };
+const wait = (milliseconds) => new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+});
+// HMO đôi khi trả `success` nhưng chưa hydrate `section.lessons`. Retry chỉ
+// áp dụng cho phản hồi thành công rỗng; lỗi HTTP/timeout vẫn được trả ngay.
+const fetchCourseOutlineWithEmptyLessonsRetry = async (baseUrl, token, timeoutMs, pair, retryCount, retryDelayMs) => {
+    for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+        const result = await fetchCourseOutline(baseUrl, token, timeoutMs, pair);
+        if (!result.exists || result.lessons.length || attempt === retryCount) {
+            return result;
+        }
+        await wait(retryDelayMs * (attempt + 1));
+    }
+    throw new Error('Không thể tải outline HMO');
+};
 const fetchHocmaiCourseOutlines = async (pairs) => {
     if (!pairs.length)
         return [];
@@ -89,13 +103,15 @@ const fetchHocmaiCourseOutlines = async (pairs) => {
     const timeoutMs = getPositiveInteger(process.env.HMO_COURSE_OUTLINE_TIMEOUT_MS
         || process.env.HMO_BATCH_TIMEOUT_MS, 15_000);
     const concurrency = Math.min(getPositiveInteger(process.env.HMO_COURSE_OUTLINE_CONCURRENCY, 5), 20);
+    const emptyLessonsRetryCount = Math.min(getPositiveInteger(process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRIES, 2), 5);
+    const emptyLessonsRetryDelayMs = Math.min(getPositiveInteger(process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRY_DELAY_MS, 400), 5_000);
     const results = new Array(pairs.length);
     let nextIndex = 0;
     const worker = async () => {
         while (nextIndex < pairs.length) {
             const index = nextIndex;
             nextIndex += 1;
-            results[index] = await fetchCourseOutline(baseUrl, token, timeoutMs, pairs[index]);
+            results[index] = await fetchCourseOutlineWithEmptyLessonsRetry(baseUrl, token, timeoutMs, pairs[index], emptyLessonsRetryCount, emptyLessonsRetryDelayMs);
         }
     };
     await Promise.all(Array.from({ length: Math.min(concurrency, pairs.length) }, worker));

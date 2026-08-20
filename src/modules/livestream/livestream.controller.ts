@@ -105,6 +105,16 @@ export const updateBulk = async (req: Request, res: Response, next: NextFunction
   }
 };
 
+export const backfillMissingTeachingUsers = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { ids } = req.body;
+    const result = await livestreamService.backfillMissingCalendarTeachingUsers(ids);
+    res.status(200).json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
 export const updateSchedule = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { id } = req.params;

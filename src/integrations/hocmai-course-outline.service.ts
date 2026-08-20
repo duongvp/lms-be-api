@@ -44,12 +44,13 @@ const parseSuccessfulResponse = (
     );
   }
 
-  // Theo hợp đồng HMO, `lesson_id` của lịch là ID của section trong outline.
-  // ID của các phần tử `section.lessons[]` là nội dung con và không được dùng
-  // làm external lesson_id của calendar.
-  const lessons = course.sections.map((section: any) => ({
-    lessonId: String(section?.id ?? section?.sectionId ?? '').trim(),
-    name: String(section?.name ?? '').trim() || undefined,
+  // `section.id` chỉ là ID nhóm nội dung. Lesson ID HMO cần dùng trong lịch là
+  // ID của phần tử nằm trong `section.lessons[]`.
+  const lessons = course.sections.flatMap((section: any) => (
+    Array.isArray(section?.lessons) ? section.lessons : []
+  )).map((lesson: any) => ({
+    lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
+    name: String(lesson?.name ?? '').trim() || undefined,
   })).filter((lesson: any) => lesson.lessonId);
 
   return {
@@ -129,6 +130,30 @@ const fetchCourseOutline = async (
   return parseSuccessfulResponse(payload, pair);
 };
 
+const wait = (milliseconds: number) => new Promise<void>((resolve) => {
+  setTimeout(resolve, milliseconds);
+});
+
+// HMO đôi khi trả `success` nhưng chưa hydrate `section.lessons`. Retry chỉ
+// áp dụng cho phản hồi thành công rỗng; lỗi HTTP/timeout vẫn được trả ngay.
+const fetchCourseOutlineWithEmptyLessonsRetry = async (
+  baseUrl: string,
+  token: string,
+  timeoutMs: number,
+  pair: PackageCoursePair,
+  retryCount: number,
+  retryDelayMs: number
+): Promise<HmoCourseOutlineResult> => {
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+    const result = await fetchCourseOutline(baseUrl, token, timeoutMs, pair);
+    if (!result.exists || result.lessons.length || attempt === retryCount) {
+      return result;
+    }
+    await wait(retryDelayMs * (attempt + 1));
+  }
+  throw new Error('Không thể tải outline HMO');
+};
+
 export const fetchHocmaiCourseOutlines = async (
   pairs: PackageCoursePair[]
 ): Promise<HmoCourseOutlineResult[]> => {
@@ -156,6 +181,14 @@ export const fetchHocmaiCourseOutlines = async (
     getPositiveInteger(process.env.HMO_COURSE_OUTLINE_CONCURRENCY, 5),
     20
   );
+  const emptyLessonsRetryCount = Math.min(
+    getPositiveInteger(process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRIES, 2),
+    5
+  );
+  const emptyLessonsRetryDelayMs = Math.min(
+    getPositiveInteger(process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRY_DELAY_MS, 400),
+    5_000
+  );
   const results = new Array<HmoCourseOutlineResult>(pairs.length);
   let nextIndex = 0;
 
@@ -163,11 +196,13 @@ export const fetchHocmaiCourseOutlines = async (
     while (nextIndex < pairs.length) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await fetchCourseOutline(
+      results[index] = await fetchCourseOutlineWithEmptyLessonsRetry(
         baseUrl,
         token,
         timeoutMs,
-        pairs[index]
+        pairs[index],
+        emptyLessonsRetryCount,
+        emptyLessonsRetryDelayMs
       );
     }
   };

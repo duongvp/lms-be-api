@@ -444,8 +444,8 @@ test('HMO dùng nhiều GET và giới hạn số request chạy đồng thời'
       && url.searchParams.get('token') === 'test-token'
     )));
     assert.deepEqual(results[0].lessons, [{
-      lessonId: '1096309',
-      name: 'Section',
+      lessonId: '168357',
+      name: 'Lesson',
     }]);
   } finally {
     global.fetch = originalFetch;
@@ -458,5 +458,62 @@ test('HMO dùng nhiều GET và giới hạn số request chạy đồng thời'
     } else {
       process.env.HMO_COURSE_OUTLINE_CONCURRENCY = originalConcurrency;
     }
+  }
+});
+
+test('HMO thử lại khi phản hồi success tạm thời chưa có lessons', async () => {
+  const originalFetch = global.fetch;
+  const originalUrl = process.env.HMO_COURSE_OUTLINE_URL;
+  const originalToken = process.env.HMO_COURSE_OUTLINE_TOKEN;
+  const originalRetries = process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRIES;
+  const originalDelay = process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRY_DELAY_MS;
+  let requestCount = 0;
+  process.env.HMO_COURSE_OUTLINE_URL = 'https://hmo.test/api/course/outline';
+  process.env.HMO_COURSE_OUTLINE_TOKEN = 'test-token';
+  process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRIES = '1';
+  process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRY_DELAY_MS = '1';
+  global.fetch = async (input) => {
+    const url = new URL(String(input));
+    requestCount += 1;
+    return new Response(JSON.stringify({
+      status: 'success',
+      data: {
+        course: {
+          id: url.searchParams.get('course'),
+          sections: requestCount === 1
+            ? [{ id: '1095301', name: 'Section chưa tải lessons' }]
+            : [{
+              id: '1095301',
+              name: 'Section',
+              lessons: [{ id: '161327', name: 'Lesson đã tải' }],
+            }],
+        },
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    const [result] = await fetchHocmaiCourseOutlines([{
+      packageId: '9018',
+      courseId: '3128',
+    }]);
+    assert.equal(requestCount, 2);
+    assert.deepEqual(result.lessons, [{
+      lessonId: '161327',
+      name: 'Lesson đã tải',
+    }]);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.HMO_COURSE_OUTLINE_URL;
+    else process.env.HMO_COURSE_OUTLINE_URL = originalUrl;
+    if (originalToken === undefined) delete process.env.HMO_COURSE_OUTLINE_TOKEN;
+    else process.env.HMO_COURSE_OUTLINE_TOKEN = originalToken;
+    if (originalRetries === undefined) delete process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRIES;
+    else process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRIES = originalRetries;
+    if (originalDelay === undefined) delete process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRY_DELAY_MS;
+    else process.env.HMO_COURSE_OUTLINE_EMPTY_LESSONS_RETRY_DELAY_MS = originalDelay;
   }
 });

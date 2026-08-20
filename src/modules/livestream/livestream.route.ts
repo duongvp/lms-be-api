@@ -231,6 +231,12 @@ router.put(
   )),
   livestreamController.updateBulk
 );
+// Công cụ khôi phục enrollment cho dữ liệu calendar legacy. Không yêu cầu
+// quyền nghiệp vụ riêng theo yêu cầu tạm thời, nhưng vẫn phải đăng nhập.
+router.post(
+  '/sync-missing-teaching-users',
+  livestreamController.backfillMissingTeachingUsers
+);
 router.put(
   '/:id/reschedule',
   authorize(['calendar.update']),

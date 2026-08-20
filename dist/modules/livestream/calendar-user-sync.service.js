@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.syncCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarClassId = exports.excelDateSerialFromCalendarDate = void 0;
+exports.syncCalendarTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarClassId = exports.excelDateSerialFromCalendarDate = void 0;
 const client_1 = require("@prisma/client");
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -117,6 +117,11 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
     if (username.length > 100) {
         throw new Error(`Username nhân sự "${username}" vượt quá 100 ký tự`);
     }
+    const existingWithHmid = await client.users.findFirst({
+        where: { username, student_hmid: { not: null } },
+        select: { student_hmid: true }
+    });
+    const studentHmid = existingWithHmid?.student_hmid || null;
     await client.users.upsert({
         where: {
             username_code_learn_number: {
@@ -127,7 +132,7 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
         },
         create: {
             username,
-            student_hmid: null,
+            student_hmid: studentHmid,
             email: username,
             phone: null,
             name: displayName,
@@ -144,10 +149,82 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
             islearn: 0,
             room_id: 1,
             class_id: classId,
+            ...(studentHmid ? { student_hmid: studentHmid } : {}),
             updated_at: new Date(),
         },
     });
 };
+/**
+ * Bổ sung enrollment cho nhân sự đã gán trên calendar nhưng chưa có trong
+ * users. Dùng ở cập nhật hàng loạt để khôi phục các lịch legacy đã tồn tại
+ * trước khi cơ chế tự đồng bộ được bật. Hàm này tuyệt đối không cập nhật hay
+ * xóa user đã có; chỉ tạo đúng các bản ghi còn thiếu.
+ */
+const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
+    if (!isActiveSchedule(calendar))
+        return { created: 0 };
+    const profileCacheKey = [
+        normalizeText(calendar.teacher),
+        parseAssistantTeachers(calendar.assistant_teacher).sort().join(','),
+    ].join('|');
+    let profiles = profileCache?.get(profileCacheKey);
+    if (!profiles) {
+        profiles = await resolveTeachingProfiles(client, calendar);
+        profileCache?.set(profileCacheKey, profiles);
+    }
+    if (!profiles.length)
+        return { created: 0 };
+    const classId = (0, exports.buildCalendarClassId)(calendar.code, calendar.start_time, calendar.learn_number);
+    let created = 0;
+    for (const profile of profiles) {
+        const username = normalizeText(profile.username);
+        const existing = await client.users.findUnique({
+            where: {
+                username_code_learn_number: {
+                    username,
+                    code: calendar.code,
+                    learn_number: calendar.learn_number,
+                },
+            },
+            select: { id: true },
+        });
+        if (existing)
+            continue;
+        const displayName = normalizeText(profile.display_name) || username;
+        const existingWithHmid = await client.users.findFirst({
+            where: { username, student_hmid: { not: null } },
+            select: { student_hmid: true },
+        });
+        const studentHmid = existingWithHmid?.student_hmid || null;
+        try {
+            await client.users.create({
+                data: {
+                    username,
+                    student_hmid: studentHmid,
+                    email: username,
+                    phone: null,
+                    name: displayName,
+                    code: calendar.code,
+                    learn_number: calendar.learn_number,
+                    islearn: 0,
+                    room_id: 1,
+                    class_id: classId,
+                    created_at: new Date(),
+                    updated_at: new Date(),
+                },
+            });
+            created += 1;
+        }
+        catch (error) {
+            // Một request khác có thể vừa tạo cùng enrollment. Khi đó giữ nguyên
+            // bản ghi vừa có, không coi đây là lỗi của cập nhật lịch hàng loạt.
+            if (error?.code !== 'P2002')
+                throw error;
+        }
+    }
+    return { created };
+};
+exports.ensureCalendarTeachingUsers = ensureCalendarTeachingUsers;
 const isStillAssigned = async (client, calendar, profile) => {
     const rows = await client.$queryRaw(client_1.Prisma.sql `
     SELECT teacher, assistant_teacher

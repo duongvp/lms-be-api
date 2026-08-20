@@ -94,7 +94,7 @@ model teams_notification_outbox {
 model lessons {
   id                BigInt   @id @default(autoincrement())
   grade             Int?
-  system_type       calendar_system_type @default(topclass)
+  system_type       lesson_system_type @default(topclass)
   subject_code      String   @db.VarChar(100)
   subject_name      String   @db.VarChar(100)
   learn_number      Int
@@ -491,6 +491,11 @@ enum calendar_system_type {
   topclass
   event
   phaken
+  topuni
+}
+
+enum lesson_system_type {
+  topclass
   topuni
 }
 

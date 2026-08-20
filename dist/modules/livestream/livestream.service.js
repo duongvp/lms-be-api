@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
+exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const package_course_sheet_service_1 = require("../../integrations/package-course-sheet.service");
@@ -156,10 +156,9 @@ const normalizeTeachingAssignments = async (client, data) => {
     }
     if (teacher) {
         const teacherProfile = await (0, calendar_user_sync_service_1.resolveCalendarTeacherProfile)(client, teacher);
-        teacher = String(teacherProfile?.username || '').trim();
+        teacher = String(teacherProfile?.display_name || teacherProfile?.username || '').trim();
     }
-    // Từ đây calendar.teacher và calendar.assistant_teacher đều lưu username.
-    // Các bản ghi legacy có display_name vẫn được xử lý trong user synchronizer.
+    // Calendar lưu display_name cho giáo viên và username cho trợ giảng.
     if (assistants.length) {
         const profiles = await client.$queryRaw(client_1.Prisma.sql `
       SELECT username, can_view_stream_key
@@ -178,6 +177,26 @@ const normalizeTeachingAssignments = async (client, data) => {
     if (hasAssistants) {
         data.assistant_teacher = assistants.length ? assistants.join(',') : null;
     }
+    return data;
+};
+// Tạm thời chưa đối chiếu giáo viên/trợ giảng với teacher_profiles khi cập nhật
+// lịch. Giá trị nhập từ màn hình được lưu nguyên văn; việc đồng bộ user/phòng
+// học cũng được tắt ở updateCalendarRecord bằng cờ bên dưới.
+const normalizeTeachingAssignmentsForScheduleUpdate = (data) => {
+    const hasTeacher = Object.prototype.hasOwnProperty.call(data, 'teacher');
+    const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
+    if (hasTeacher) {
+        const teacher = String(data.teacher || '').trim();
+        if (teacher.length > 150) {
+            throw new Error('Tên giáo viên không được vượt quá 150 ký tự');
+        }
+        data.teacher = teacher || null;
+    }
+    if (hasAssistants) {
+        const assistants = parseAssistantTeachers(data.assistant_teacher);
+        data.assistant_teacher = assistants.length ? assistants.join(',') : null;
+    }
+    data.skip_teacher_user_sync = true;
     return data;
 };
 const hydrateAssistantTeachers = async (client, records) => {
@@ -231,18 +250,21 @@ const createCalendarRecord = async (client, data, previousTeachingCalendar = nul
     }
     return result;
 };
-const updateCalendarRecord = async (client, id, data) => {
-    const before = await client.calendar.findUnique({ where: { id } });
+const updateCalendarRecord = async (client, id, data, preloadedBefore) => {
+    const before = preloadedBefore || await client.calendar.findUnique({ where: { id } });
     if (!before)
         throw new Error('Not found');
-    await hydrateAssistantTeachers(client, [before]);
+    if (!preloadedBefore)
+        await hydrateAssistantTeachers(client, [before]);
     const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
     const assistantTeacher = data.assistant_teacher ?? null;
     const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'session_id');
     const sessionId = data.session_id ?? null;
+    const skipTeacherUserSync = data.skip_teacher_user_sync === true;
     const prismaData = { ...data };
     delete prismaData.assistant_teacher;
     delete prismaData.session_id;
+    delete prismaData.skip_teacher_user_sync;
     const updated = await client.calendar.update({ where: { id }, data: prismaData });
     if (hasAssistants) {
         await client.$executeRaw `
@@ -258,9 +280,20 @@ const updateCalendarRecord = async (client, id, data) => {
       WHERE id = ${id}
     `;
     }
-    const result = { ...updated };
-    await hydrateAssistantTeachers(client, [result]);
-    await (0, calendar_user_sync_service_1.syncCalendarTeachingUsers)(client, before, result);
+    // Các cột legacy assistant_teacher/session_id không nằm trong Prisma model.
+    // Dùng snapshot đã hydrate để dựng kết quả, tránh query lại ngay sau UPDATE.
+    const result = {
+        ...updated,
+        assistant_teacher: hasAssistants
+            ? assistantTeacher
+            : before.assistant_teacher ?? null,
+        session_id: hasSessionId
+            ? sessionId
+            : before.session_id ?? null,
+    };
+    if (!skipTeacherUserSync) {
+        await (0, calendar_user_sync_service_1.syncCalendarTeachingUsers)(client, before, result);
+    }
     return result;
 };
 const normalizeRoom = (data) => {
@@ -339,6 +372,12 @@ const startOfDay = (value) => {
 const ensureNotBeforeDate = (value, minDate, message) => {
     if (startOfDay(value) < startOfDay(minDate)) {
         throw new Error(message);
+    }
+};
+const ensureNotBeforeNow = (value) => {
+    const now = (0, dateTime_1.getVietnamWallClockDate)();
+    if (value <= now) {
+        throw new Error('Thời gian buổi học mới phải sau thời gian hiện tại');
     }
 };
 const ensureAfterStartOnSameDate = (value, previousStart) => {
@@ -646,6 +685,23 @@ const createPackageLessonMappingForCalendar = async (tx, calendar, mappings) => 
     `;
     }
 };
+// Bản ghi nghỉ luôn dùng key mới nên có thể sao chép toàn bộ mapping trong
+// một câu lệnh. Cách này giảm đáng kể số query khi nghỉ và tạo bù hàng loạt.
+const copyPackageLessonMappingsForCalendar = async (tx, calendar, mappings) => {
+    if (!mappings.length)
+        return;
+    await tx.package_lesson_mapping.createMany({
+        data: mappings.map((mapping) => ({
+            package_id: mapping.package_id,
+            course_id: mapping.course_id,
+            lesson_id: mapping.lesson_id,
+            code: calendar.code,
+            learn_number: calendar.learn_number,
+            key: calendar.key,
+        })),
+        skipDuplicates: true,
+    });
+};
 const replacePackageLessonMappingForCalendar = async (tx, calendar, mappings) => {
     const key = String(calendar?.key || '').trim();
     if (!key) {
@@ -715,6 +771,30 @@ const generateUniqueCanceledKey = async (tx, sourceKey) => {
     }
     return key;
 };
+const DEFAULT_CANCELED_LESSON_NAME_PREFIX = '[Nghỉ] ';
+const DEFAULT_MAKEUP_LESSON_NAME_PREFIX = '[Học Bù] ';
+const normalizeLessonNameAffix = (value, fallback, fieldLabel) => {
+    if (value == null || value === '')
+        return fallback;
+    if (typeof value !== 'string') {
+        throw new Error(`${fieldLabel} phải là chuỗi ký tự`);
+    }
+    // Giữ nguyên khoảng trắng mà người dùng chủ động nhập ở cuối tiền tố hoặc
+    // đầu hậu tố, ví dụ "[Nghỉ] " phải tạo thành "[Nghỉ] Tên bài".
+    return value;
+};
+const formatRescheduledLessonName = (lessonName, prefix, suffix) => {
+    const baseName = String(lessonName ?? '').trim();
+    const formatted = `${prefix}${baseName}${suffix}`.trim();
+    if (formatted.length > 400) {
+        throw new Error('Tên bài sau khi thêm tiền tố/hậu tố không được vượt quá 400 ký tự');
+    }
+    return formatted;
+};
+const getRescheduleLessonNameOptions = (payload) => ({
+    canceledLessonName: (lessonName) => formatRescheduledLessonName(lessonName, normalizeLessonNameAffix(payload?.canceled_lesson_name_prefix, DEFAULT_CANCELED_LESSON_NAME_PREFIX, 'Tiền tố tên bài nghỉ'), normalizeLessonNameAffix(payload?.canceled_lesson_name_suffix, '', 'Hậu tố tên bài nghỉ')),
+    makeupLessonName: (lessonName) => formatRescheduledLessonName(lessonName, normalizeLessonNameAffix(payload?.new_lesson_name_prefix, DEFAULT_MAKEUP_LESSON_NAME_PREFIX, 'Tiền tố tên bài mới'), normalizeLessonNameAffix(payload?.new_lesson_name_suffix, '', 'Hậu tố tên bài mới')),
+});
 // 1.3 & 5 Kiểm tra trùng lặp
 const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, start_time, end_time, id, client = prisma, }) => {
     ensureValidTimeRange(start_time, end_time);
@@ -747,18 +827,17 @@ const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, s
         if (conflictAssistant)
             throw new Error("Trùng lịch trợ giảng");
     }
-    if (channel_name) {
-        const conflictRoom = await client.calendar.findFirst({
-            where: {
-                channel_name,
-                start_time: { lt: end_time },
-                end_time: { gt: start_time },
-                id: id ? { not: id } : undefined
-            }
-        });
-        if (conflictRoom)
-            throw new Error("Trùng lịch phòng học");
-    }
+    // if (channel_name) {
+    //   const conflictRoom = await client.calendar.findFirst({
+    //     where: {
+    //       channel_name,
+    //       start_time: { lt: end_time },
+    //       end_time: { gt: start_time },
+    //       id: id ? { not: id } : undefined
+    //     }
+    //   });
+    //   if (conflictRoom) throw new Error("Trùng lịch phòng học");
+    // }
     if (code) {
         const conflictCourse = await client.calendar.findFirst({
             where: {
@@ -900,16 +979,19 @@ const getHocmaiSectionsForProgramLesson = async (programCode, lessonId) => {
         packageId: String(mapping.package_id),
         courseId: String(mapping.course_id),
     })));
-    const data = outlines.flatMap((outline) => outline.lessons.map((section) => ({
+    const data = outlines.flatMap((outline) => outline.lessons.map((lesson) => ({
         package_id: outline.packageId,
         course_id: outline.courseId,
-        lesson_id: section.lessonId,
-        lesson_name: section.name,
+        lesson_id: lesson.lessonId,
+        lesson_name: lesson.name,
     })));
-    hmoSectionsCache.set(cacheKey, {
-        expiresAt: Date.now() + HMO_SECTIONS_CACHE_TTL_MS,
-        data,
-    });
+    // Không cache danh sách rỗng: HMO có thể trả success trước khi hydrate lessons.
+    if (data.length) {
+        hmoSectionsCache.set(cacheKey, {
+            expiresAt: Date.now() + HMO_SECTIONS_CACHE_TTL_MS,
+            data,
+        });
+    }
     return data;
 };
 exports.getHocmaiSectionsForProgramLesson = getHocmaiSectionsForProgramLesson;
@@ -1098,24 +1180,38 @@ const createValidatedInternalCalendarImport = async (rows, changeActor) => {
     }));
 };
 exports.createValidatedInternalCalendarImport = createValidatedInternalCalendarImport;
-const cancelWithoutMakeup = async (tx, current, reason) => {
+const cancelWithoutMakeup = async (tx, current, payload, reason) => {
+    const lessonNameOptions = getRescheduleLessonNameOptions(payload);
     return updateCalendarRecord(tx, current.id, {
         lesson_status: 1,
         cancel_reason: reason,
+        lesson_noti: reason,
+        lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
+        skip_teacher_user_sync: true,
     });
 };
-const cancelWithMakeup = async (tx, current, payload, reason) => {
+const cancelWithMakeup = async (tx, current, payload, reason, preloadedSourceMappings) => {
+    // Mapping của key gốc vẫn phải giữ cho lịch bù. Đọc trước để copy riêng cho
+    // bản ghi nghỉ có key _huy, từ đó HMO có đủ package/course/lesson để đồng bộ.
+    const sourceKey = String(current.key || '').trim();
+    if (!sourceKey)
+        throw new Error('Lịch học không có key để dời lịch');
+    const sourceMappings = preloadedSourceMappings ?? await tx.package_lesson_mapping.findMany({
+        where: { key: sourceKey },
+        orderBy: [{ id: 'asc' }],
+    });
+    const lessonNameOptions = getRescheduleLessonNameOptions(payload);
     const newSessionInput = normalizeRoom({ ...(payload.new_session || payload) });
     delete newSessionInput.mode;
     delete newSessionInput.update_mode;
     delete newSessionInput.reason;
     delete newSessionInput.change_reason;
     delete newSessionInput.course_end_time;
-    await normalizeTeachingAssignments(tx, newSessionInput);
+    normalizeTeachingAssignmentsForScheduleUpdate(newSessionInput);
     const startTime = new Date(newSessionInput.start_time);
     const endTime = new Date(newSessionInput.end_time);
+    ensureNotBeforeNow(startTime);
     ensureNotAfterCourseEnd(endTime, payload.course_end_time);
-    ensureNotBeforeDate(startTime, current.start_time, "Ngày học bù không được trước ngày của buổi học hiện tại");
     await checkConflict({
         teacher: newSessionInput.teacher ?? current.teacher,
         assistant_teacher: newSessionInput.assistant_teacher ?? current.assistant_teacher,
@@ -1136,25 +1232,41 @@ const cancelWithMakeup = async (tx, current, payload, reason) => {
         lesson_status: 0,
         lesson_count: normalizeLessonCount(current.lesson_count) ?? 0,
         key: current.key,
+        lesson_name: lessonNameOptions.makeupLessonName(current.lesson_name),
     };
     // Giải phóng key gốc trước, sau đó gắn chính key đó cho lịch học bù.
     // Mapping không đổi vì vẫn trỏ đến key gốc đang hoạt động.
     const updatedCurrent = await updateCalendarRecord(tx, current.id, {
         lesson_status: 1,
         cancel_reason: reason,
+        lesson_noti: reason,
         key: canceledKey,
+        lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
+        skip_teacher_user_sync: true,
     });
+    await copyPackageLessonMappingsForCalendar(tx, updatedCurrent, sourceMappings);
     const createdSession = await createCalendarRecord(tx, newSessionData, current);
     return { canceled_session: updatedCurrent, created_session: createdSession };
 };
 const rescheduleFollowing = async (tx, current, payload, reason) => {
+    // Các slot bị dời vẫn dùng key cũ nên mapping cũ được giữ nguyên. Chỉ bản
+    // ghi nghỉ _huy cần một bản copy mapping để queue HMO không bỏ qua nó.
+    const sourceKey = String(current.key || '').trim();
+    if (!sourceKey)
+        throw new Error('Lịch học không có key để dời lịch');
+    const sourceMappings = await tx.package_lesson_mapping.findMany({
+        where: { key: sourceKey },
+        orderBy: [{ id: 'asc' }],
+    });
+    const lessonNameOptions = getRescheduleLessonNameOptions(payload);
     const newSessionInput = normalizeRoom({ ...(payload.new_session || {}) });
-    await normalizeTeachingAssignments(tx, newSessionInput);
+    normalizeTeachingAssignmentsForScheduleUpdate(newSessionInput);
     if (!newSessionInput.start_time || !newSessionInput.end_time) {
         throw new Error("Vui lòng cung cấp new_session.start_time và new_session.end_time");
     }
     const startTime = new Date(newSessionInput.start_time);
     const endTime = new Date(newSessionInput.end_time);
+    ensureNotBeforeNow(startTime);
     const lastCourseSession = await tx.calendar.findFirst({
         where: {
             code: current.code,
@@ -1196,8 +1308,12 @@ const rescheduleFollowing = async (tx, current, payload, reason) => {
     const updatedCurrent = await updateCalendarRecord(tx, current.id, {
         lesson_status: 1,
         cancel_reason: reason,
+        lesson_noti: reason,
         key: canceledKey,
+        lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
+        skip_teacher_user_sync: true,
     });
+    await createPackageLessonMappingForCalendar(tx, updatedCurrent, sourceMappings);
     const shiftedSessions = [];
     for (let i = 0; i < followings.length; i++) {
         const targetSession = followings[i];
@@ -1209,6 +1325,7 @@ const rescheduleFollowing = async (tx, current, payload, reason) => {
             ...copySessionData(sourceSession),
             lesson_status: 0,
             key: sourceSession.key,
+            skip_teacher_user_sync: true,
         };
         const shiftedSession = await updateCalendarRecord(tx, targetSession.id, updateData);
         shiftedSessions.push(shiftedSession);
@@ -1234,28 +1351,29 @@ const rescheduleFollowing = async (tx, current, payload, reason) => {
         created_session: createdSession,
     };
 };
-const rescheduleSessionInTransaction = async (tx, id, payload, changeActor) => {
+const rescheduleSessionInTransaction = async (tx, id, payload, changeActor, context) => {
     const mode = payload.mode || payload.update_mode || 'cancel';
     const reason = normalizeChangeReason(payload);
     const actor = normalizeChangeActor(changeActor);
     const operationId = crypto_1.default.randomUUID();
     // Đọc và validate bên trong transaction để không dùng snapshot cũ khi có
     // hai yêu cầu cùng dời lịch của một khóa.
-    const current = await tx.calendar.findUnique({ where: { id } });
+    const current = context?.current ?? await tx.calendar.findUnique({ where: { id } });
     if (!current)
         throw new Error("Not found");
-    await hydrateAssistantTeachers(tx, [current]);
+    if (!context?.current)
+        await hydrateAssistantTeachers(tx, [current]);
     assertCanUpdateSession(current);
     let action;
     let result;
     let beforeFollowingSessions = [];
     if (['cancel', 'cancel_only', 'no_makeup', 'no_make_up'].includes(mode)) {
         action = 'cancel';
-        result = await cancelWithoutMakeup(tx, current, reason);
+        result = await cancelWithoutMakeup(tx, current, payload, reason);
     }
     else if (['makeup', 'make_up', 'compensate'].includes(mode)) {
         action = 'makeup';
-        result = await cancelWithMakeup(tx, current, payload, reason);
+        result = await cancelWithMakeup(tx, current, payload, reason, context?.sourceMappings);
     }
     else if (mode === 'following') {
         action = 'following';
@@ -1383,6 +1501,12 @@ const bulkRescheduleSessions = async (payload, changeActor) => {
         if (selected.length !== ids.length) {
             throw new Error('Có lịch học đã chọn không còn tồn tại');
         }
+        // Nạp metadata và mapping một lần cho cả lô. Tránh mỗi lịch lại query
+        // session_id/assistant_teacher và package_lesson_mapping riêng biệt.
+        await hydrateAssistantTeachers(tx, selected);
+        const sourceMappingsByKey = operation === 'makeup'
+            ? await loadMappingsByKeys(tx, selected.map((session) => String(session.key || '').trim()).filter(Boolean))
+            : new Map();
         const programCodes = new Set(selected.map((session) => String(session.code)));
         if (programCodes.size !== 1) {
             throw new Error('Chỉ được xử lý hàng loạt các lịch thuộc cùng một Chương trình');
@@ -1393,8 +1517,12 @@ const bulkRescheduleSessions = async (payload, changeActor) => {
             const sessionPayload = {
                 mode: operation,
                 reason,
+                canceled_lesson_name_prefix: payload?.canceled_lesson_name_prefix,
+                canceled_lesson_name_suffix: payload?.canceled_lesson_name_suffix,
             };
             if (operation === 'makeup') {
+                sessionPayload.new_lesson_name_prefix = payload?.new_lesson_name_prefix;
+                sessionPayload.new_lesson_name_suffix = payload?.new_lesson_name_suffix;
                 const startTime = new Date(session.start_time);
                 const endTime = new Date(session.end_time);
                 startTime.setDate(startTime.getDate() + offsetDays);
@@ -1404,7 +1532,10 @@ const bulkRescheduleSessions = async (payload, changeActor) => {
                     end_time: endTime,
                 };
             }
-            results.push(await rescheduleSessionInTransaction(tx, session.id, sessionPayload, changeActor));
+            results.push(await rescheduleSessionInTransaction(tx, session.id, sessionPayload, changeActor, {
+                current: session,
+                sourceMappings: sourceMappingsByKey.get(String(session.key || '').trim()) ?? [],
+            }));
         }
         return {
             operation,
@@ -1451,7 +1582,7 @@ const updateSchedule = async (id, data, updateMode, changeActor) => {
         }
     }
     normalizeRoom(data);
-    await normalizeTeachingAssignments(prisma, data);
+    normalizeTeachingAssignmentsForScheduleUpdate(data);
     delete data.package_lesson_mappings;
     delete data.key;
     delete data.new_session;
@@ -2049,7 +2180,8 @@ const updateBulk = async (config, changeActor) => {
         }
         if (update_data.room)
             dataToUpdate.channel_name = update_data.room;
-        await normalizeTeachingAssignments(prisma, dataToUpdate);
+        normalizeTeachingAssignmentsForScheduleUpdate(dataToUpdate);
+        const hasCommonCalendarFieldUpdate = Object.keys(dataToUpdate).some((key) => key !== 'skip_teacher_user_sync');
         // LƯU Ý QUAN TRỌNG: 
         // Nếu đổi thời gian chung (ví dụ từ 19:00 -> 21:00) cho nhiều ngày khác nhau, 
         // ta KHÔNG THỂ dùng prisma.calendar.updateMany được, vì mỗi dòng có start_time/end_time thuộc ngày khác nhau.
@@ -2061,14 +2193,21 @@ const updateBulk = async (config, changeActor) => {
             || dataToUpdate.channel_name) {
             return await prisma.$transaction(async (tx) => {
                 const results = [];
+                const normalizedIds = ids.map((id) => Number(id));
+                const sessions = await tx.calendar.findMany({
+                    where: { id: { in: normalizedIds } },
+                });
+                await hydrateAssistantTeachers(tx, sessions);
+                sessions.forEach(assertCanUpdateSession);
+                const sessionsById = new Map(sessions.map((session) => [Number(session.id), session]));
+                const teachingProfileCache = new Map();
+                const teamsEvents = [];
                 const applyUpdates = async () => {
                     for (const idStr of ids) {
                         const id = Number(idStr);
-                        const current = await tx.calendar.findUnique({ where: { id } });
+                        const current = sessionsById.get(id);
                         if (!current)
                             continue;
-                        await hydrateAssistantTeachers(tx, [current]);
-                        assertCanUpdateSession(current);
                         let newStart = current.start_time;
                         let newEnd = current.end_time;
                         // Thay thế giờ/phút, giữ nguyên ngày/tháng/năm
@@ -2096,14 +2235,15 @@ const updateBulk = async (config, changeActor) => {
                             ...dataToUpdate,
                             start_time: newStart,
                             end_time: newEnd,
-                        });
+                        }, current);
+                        await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, updated, teachingProfileCache);
                         await auditTimeChange(tx, current, updated, changeActor, config?.reason ?? config?.change_reason);
                         if (commonMappingUpdate) {
                             await assertMappingsBelongToCalendarLesson(tx, current, commonMappingUpdate);
                             await replacePackageLessonMappingForCalendar(tx, updated, commonMappingUpdate);
                         }
                         await (0, hocmai_sync_queue_service_1.enqueueCalendarSync)(tx, crypto_1.default.randomUUID(), 1, 'update', updated);
-                        await (0, teams_notifications_1.enqueueCalendarTeamsNotification)(tx, {
+                        teamsEvents.push({
                             eventType: 'updated',
                             before: current,
                             after: updated,
@@ -2111,6 +2251,7 @@ const updateBulk = async (config, changeActor) => {
                         });
                         results.push(updated);
                     }
+                    await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, teamsEvents);
                 };
                 await (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, applyUpdates);
                 return results;
@@ -2123,18 +2264,26 @@ const updateBulk = async (config, changeActor) => {
             const sessions = await tx.calendar.findMany({
                 where: { id: { in: normalizedIds } },
             });
+            await hydrateAssistantTeachers(tx, sessions);
             sessions.forEach(assertCanUpdateSession);
             const results = [];
+            const teachingProfileCache = new Map();
+            const teamsEvents = [];
             const applyUpdates = async () => {
                 for (const current of sessions) {
-                    const updated = await updateCalendarRecord(tx, current.id, dataToUpdate);
-                    await auditTimeChange(tx, current, updated, changeActor, config?.reason ?? config?.change_reason);
+                    const updated = hasCommonCalendarFieldUpdate
+                        ? await updateCalendarRecord(tx, current.id, dataToUpdate, current)
+                        : current;
+                    await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, updated, teachingProfileCache);
+                    if (hasCommonCalendarFieldUpdate) {
+                        await auditTimeChange(tx, current, updated, changeActor, config?.reason ?? config?.change_reason);
+                    }
                     if (commonMappingUpdate) {
                         await assertMappingsBelongToCalendarLesson(tx, current, commonMappingUpdate);
                         await replacePackageLessonMappingForCalendar(tx, updated, commonMappingUpdate);
                     }
                     await (0, hocmai_sync_queue_service_1.enqueueCalendarSync)(tx, crypto_1.default.randomUUID(), 1, 'update', updated);
-                    await (0, teams_notifications_1.enqueueCalendarTeamsNotification)(tx, {
+                    teamsEvents.push({
                         eventType: 'updated',
                         before: current,
                         after: updated,
@@ -2142,6 +2291,7 @@ const updateBulk = async (config, changeActor) => {
                     });
                     results.push(updated);
                 }
+                await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, teamsEvents);
             };
             await (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, applyUpdates);
             return results;
@@ -2159,15 +2309,24 @@ const updateBulk = async (config, changeActor) => {
             }
         }
         return await prisma.$transaction(async (tx) => {
+            const normalizedIds = update_data
+                .map((item) => Number(item.id))
+                .filter((id) => Number.isInteger(id) && id > 0);
+            const sessions = await tx.calendar.findMany({
+                where: { id: { in: normalizedIds } },
+            });
+            await hydrateAssistantTeachers(tx, sessions);
+            sessions.forEach(assertCanUpdateSession);
+            const sessionsById = new Map(sessions.map((session) => [Number(session.id), session]));
             const results = [];
+            const teachingProfileCache = new Map();
+            const teamsEvents = [];
             const applyUpdates = async () => {
                 for (const item of update_data) {
                     const id = Number(item.id);
-                    const current = await tx.calendar.findUnique({ where: { id } });
+                    const current = sessionsById.get(id);
                     if (!current)
                         continue;
-                    await hydrateAssistantTeachers(tx, [current]);
-                    assertCanUpdateSession(current);
                     const dataToUpdate = {};
                     if (item.teacher)
                         dataToUpdate.teacher = item.teacher;
@@ -2178,7 +2337,7 @@ const updateBulk = async (config, changeActor) => {
                     }
                     if (item.room)
                         dataToUpdate.channel_name = item.room;
-                    await normalizeTeachingAssignments(tx, dataToUpdate);
+                    normalizeTeachingAssignmentsForScheduleUpdate(dataToUpdate);
                     let newStart = current.start_time;
                     let newEnd = current.end_time;
                     if (item.start_date) {
@@ -2199,11 +2358,15 @@ const updateBulk = async (config, changeActor) => {
                         dataToUpdate.start_time = newStart;
                         dataToUpdate.end_time = newEnd;
                     }
+                    // Phải xác định sau khi đã ghép ngày/giờ vào dataToUpdate. Nếu tính
+                    // trước đoạn này, thao tác chỉ đổi thời gian sẽ bị hiểu nhầm là
+                    // không có thay đổi và bỏ qua UPDATE calendar.
+                    const hasCalendarFieldUpdate = Object.keys(dataToUpdate).some((key) => key !== 'skip_teacher_user_sync');
                     const mappingUpdate = mappingUpdatesById.get(id);
-                    if (!Object.keys(dataToUpdate).length && mappingUpdate === undefined)
+                    if (!hasCalendarFieldUpdate && mappingUpdate === undefined)
                         continue;
                     let updated = current;
-                    if (Object.keys(dataToUpdate).length) {
+                    if (hasCalendarFieldUpdate) {
                         await checkConflict({
                             teacher: dataToUpdate.teacher || current.teacher,
                             assistant_teacher: dataToUpdate.assistant_teacher ?? current.assistant_teacher,
@@ -2213,15 +2376,16 @@ const updateBulk = async (config, changeActor) => {
                             end_time: newEnd,
                             id
                         });
-                        updated = await updateCalendarRecord(tx, id, dataToUpdate);
+                        updated = await updateCalendarRecord(tx, id, dataToUpdate, current);
                         await auditTimeChange(tx, current, updated, changeActor, item?.reason ?? config?.reason);
                     }
+                    await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, updated, teachingProfileCache);
                     if (mappingUpdate) {
                         await assertMappingsBelongToCalendarLesson(tx, current, mappingUpdate);
                         await replacePackageLessonMappingForCalendar(tx, updated, mappingUpdate);
                     }
                     await (0, hocmai_sync_queue_service_1.enqueueCalendarSync)(tx, crypto_1.default.randomUUID(), 1, 'update', updated);
-                    await (0, teams_notifications_1.enqueueCalendarTeamsNotification)(tx, {
+                    teamsEvents.push({
                         eventType: 'updated',
                         before: current,
                         after: updated,
@@ -2229,6 +2393,7 @@ const updateBulk = async (config, changeActor) => {
                     });
                     results.push(updated);
                 }
+                await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, teamsEvents);
             };
             await (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, applyUpdates);
             return results;
@@ -2237,3 +2402,104 @@ const updateBulk = async (config, changeActor) => {
     throw new Error("Invalid config_mode");
 };
 exports.updateBulk = updateBulk;
+/**
+ * Quét lịch legacy để bổ sung enrollment giáo viên/trợ giảng còn thiếu trong
+ * users. Không sửa calendar và không đụng tới user đã tồn tại. Xử lý theo lô
+ * để không giữ transaction quá lâu trên production.
+ */
+const backfillMissingCalendarTeachingUsers = async (ids) => {
+    const batchSize = 100;
+    let scanned = 0;
+    let created = 0;
+    const errors = [];
+    if (ids && ids.length > 0) {
+        for (let i = 0; i < ids.length; i += batchSize) {
+            const batchIds = ids.slice(i, i + batchSize);
+            const batchResult = await prisma.$transaction(async (tx) => {
+                const calendars = await tx.calendar.findMany({
+                    where: { id: { in: batchIds } },
+                    orderBy: { id: 'asc' },
+                });
+                if (!calendars.length)
+                    return { scanned: 0, created: 0, errors: [] };
+                await hydrateAssistantTeachers(tx, calendars);
+                let batchCreated = 0;
+                const batchErrors = [];
+                for (const calendar of calendars) {
+                    try {
+                        const result = await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, calendar);
+                        batchCreated += result.created;
+                    }
+                    catch (error) {
+                        batchErrors.push({
+                            calendar_id: Number(calendar.id),
+                            message: error?.message || 'Không thể bổ sung user nhân sự',
+                        });
+                    }
+                }
+                return {
+                    scanned: calendars.length,
+                    created: batchCreated,
+                    errors: batchErrors,
+                };
+            }, { maxWait: 10_000, timeout: 60_000 });
+            scanned += batchResult.scanned;
+            created += batchResult.created;
+            errors.push(...batchResult.errors);
+        }
+    }
+    else {
+        let lastId = 0;
+        while (true) {
+            const batchResult = await prisma.$transaction(async (tx) => {
+                const calendars = await tx.calendar.findMany({
+                    where: {
+                        id: { gt: lastId },
+                        OR: [
+                            { lesson_status: null },
+                            { lesson_status: { not: 1 } },
+                        ],
+                    },
+                    orderBy: { id: 'asc' },
+                    take: batchSize,
+                });
+                if (!calendars.length)
+                    return { lastId: null, scanned: 0, created: 0, errors: [] };
+                await hydrateAssistantTeachers(tx, calendars);
+                let batchCreated = 0;
+                const batchErrors = [];
+                for (const calendar of calendars) {
+                    try {
+                        const result = await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, calendar);
+                        batchCreated += result.created;
+                    }
+                    catch (error) {
+                        batchErrors.push({
+                            calendar_id: Number(calendar.id),
+                            message: error?.message || 'Không thể bổ sung user nhân sự',
+                        });
+                    }
+                }
+                return {
+                    lastId: Number(calendars[calendars.length - 1].id),
+                    scanned: calendars.length,
+                    created: batchCreated,
+                    errors: batchErrors,
+                };
+            }, { maxWait: 10_000, timeout: 60_000 });
+            if (batchResult.lastId == null)
+                break;
+            lastId = batchResult.lastId;
+            scanned += batchResult.scanned;
+            created += batchResult.created;
+            errors.push(...batchResult.errors);
+        }
+    }
+    return {
+        scanned,
+        created,
+        failed: errors.length,
+        errors: errors.slice(0, 100),
+    };
+};
+exports.backfillMissingCalendarTeachingUsers = backfillMissingCalendarTeachingUsers;

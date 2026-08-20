@@ -5,7 +5,7 @@ const prisma = new PrismaClient();
 const code = 'ZZ_IMPORT_T91';
 const packageId = '999901';
 const courseId = '999801';
-const lessonId = '999701';
+const lessonId = 'child-content-id';
 const expectedKey = 'tc_3132_ZZ_IMPORT_T91_91';
 
 const cleanup = async () => {
@@ -37,9 +37,9 @@ const run = async () => {
           id: url.searchParams.get('course'),
           fullname: 'Integration course',
           sections: [{
-            id: lessonId,
+            id: '999701',
             name: 'Integration section',
-            lessons: [{ id: 'child-content-id', name: 'Integration lesson' }],
+            lessons: [{ id: lessonId, name: 'Integration lesson' }],
           }],
         },
       },

@@ -188,6 +188,9 @@ router.post('/auto-schedule/commit', authorize(['calendar.create']), authorizePr
 router.put('/bulk', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields(Array.isArray(req.body?.update_data)
     ? req.body.update_data.flatMap((item) => Object.keys(item || {}))
     : Object.keys(req.body?.update_data || {}))), livestreamController.updateBulk);
+// Công cụ khôi phục enrollment cho dữ liệu calendar legacy. Không yêu cầu
+// quyền nghiệp vụ riêng theo yêu cầu tạm thời, nhưng vẫn phải đăng nhập.
+router.post('/sync-missing-teaching-users', livestreamController.backfillMissingTeachingUsers);
 router.put('/:id/reschedule', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body?.new_session || {}))), livestreamController.rescheduleSession);
 router.put('/:id', authorize(['calendar.update']), authorizePrograms('calendar.update', async (req) => [
     ...await calendarCodeById(req),

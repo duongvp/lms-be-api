@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildCalendarClassId,
+  ensureCalendarTeachingUsers,
   excelDateSerialFromCalendarDate,
   resolveCalendarTeacherProfile,
   syncCalendarTeachingUsers,
@@ -57,6 +58,7 @@ test('tạo lịch upsert giáo viên và toàn bộ trợ giảng, không tạo
           })),
     },
     users: {
+      findFirst: async () => null,
       upsert: async (input: any) => { upserts.push(input); },
       deleteMany: async () => undefined,
     },
@@ -83,6 +85,45 @@ test('tạo lịch upsert giáo viên và toàn bộ trợ giảng, không tạo
   ));
 });
 
+test('bulk chỉ bổ sung enrollment nhân sự còn thiếu, không sửa user đã tồn tại', async () => {
+  const creates: any[] = [];
+  const existingUsernames = new Set(['gv01']);
+  const client = {
+    teacher_profiles: {
+      findMany: async ({ where }: any) => where.can_view_stream_key === 1
+        ? [{ username: 'gv01', display_name: 'Giáo viên 01' }]
+        : (where.username.in as string[]).map((username) => ({
+            username,
+            display_name: username.toUpperCase(),
+          })),
+    },
+    users: {
+      findFirst: async () => null,
+      findUnique: async ({ where }: any) => (
+        existingUsernames.has(where.username_code_learn_number.username)
+          ? { id: 1 }
+          : null
+      ),
+      create: async (input: any) => { creates.push(input); },
+    },
+  };
+
+  const result = await ensureCalendarTeachingUsers(client, {
+    code: 'tongondinhluonghsav2027',
+    learn_number: 9,
+    start_time: '2026-08-13T20:00:00.000Z',
+    teacher: 'Giáo viên 01',
+    assistant_teacher: 'tg01',
+    lesson_status: 0,
+  });
+
+  assert.equal(result.created, 1);
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].data.username, 'tg01');
+  assert.equal(creates[0].data.room_id, 1);
+  assert.equal(creates[0].data.class_id, 'tongondinhluonghsav20274624791');
+});
+
 test('đổi ngày cập nhật class_id trên đúng user hiện tại, không tạo identity mới', async () => {
   const upserts: any[] = [];
   const updates: any[] = [];
@@ -92,6 +133,7 @@ test('đổi ngày cập nhật class_id trên đúng user hiện tại, không 
       findMany: async () => [{ username: 'gv01', display_name: 'Giáo viên 01' }],
     },
     users: {
+      findFirst: async () => null,
       upsert: async (input: any) => { upserts.push(input); },
       updateMany: async (input: any) => { updates.push(input); },
       deleteMany: async (input: any) => { deletes.push(input); },
@@ -204,6 +246,7 @@ test('đổi giáo viên upsert người mới và thu hồi người cũ nếu 
       },
     },
     users: {
+      findFirst: async () => null,
       upsert: async (input: any) => { upserts.push(input); },
       deleteMany: async (input: any) => { deletes.push(input); },
     },

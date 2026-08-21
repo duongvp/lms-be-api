@@ -2650,9 +2650,12 @@ export const updateBulk = async (
   changeActor?: CalendarChangeActor
 ) => {
   const { ids, config_mode, update_data } = config;
-  // Một lần cập nhật có thể gồm nhiều lịch, mapping HMO và bản ghi audit/queue.
-  // Prisma mặc định chỉ cho interactive transaction 5 giây, không đủ cho luồng này.
-  const bulkTransactionOptions = { maxWait: 10_000, timeout: 60_000 };
+  // Một lần cập nhật có thể gồm nhiều lịch, mapping HMO, bản ghi audit/queue
+  // và bổ sung user nhân sự còn thiếu. Với các lô lớn, 60 giây là không đủ và
+  // Prisma sẽ đóng transaction khi các thay đổi vẫn đang được xử lý. Giữ toàn
+  // bộ thao tác trong một transaction để bảo toàn tính nguyên tử, nhưng cho
+  // phép tối đa 3 phút để hoàn tất một lô hợp lệ.
+  const bulkTransactionOptions = { maxWait: 10_000, timeout: 180_000 };
 
   const applyScheduleDate = (value: unknown, currentTime: Date) => {
     const dateText = String(value || '').trim();
@@ -2744,7 +2747,8 @@ export const updateBulk = async (
               code: current.code,
               start_time: newStart,
               end_time: newEnd,
-              id
+              id,
+              client: tx,
             });
 
             const updated = await updateCalendarRecord(tx, id, {
@@ -2903,7 +2907,8 @@ export const updateBulk = async (
               code: current.code,
               start_time: newStart,
               end_time: newEnd,
-              id
+              id,
+              client: tx,
             });
             updated = await updateCalendarRecord(tx, id, dataToUpdate, current);
             await auditTimeChange(tx, current, updated, changeActor, item?.reason ?? config?.reason);

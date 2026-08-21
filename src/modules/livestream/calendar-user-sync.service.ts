@@ -8,6 +8,10 @@ type TeachingProfile = {
   display_name: string | null;
 };
 
+type ResolvedTeachingProfile = TeachingProfile & {
+  role: 'teacher' | 'assistant';
+};
+
 type CalendarTeachingSnapshot = {
   id?: number;
   code: string;
@@ -124,8 +128,11 @@ const resolveTeachingProfiles = async (
   }
 
   return [
-    ...(teacher ? [teacher] : []),
-    ...assistantUsernames.map((username) => assistantByUsername.get(username)!),
+    ...(teacher ? [{ ...teacher, role: 'teacher' as const }] : []),
+    ...assistantUsernames.map((username) => ({
+      ...assistantByUsername.get(username)!,
+      role: 'assistant' as const,
+    })),
   ];
 };
 
@@ -215,7 +222,7 @@ const upsertTeachingUser = async (
 export const ensureCalendarTeachingUsers = async (
   client: any,
   calendar: CalendarTeachingSnapshot,
-  profileCache?: Map<string, TeachingProfile[]>
+  profileCache?: Map<string, ResolvedTeachingProfile[]>
 ) => {
   if (!isActiveSchedule(calendar)) return { created: 0 };
 
@@ -251,12 +258,14 @@ export const ensureCalendarTeachingUsers = async (
     });
     if (existing) continue;
 
-    const displayName = normalizeText(profile.display_name) || username;
     const existingWithHmid = await client.users.findFirst({
       where: { username, student_hmid: { not: null } },
       select: { student_hmid: true },
     });
     const studentHmid = existingWithHmid?.student_hmid || null;
+    const displayName = profile.role === 'assistant'
+      ? [normalizeText(studentHmid), 'Giáo viên'].filter(Boolean).join(' - ')
+      : normalizeText(profile.display_name) || username;
 
     try {
       await client.users.create({

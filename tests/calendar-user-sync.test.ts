@@ -46,8 +46,8 @@ test('ưu tiên username khi nhiều giáo viên có cùng display_name', async 
   assert.equal(profile?.username, 'co-dung-2');
 });
 
-test('tạo lịch upsert giáo viên và toàn bộ trợ giảng, không tạo khóa khác nhau', async () => {
-  const upserts: any[] = [];
+test('tạo lịch thêm giáo viên và toàn bộ trợ giảng theo cùng class_id', async () => {
+  const creates: any[] = [];
   const client = {
     teacher_profiles: {
       findMany: async ({ where }: any) => where.can_view_stream_key === 1
@@ -59,7 +59,7 @@ test('tạo lịch upsert giáo viên và toàn bộ trợ giảng, không tạo
     },
     users: {
       findFirst: async () => null,
-      upsert: async (input: any) => { upserts.push(input); },
+      create: async (input: any) => { creates.push(input); },
       deleteMany: async () => undefined,
     },
     $queryRaw: async () => [],
@@ -76,16 +76,16 @@ test('tạo lịch upsert giáo viên và toàn bộ trợ giảng, không tạo
   });
 
   assert.deepEqual(
-    upserts.map((item) => item.create.username),
+    creates.map((item) => item.data.username),
     ['gv01', 'tg01', 'tg02']
   );
-  assert.ok(upserts.every(
-    (item) => item.create.class_id === 'tongondinhluonghsav20274624791'
-      && item.create.room_id === 1
+  assert.ok(creates.every(
+    (item) => item.data.class_id === 'tongondinhluonghsav20274624791'
+      && item.data.room_id === 1
   ));
 });
 
-test('bulk chỉ bổ sung enrollment nhân sự còn thiếu, không sửa user đã tồn tại', async () => {
+test('bulk bổ sung enrollment còn thiếu và giữ nguyên user đã đủ dữ liệu', async () => {
   const creates: any[] = [];
   const existingUsernames = new Set(['gv01']);
   const client = {
@@ -98,9 +98,8 @@ test('bulk chỉ bổ sung enrollment nhân sự còn thiếu, không sửa user
           })),
     },
     users: {
-      findFirst: async () => null,
-      findUnique: async ({ where }: any) => (
-        existingUsernames.has(where.username_code_learn_number.username)
+      findFirst: async ({ where }: any) => (
+        where.class_id && existingUsernames.has(where.username)
           ? { id: 1 }
           : null
       ),
@@ -125,7 +124,49 @@ test('bulk chỉ bổ sung enrollment nhân sự còn thiếu, không sửa user
   assert.equal(creates[0].data.class_id, 'tongondinhluonghsav20274624791');
 });
 
-test('quét user lưu name của trợ giảng bằng student_hmid và nhãn Giáo viên', async () => {
+test('quét hai lịch khác ngày của cùng bài tạo hai enrollment theo class_id', async () => {
+  const creates: any[] = [];
+  const existingClassIds = new Set<string>();
+  const client = {
+    teacher_profiles: {
+      findMany: async () => [{ username: 'gv01', display_name: 'Giáo viên 01' }],
+    },
+    users: {
+      findFirst: async ({ where }: any) => {
+        if (!where.class_id) return null;
+        const classId = where.class_id;
+        return existingClassIds.has(classId) ? { id: 1, student_hmid: null, name: 'Giáo viên 01' } : null;
+      },
+      create: async (input: any) => {
+        existingClassIds.add(input.data.class_id);
+        creates.push(input);
+      },
+    },
+  };
+  const base = {
+    code: 'sinhhoc-7-2027',
+    learn_number: 1,
+    teacher: 'Giáo viên 01',
+    assistant_teacher: null,
+    lesson_status: 0,
+  };
+
+  const first = await ensureCalendarTeachingUsers(client, {
+    ...base,
+    start_time: '2026-08-30T01:00:00.000Z',
+  });
+  const second = await ensureCalendarTeachingUsers(client, {
+    ...base,
+    start_time: '2026-08-31T01:00:00.000Z',
+  });
+
+  assert.equal(first.created, 1);
+  assert.equal(second.created, 1);
+  assert.equal(creates.length, 2);
+  assert.notEqual(creates[0].data.class_id, creates[1].data.class_id);
+});
+
+test('quét user lưu name của trợ giảng theo quy ước student_hmid - Giáo viên', async () => {
   const creates: any[] = [];
   const client = {
     teacher_profiles: {
@@ -134,12 +175,12 @@ test('quét user lưu name của trợ giảng bằng student_hmid và nhãn Gi�
         : [{ username: 'tg01', display_name: 'Trợ giảng 01' }],
     },
     users: {
-      findUnique: async () => null,
-      findFirst: async ({ where }: any) => (
-        where.username === 'tg01'
+      findFirst: async ({ where }: any) => {
+        if (where.class_id) return null;
+        return where.username === 'tg01'
           ? { student_hmid: 'HM12345' }
-          : { student_hmid: 'HM-GV01' }
-      ),
+          : { student_hmid: 'HM-GV01' };
+      },
       create: async (input: any) => { creates.push(input); },
     },
   };
@@ -161,8 +202,80 @@ test('quét user lưu name của trợ giảng bằng student_hmid và nhãn Gi�
   assert.equal(creates[1].data.student_hmid, 'HM12345');
 });
 
+test('quét lại vá student_hmid null và chuẩn hóa name của trợ giảng', async () => {
+  const updates: any[] = [];
+  const client = {
+    teacher_profiles: {
+      findMany: async ({ where }: any) => where.can_view_stream_key === 1
+        ? [{ username: 'gv01', display_name: 'Giáo viên 01' }]
+        : [{ username: 'tg01', display_name: 'Trợ giảng 01' }],
+    },
+    users: {
+      findFirst: async ({ where }: any) => {
+        const username = where.username;
+        if (where.class_id) {
+          return username === 'tg01'
+            ? { id: 2, student_hmid: null, name: 'Trợ giảng 01' }
+            : { id: 1, student_hmid: 'HM-GV01', name: 'Giáo viên 01' };
+        }
+        return username === 'tg01' ? { student_hmid: 'HM12345' } : null;
+      },
+      update: async (input: any) => { updates.push(input); },
+      create: async () => undefined,
+    },
+  };
+
+  const result = await ensureCalendarTeachingUsers(client, {
+    code: 'tongondinhluonghsav2027',
+    learn_number: 9,
+    start_time: '2026-08-13T20:00:00.000Z',
+    teacher: 'Giáo viên 01',
+    assistant_teacher: 'tg01',
+    lesson_status: 0,
+  });
+
+  assert.equal(result.created, 0);
+  assert.equal(result.updated, 1);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].where.id, 2);
+  assert.equal(updates[0].data.student_hmid, 'HM12345');
+  assert.equal(updates[0].data.name, 'HM12345 - Giáo viên');
+});
+
+test('vá HMID ưu tiên giá trị cùng chương trình khi username có HMID khác ở chương trình khác', async () => {
+  const updates: any[] = [];
+  let globalFallbackCalled = false;
+  const client = {
+    teacher_profiles: {
+      findMany: async () => [{ username: 'gv01', display_name: 'Giáo viên 01' }],
+    },
+    users: {
+      findFirst: async ({ where }: any) => {
+        if (where.class_id) return { id: 5, student_hmid: null, name: 'Giáo viên 01' };
+        if (where.code === 'sinhhoc-7-2027') return { student_hmid: '3589517' };
+        globalFallbackCalled = true;
+        return { student_hmid: '1000009' };
+      },
+      update: async (input: any) => { updates.push(input); },
+      create: async () => undefined,
+    },
+  };
+
+  const result = await ensureCalendarTeachingUsers(client, {
+    code: 'sinhhoc-7-2027',
+    learn_number: 2,
+    start_time: '2026-08-27T01:00:00.000Z',
+    teacher: 'Giáo viên 01',
+    assistant_teacher: null,
+    lesson_status: 0,
+  });
+
+  assert.equal(result.updated, 1);
+  assert.equal(updates[0].data.student_hmid, '3589517');
+  assert.equal(globalFallbackCalled, false);
+});
+
 test('đổi ngày cập nhật class_id trên đúng user hiện tại, không tạo identity mới', async () => {
-  const upserts: any[] = [];
   const updates: any[] = [];
   const deletes: any[] = [];
   const client = {
@@ -171,7 +284,6 @@ test('đổi ngày cập nhật class_id trên đúng user hiện tại, không 
     },
     users: {
       findFirst: async () => null,
-      upsert: async (input: any) => { upserts.push(input); },
       updateMany: async (input: any) => { updates.push(input); },
       deleteMany: async (input: any) => { deletes.push(input); },
     },
@@ -192,7 +304,6 @@ test('đổi ngày cập nhật class_id trên đúng user hiện tại, không 
     { ...base, start_time: '2026-08-13T20:00:00.000Z' }
   );
 
-  assert.equal(upserts.length, 0);
   assert.equal(
     updates[0].where.code,
     'tongondinhluonghsav2027'
@@ -212,7 +323,6 @@ test('tên giáo viên legacy trùng nhiều profile không chặn đổi ngày 
     },
     users: {
       updateMany: async (input: any) => { updates.push(input); },
-      upsert: async () => undefined,
       deleteMany: async () => undefined,
     },
     $queryRaw: async () => [],
@@ -243,7 +353,6 @@ test('nghỉ học thu hồi user room_id = 1 khi không còn lịch hoạt đ�
       findMany: async () => [{ username: 'gv01', display_name: 'Giáo viên 01' }],
     },
     users: {
-      upsert: async () => undefined,
       updateMany: async () => undefined,
       deleteMany: async (input: any) => { deletes.push(input); },
     },
@@ -270,8 +379,8 @@ test('nghỉ học thu hồi user room_id = 1 khi không còn lịch hoạt đ�
   assert.equal(deletes[0].where.islearn, 0);
 });
 
-test('đổi giáo viên upsert người mới và thu hồi người cũ nếu không còn lịch khác', async () => {
-  const upserts: any[] = [];
+test('đổi giáo viên tạo người mới và thu hồi người cũ nếu không còn lịch khác', async () => {
+  const creates: any[] = [];
   const deletes: any[] = [];
   const client = {
     teacher_profiles: {
@@ -284,7 +393,7 @@ test('đổi giáo viên upsert người mới và thu hồi người cũ nếu 
     },
     users: {
       findFirst: async () => null,
-      upsert: async (input: any) => { upserts.push(input); },
+      create: async (input: any) => { creates.push(input); },
       deleteMany: async (input: any) => { deletes.push(input); },
     },
     $queryRaw: async () => [],
@@ -304,8 +413,116 @@ test('đổi giáo viên upsert người mới và thu hồi người cũ nếu 
     { ...base, teacher: 'Giáo viên B' }
   );
 
-  assert.equal(upserts[0].create.username, 'gv-b');
+  assert.equal(creates[0].data.username, 'gv-b');
   assert.equal(deletes[0].where.username, 'gv-a');
+  assert.equal(deletes[0].where.code, 'tongondinhluonghsav2027');
+  assert.equal(deletes[0].where.learn_number, 9);
   assert.equal(deletes[0].where.room_id, 1);
   assert.equal(deletes[0].where.islearn, 0);
+});
+
+test('đổi đồng thời giáo viên và trợ giảng tạo người mới, thu hồi cả hai người cũ', async () => {
+  const creates: any[] = [];
+  const deletes: any[] = [];
+  const client = {
+    teacher_profiles: {
+      findMany: async ({ where }: any) => {
+        if (where.can_view_stream_key === 1) {
+          const identifier = where.OR[0].username;
+          return [{
+            username: identifier === 'Giáo viên cũ' ? 'gv-cu' : 'gv-moi',
+            display_name: identifier,
+          }];
+        }
+        return (where.username.in as string[]).map((username) => ({
+          username,
+          display_name: username === 'tg-cu' ? 'Trợ giảng cũ' : 'Trợ giảng mới',
+        }));
+      },
+    },
+    users: {
+      findFirst: async () => null,
+      create: async (input: any) => { creates.push(input); },
+      deleteMany: async (input: any) => { deletes.push(input); },
+    },
+    $queryRaw: async () => [],
+  };
+  const base = {
+    id: 10,
+    code: 'sinhhoc-7-2027',
+    learn_number: 1,
+    start_time: '2026-08-22T19:00:00.000Z',
+    lesson_status: 0,
+  };
+
+  await syncCalendarTeachingUsers(
+    client,
+    { ...base, teacher: 'Giáo viên cũ', assistant_teacher: 'tg-cu' },
+    { ...base, teacher: 'Giáo viên mới', assistant_teacher: 'tg-moi' }
+  );
+
+  assert.deepEqual(
+    creates.map((item) => item.data.username),
+    ['gv-moi', 'tg-moi']
+  );
+  assert.deepEqual(
+    deletes.map((item) => item.where.username),
+    ['gv-cu', 'tg-cu']
+  );
+  assert.ok(deletes.every((item) => (
+    item.where.code === 'sinhhoc-7-2027'
+    && item.where.learn_number === 1
+  )));
+});
+
+test('không thu hồi giáo viên hoặc trợ giảng cũ khi còn buổi khác cùng lớp và bài đang dùng', async () => {
+  const creates: any[] = [];
+  const deletes: any[] = [];
+  const client = {
+    teacher_profiles: {
+      findMany: async ({ where }: any) => {
+        if (where.can_view_stream_key === 1) {
+          const identifier = where.OR[0].username;
+          return [{
+            username: identifier === 'Giáo viên cũ' ? 'gv-cu' : 'gv-moi',
+            display_name: identifier,
+          }];
+        }
+        return (where.username.in as string[]).map((username) => ({
+          username,
+          display_name: username,
+        }));
+      },
+    },
+    users: {
+      findFirst: async () => null,
+      create: async (input: any) => { creates.push(input); },
+      deleteMany: async (input: any) => { deletes.push(input); },
+    },
+    // Mô phỏng một buổi khác cùng code + learn_number vẫn đang gắn người cũ.
+    $queryRaw: async () => [{
+      start_time: '2026-08-22T19:00:00.000Z',
+      teacher: 'Giáo viên cũ',
+      assistant_teacher: 'tg-cu',
+    }],
+  };
+  const base = {
+    id: 10,
+    code: 'sinhhoc-7-2027',
+    learn_number: 1,
+    start_time: '2026-08-22T19:00:00.000Z',
+    lesson_status: 0,
+  };
+
+  await syncCalendarTeachingUsers(
+    client,
+    { ...base, teacher: 'Giáo viên cũ', assistant_teacher: 'tg-cu' },
+    { ...base, teacher: 'Giáo viên mới', assistant_teacher: 'tg-moi' }
+  );
+
+  assert.deepEqual(
+    creates.map((item) => item.data.username),
+    ['gv-moi', 'tg-moi']
+  );
+  assert.equal(deletes.length, 0);
 });

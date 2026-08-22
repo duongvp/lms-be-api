@@ -15,6 +15,10 @@ import {
   updateCalendarsFromSheet,
 } from './calendar-import.service';
 import { assertProgramAccess, getProgramScopeFilter } from '../../services/authorization.service';
+import {
+  applyClassroomAssignment,
+  previewClassroomAssignment,
+} from './classroom-assignment.service';
 
 const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => ({
   userId: Number(req.user?.userId),
@@ -112,6 +116,34 @@ export const backfillMissingTeachingUsers = async (req: Request, res: Response):
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const previewStudentClassroomAssignment = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const data = await previewClassroomAssignment(Number(req.params.id));
+    res.status(200).json({ success: true, data });
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+export const applyStudentClassroomAssignment = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const data = await applyClassroomAssignment(Number(req.params.id), {
+      username: req.user?.username,
+    });
+    res.status(200).json({ success: true, data });
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message });
   }
 };
 

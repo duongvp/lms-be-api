@@ -11,6 +11,7 @@
     "test:quiz": "tsx --test tests/quiz.validation.test.ts",
     "test:auto-schedule": "tsx --test tests/auto-schedule.test.ts",
     "test:calendar-user-sync": "tsx --test tests/calendar-user-sync.test.ts",
+    "test:classroom-assignment": "tsx --test tests/classroom-assignment.test.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed": "tsx prisma/seed.ts",
     "db:quiz-rbac": "tsx prisma/scripts/syncQuizRbac.ts",

@@ -2052,6 +2052,10 @@ export const updateSchedule = async (
   return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
     const operation = async () => {
       const updated = await updateCalendarRecord(tx, id, data);
+      // updateCalendarRecord đang nhận cờ skip từ luồng cập nhật để tránh sync
+      // sớm. Sau khi snapshot mới hoàn chỉnh, đồng bộ hai chiều: thêm người mới
+      // và thu hồi người cũ nếu không còn lịch hoạt động khác sử dụng họ.
+      await syncCalendarTeachingUsers(tx, current, updated);
       await auditTimeChange(tx, current, updated, changeActor, auditReason);
       if (resolvedMappingUpdate) {
         await replacePackageLessonMappingForCalendar(tx, updated, resolvedMappingUpdate);
@@ -2715,7 +2719,6 @@ export const updateBulk = async (
         await hydrateAssistantTeachers(tx, sessions);
         sessions.forEach(assertCanUpdateSession);
         const sessionsById = new Map(sessions.map((session) => [Number(session.id), session]));
-        const teachingProfileCache = new Map<string, any[]>();
         const teamsEvents: Array<Parameters<typeof enqueueCalendarTeamsNotification>[1]> = [];
         const applyUpdates = async () => {
           for (const idStr of ids) {
@@ -2756,7 +2759,7 @@ export const updateBulk = async (
               start_time: newStart,
               end_time: newEnd,
             }, current);
-            await ensureCalendarTeachingUsers(tx, updated, teachingProfileCache);
+            await syncCalendarTeachingUsers(tx, current, updated);
             await auditTimeChange(tx, current, updated, changeActor, config?.reason ?? config?.change_reason);
             if (commonMappingUpdate) {
               await assertMappingsBelongToCalendarLesson(tx, current, commonMappingUpdate);
@@ -2795,7 +2798,11 @@ export const updateBulk = async (
           const updated = hasCommonCalendarFieldUpdate
             ? await updateCalendarRecord(tx, current.id, dataToUpdate, current)
             : current;
-          await ensureCalendarTeachingUsers(tx, updated, teachingProfileCache);
+          if (hasCommonCalendarFieldUpdate) {
+            await syncCalendarTeachingUsers(tx, current, updated);
+          } else {
+            await ensureCalendarTeachingUsers(tx, updated, teachingProfileCache);
+          }
           if (hasCommonCalendarFieldUpdate) {
             await auditTimeChange(tx, current, updated, changeActor, config?.reason ?? config?.change_reason);
           }
@@ -2913,7 +2920,11 @@ export const updateBulk = async (
             updated = await updateCalendarRecord(tx, id, dataToUpdate, current);
             await auditTimeChange(tx, current, updated, changeActor, item?.reason ?? config?.reason);
           }
-          await ensureCalendarTeachingUsers(tx, updated, teachingProfileCache);
+          if (hasCalendarFieldUpdate) {
+            await syncCalendarTeachingUsers(tx, current, updated);
+          } else {
+            await ensureCalendarTeachingUsers(tx, updated, teachingProfileCache);
+          }
           if (mappingUpdate) {
             await assertMappingsBelongToCalendarLesson(tx, current, mappingUpdate);
             await replacePackageLessonMappingForCalendar(tx, updated, mappingUpdate);
@@ -2939,13 +2950,14 @@ export const updateBulk = async (
 
 /**
  * Quét lịch legacy để bổ sung enrollment giáo viên/trợ giảng còn thiếu trong
- * users. Không sửa calendar và không đụng tới user đã tồn tại. Xử lý theo lô
- * để không giữ transaction quá lâu trên production.
+ * users. Không sửa calendar; với user đã tồn tại chỉ vá student_hmid còn thiếu
+ * và tên vai trò trợ giảng. Xử lý theo lô để không giữ transaction quá lâu.
  */
 export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
   const batchSize = 100;
   let scanned = 0;
   let created = 0;
+  let updated = 0;
   const errors: Array<{ calendar_id: number; message: string }> = [];
 
   if (ids && ids.length > 0) {
@@ -2956,15 +2968,17 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
           where: { id: { in: batchIds } },
           orderBy: { id: 'asc' },
         });
-        if (!calendars.length) return { scanned: 0, created: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
+        if (!calendars.length) return { scanned: 0, created: 0, updated: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
 
         await hydrateAssistantTeachers(tx, calendars);
         let batchCreated = 0;
+        let batchUpdated = 0;
         const batchErrors: Array<{ calendar_id: number; message: string }> = [];
         for (const calendar of calendars) {
           try {
             const result = await ensureCalendarTeachingUsers(tx, calendar);
             batchCreated += result.created;
+            batchUpdated += result.updated;
           } catch (error: any) {
             batchErrors.push({
               calendar_id: Number(calendar.id),
@@ -2975,12 +2989,14 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
         return {
           scanned: calendars.length,
           created: batchCreated,
+          updated: batchUpdated,
           errors: batchErrors,
         };
       }, { maxWait: 10_000, timeout: 60_000 });
 
       scanned += batchResult.scanned;
       created += batchResult.created;
+      updated += batchResult.updated;
       errors.push(...batchResult.errors);
     }
   } else {
@@ -2998,15 +3014,17 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
           orderBy: { id: 'asc' },
           take: batchSize,
         });
-        if (!calendars.length) return { lastId: null as number | null, scanned: 0, created: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
+        if (!calendars.length) return { lastId: null as number | null, scanned: 0, created: 0, updated: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
 
         await hydrateAssistantTeachers(tx, calendars);
         let batchCreated = 0;
+        let batchUpdated = 0;
         const batchErrors: Array<{ calendar_id: number; message: string }> = [];
         for (const calendar of calendars) {
           try {
             const result = await ensureCalendarTeachingUsers(tx, calendar);
             batchCreated += result.created;
+            batchUpdated += result.updated;
           } catch (error: any) {
             batchErrors.push({
               calendar_id: Number(calendar.id),
@@ -3019,6 +3037,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
           lastId: Number(calendars[calendars.length - 1].id),
           scanned: calendars.length,
           created: batchCreated,
+          updated: batchUpdated,
           errors: batchErrors,
         };
       }, { maxWait: 10_000, timeout: 60_000 });
@@ -3027,6 +3046,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
       lastId = batchResult.lastId;
       scanned += batchResult.scanned;
       created += batchResult.created;
+      updated += batchResult.updated;
       errors.push(...batchResult.errors);
     }
   }
@@ -3034,6 +3054,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
   return {
     scanned,
     created,
+    updated,
     failed: errors.length,
     errors: errors.slice(0, 100),
   };

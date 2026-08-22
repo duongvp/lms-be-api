@@ -237,6 +237,18 @@ router.post(
   '/sync-missing-teaching-users',
   livestreamController.backfillMissingTeachingUsers
 );
+router.post(
+  '/:id/classroom-assignment/preview',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', calendarCodeById),
+  livestreamController.previewStudentClassroomAssignment
+);
+router.post(
+  '/:id/classroom-assignment/apply',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', calendarCodeById),
+  livestreamController.applyStudentClassroomAssignment
+);
 router.put(
   '/:id/reschedule',
   authorize(['calendar.update']),

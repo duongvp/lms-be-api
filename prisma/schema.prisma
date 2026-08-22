@@ -407,11 +407,36 @@ model users {
 
   userRoles userRoles[]
 
-  @@unique([username, code, learn_number], map: "uq_users_enroll")
+  @@unique([username, code, learn_number, class_id], map: "uq_users_enroll")
   @@index([code, learn_number], map: "idx_users_code_learn")
   @@index([student_hmid], map: "idx_users_hmid")
   @@index([name], map: "idx_users_name")
   @@index([room_id], map: "idx_users_room")
+}
+
+/// Append-only audit trail for every classroom reassignment. The current
+/// projection remains in users.class_id; this table must never be truncated by
+/// the assignment flow.
+model classroom_assignment_history {
+  id                BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  operation_id      String   @db.Char(36)
+  calendar_id       Int      @db.UnsignedInt
+  user_id           Int      @db.UnsignedInt
+  username          String   @db.VarChar(100)
+  code              String   @db.VarChar(50)
+  learn_number      Int
+  system_type       String   @db.VarChar(20)
+  previous_room_id  Int?
+  new_room_id       Int
+  previous_class_id String?  @db.VarChar(100)
+  new_class_id      String   @db.VarChar(100)
+  interaction_score Int      @default(0) @db.UnsignedInt
+  created_by        String?  @db.VarChar(100)
+  created_at        DateTime @default(now()) @db.Timestamp(0)
+
+  @@index([operation_id], map: "idx_class_assignment_operation")
+  @@index([calendar_id, created_at], map: "idx_class_assignment_calendar")
+  @@index([user_id, code, learn_number, created_at], map: "idx_class_assignment_user")
 }
 
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments

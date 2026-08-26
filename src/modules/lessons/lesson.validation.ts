@@ -99,13 +99,28 @@ export const validateLessonListQuery = (query: any): LessonListQuery => {
     throw new ApiError('course_code không được vượt quá 30 ký tự', 400);
   }
 
+  const learnNumber = optionalInteger(query.learn_number, 'learn_number');
+  const fromLearnNumber = optionalInteger(query.from_learn_number, 'from_learn_number');
+  const toLearnNumber = optionalInteger(query.to_learn_number, 'to_learn_number');
+  if ([learnNumber, fromLearnNumber, toLearnNumber].some(
+    (value) => value !== undefined && value <= 0
+  )) {
+    throw new ApiError('Khoảng bài phải lớn hơn 0', 400);
+  }
+  if (fromLearnNumber !== undefined && toLearnNumber !== undefined
+    && fromLearnNumber > toLearnNumber) {
+    throw new ApiError('Khoảng bài không hợp lệ', 400);
+  }
+
   return {
     page,
     limit,
     grade: optionalInteger(query.grade, 'grade'),
     subject_code: subjectCode,
     subject: stringOrUndefined(query.subject),
-    learn_number: optionalInteger(query.learn_number, 'learn_number'),
+    learn_number: learnNumber,
+    from_learn_number: fromLearnNumber,
+    to_learn_number: toLearnNumber,
     keyword: stringOrUndefined(query.keyword),
     course_code: courseCode,
     status: optionalInteger(query.status, 'status'),

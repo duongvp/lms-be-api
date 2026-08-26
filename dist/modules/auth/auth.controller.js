@@ -32,12 +32,14 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const authServices = __importStar(require("./auth.service"));
-const client_1 = require("@prisma/client");
+const prisma_1 = __importDefault(require("../../lib/prisma"));
 const apiResponse_1 = require("../../utils/apiResponse");
 const logger_1 = require("../../utils/logger");
-const prisma = new client_1.PrismaClient();
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const refreshCookieOptions = {
     httpOnly: true,
@@ -131,7 +133,7 @@ const getMe = async (req, res, next) => {
 const getProfile = async (req, res, next) => {
     try {
         const userId = req.user.userId;
-        const user = await prisma.users.findUnique({
+        const user = await prisma_1.default.users.findUnique({
             where: { id: userId },
             select: { id: true, username: true, email: true, created_at: true }
         });

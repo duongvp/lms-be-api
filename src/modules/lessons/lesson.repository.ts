@@ -80,6 +80,14 @@ const buildWhere = (query: LessonListQuery) => {
     clauses.push('learn_number = ?');
     values.push(query.learn_number);
   }
+  if (query.from_learn_number !== undefined) {
+    clauses.push('learn_number >= ?');
+    values.push(query.from_learn_number);
+  }
+  if (query.to_learn_number !== undefined) {
+    clauses.push('learn_number <= ?');
+    values.push(query.to_learn_number);
+  }
   if (query.keyword) {
     clauses.push('lesson_name LIKE ?');
     values.push(`%${query.keyword}%`);

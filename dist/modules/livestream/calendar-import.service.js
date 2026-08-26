@@ -1,12 +1,15 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateCalendarsFromSheet = exports.importCalendarFromSheet = exports.validateCalendarImportOutlines = exports.buildUniquePackageCoursePairs = void 0;
+exports.updateCalendarsFromSheet = exports.importCalendarFromSheet = exports.validateCalendarImportOutlines = exports.buildUniquePackageCoursePairs = exports.shouldResolveCalendarImportField = exports.resolveCalendarImportFieldValue = void 0;
 const client_1 = require("@prisma/client");
+const prisma_1 = __importDefault(require("../../lib/prisma"));
 const hocmai_course_outline_service_1 = require("../../integrations/hocmai-course-outline.service");
 const package_course_sheet_service_1 = require("../../integrations/package-course-sheet.service");
 const livestream_service_1 = require("./livestream.service");
 const teams_notifications_1 = require("../teams-notifications");
-const prisma = new client_1.PrismaClient();
 const pairKey = (packageId, courseId) => `${packageId}::${courseId}`;
 const getRowPackageCoursePairs = (row) => (row.packageCoursePairs
     ?? row.packageIds.flatMap((packageId) => (row.courseIds.map((courseId) => ({ packageId, courseId })))));
@@ -18,6 +21,31 @@ const mappingScheduleKey = (mapping, row) => [
     new Date(row.calendar.end_time).getTime(),
 ].join('::');
 const unique = (values) => Array.from(new Set(values));
+const normalizeTeachingIdentifier = (value) => String(value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ');
+const splitAssistantIdentifiers = (value) => Array.from(new Set(String(value ?? '')
+    .split(/[;,]/)
+    .map(normalizeTeachingIdentifier)
+    .filter(Boolean)));
+const resolveCalendarImportFieldValue = (currentValue, importedValue, mode) => {
+    const hasCurrentValue = currentValue !== undefined
+        && currentValue !== null
+        && String(currentValue).trim() !== '';
+    const hasImportedValue = importedValue !== undefined
+        && importedValue !== null
+        && String(importedValue).trim() !== '';
+    // Ô trống trong file không dùng để xóa dữ liệu. Chế độ skip chỉ bổ sung
+    // những trường đang trống; overwrite thay dữ liệu khi file có giá trị.
+    if (!hasImportedValue)
+        return hasCurrentValue ? currentValue : null;
+    if (mode === 'skip' && hasCurrentValue)
+        return currentValue;
+    return importedValue;
+};
+exports.resolveCalendarImportFieldValue = resolveCalendarImportFieldValue;
+const shouldResolveCalendarImportField = (currentValue, importedValue, mode) => Boolean(String(importedValue ?? '').trim()) && (mode === 'overwrite' || !String(currentValue ?? '').trim());
+exports.shouldResolveCalendarImportField = shouldResolveCalendarImportField;
 const addError = (errors, error) => {
     const identity = [
         error.row,
@@ -55,11 +83,69 @@ const buildSummary = (rows, errors, pairCount, hmoRequests) => {
         hmoRequests,
     };
 };
+/**
+ * File import dùng tên hiển thị để người vận hành dễ quản lý, còn calendar
+ * luôn lưu username. Username từ format Email TG cũ vẫn được hỗ trợ.
+ */
+const resolveCalendarImportAssistants = async (rows) => {
+    const errors = [];
+    const rowsWithAssistants = rows.map((row) => ({
+        row,
+        identifiers: splitAssistantIdentifiers(row.calendar.assistant_teacher),
+    })).filter((item) => item.identifiers.length > 0);
+    if (!rowsWithAssistants.length)
+        return errors;
+    const profiles = await prisma_1.default.teacher_profiles.findMany({
+        where: { can_view_stream_key: 0, status: 1 },
+        select: { username: true, display_name: true },
+        orderBy: { id: 'asc' },
+    });
+    const usernameMap = new Map();
+    const displayNameMap = new Map();
+    profiles.forEach((profile) => {
+        usernameMap.set(normalizeTeachingIdentifier(profile.username).toLowerCase(), profile);
+        const displayName = normalizeTeachingIdentifier(profile.display_name).toLowerCase();
+        if (!displayName)
+            return;
+        const matches = displayNameMap.get(displayName) ?? [];
+        matches.push(profile);
+        displayNameMap.set(displayName, matches);
+    });
+    rowsWithAssistants.forEach(({ row, identifiers }) => {
+        const resolvedUsernames = [];
+        identifiers.forEach((identifier) => {
+            const normalized = identifier.toLowerCase();
+            const usernameMatch = usernameMap.get(normalized);
+            const matches = usernameMatch ? [usernameMatch] : (displayNameMap.get(normalized) ?? []);
+            if (!matches.length) {
+                addError(errors, {
+                    row: row.row,
+                    field: 'Trợ giảng',
+                    errorCode: 'INVALID_ROW',
+                    message: `Không tìm thấy trợ giảng đang hoạt động có tên "${identifier}"`,
+                });
+                return;
+            }
+            if (matches.length > 1) {
+                addError(errors, {
+                    row: row.row,
+                    field: 'Trợ giảng',
+                    errorCode: 'INVALID_ROW',
+                    message: `Tên trợ giảng "${identifier}" trùng nhiều tài khoản; hãy dùng Email TG`,
+                });
+                return;
+            }
+            resolvedUsernames.push(matches[0].username);
+        });
+        row.calendar.assistant_teacher = Array.from(new Set(resolvedUsernames)).join(',') || undefined;
+    });
+    return errors;
+};
 const validateInternalLessonRows = async (rows, ignoredCalendarKeyByRow = new Map()) => {
     const errors = [];
     const codes = unique(rows.map((row) => row.calendar.code));
     const lessons = codes.length
-        ? await prisma.$queryRaw(client_1.Prisma.sql `
+        ? await prisma_1.default.$queryRaw(client_1.Prisma.sql `
       SELECT id, subject_code, learn_number, system_type
       FROM lessons
       WHERE status <> 0
@@ -116,7 +202,7 @@ const validateInternalLessonRows = async (rows, ignoredCalendarKeyByRow = new Ma
     if (!errors.length) {
         const minStart = new Date(Math.min(...rows.map((row) => new Date(row.calendar.start_time).getTime())));
         const maxEnd = new Date(Math.max(...rows.map((row) => new Date(row.calendar.end_time).getTime())));
-        const existing = await prisma.calendar.findMany({
+        const existing = await prisma_1.default.calendar.findMany({
             where: { code: { in: codes }, start_time: { lte: maxEnd }, end_time: { gte: minStart } },
             select: { id: true, key: true, code: true, learn_number: true, start_time: true, end_time: true },
         });
@@ -319,7 +405,7 @@ const validateDatabaseDuplicates = async (rows) => {
       AND plm.lesson_id = ${lessonId}
     )`;
     });
-    const existing = await prisma.$queryRaw(client_1.Prisma.sql `
+    const existing = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
     SELECT
       plm.package_id,
       plm.course_id,
@@ -369,6 +455,14 @@ const importCalendarFromSheet = async (inputRows, changeActor) => {
             status: 'validation_error',
             summary: buildSummary(inputRows, errors, 0, 0),
             errors,
+        };
+    }
+    const assistantErrors = await resolveCalendarImportAssistants(inputRows);
+    if (assistantErrors.length) {
+        return {
+            status: 'validation_error',
+            summary: buildSummary(inputRows, assistantErrors, 0, 0),
+            errors: assistantErrors,
         };
     }
     if (directRows.length === inputRows.length) {
@@ -444,7 +538,7 @@ const importCalendarFromSheet = async (inputRows, changeActor) => {
     };
 };
 exports.importCalendarFromSheet = importCalendarFromSheet;
-const updateCalendarsFromSheet = async (inputRows, changeActor) => {
+const updateCalendarsFromSheet = async (inputRows, changeActor, existingDataMode = 'skip') => {
     const errors = [];
     const directRows = inputRows.filter((row) => row.sourceFormat === 'direct');
     if (directRows.length !== inputRows.length) {
@@ -482,10 +576,17 @@ const updateCalendarsFromSheet = async (inputRows, changeActor) => {
         }
     });
     const keys = Array.from(firstRowByKey.keys());
-    const existing = keys.length ? await prisma.calendar.findMany({
+    const existing = keys.length ? await prisma_1.default.calendar.findMany({
         where: { key: { in: keys } },
     }) : [];
     const existingByKey = new Map(existing.filter((calendar) => calendar.key).map((calendar) => [calendar.key, calendar]));
+    const rowsNeedingAssistantResolution = inputRows.filter((row) => {
+        const current = existingByKey.get(String(row.sourceKey || '').trim());
+        if (!current)
+            return false;
+        return (0, exports.shouldResolveCalendarImportField)(current.assistant_teacher, row.calendar.assistant_teacher, existingDataMode);
+    });
+    errors.push(...await resolveCalendarImportAssistants(rowsNeedingAssistantResolution));
     const ignoredCalendarKeyByRow = new Map();
     inputRows.forEach((row) => {
         const key = String(row.sourceKey || '').trim();
@@ -557,27 +658,44 @@ const updateCalendarsFromSheet = async (inputRows, changeActor) => {
         }
     };
     const normalizedText = (value) => String(value ?? '').trim();
-    const changedRows = inputRows.filter((row) => {
+    const preparedUpdates = inputRows.map((row) => {
         const current = existingByKey.get(row.sourceKey);
-        return String(current.session_id ?? '') !== String(row.calendar.session_id ?? '')
-            || normalizedText(current.subject) !== normalizedText(row.calendar.subject)
-            || current.start_time.getTime() !== new Date(row.calendar.start_time).getTime()
-            || current.end_time.getTime() !== new Date(row.calendar.end_time).getTime()
-            || normalizedText(current.teacher) !== normalizedText(row.calendar.teacher)
-            || normalizedText(current.lesson_name) !== normalizedText(row.calendar.lesson_name)
-            || normalizedJson(current.lesson_document) !== normalizedJson(row.calendar.lesson_document)
-            || normalizedText(current.evg_banner) !== normalizedText(row.calendar.evg_banner)
-            || normalizedText(current.evg_stream) !== normalizedText(row.calendar.evg_stream);
+        const merge = (currentValue, importedValue) => ((0, exports.resolveCalendarImportFieldValue)(currentValue, importedValue, existingDataMode));
+        return {
+            key: row.sourceKey,
+            current,
+            data: {
+                session_id: merge(current.session_id, row.calendar.session_id),
+                subject: merge(current.subject, row.calendar.subject),
+                start_time: merge(current.start_time, new Date(row.calendar.start_time)),
+                end_time: merge(current.end_time, new Date(row.calendar.end_time)),
+                teacher: merge(current.teacher, row.calendar.teacher),
+                assistant_teacher: merge(current.assistant_teacher, row.calendar.assistant_teacher),
+                lesson_name: merge(current.lesson_name, row.calendar.lesson_name),
+                lesson_document: merge(current.lesson_document, row.calendar.lesson_document),
+                evg_banner: merge(current.evg_banner, row.calendar.evg_banner),
+                evg_stream: merge(current.evg_stream, row.calendar.evg_stream),
+            },
+        };
     });
+    const changedRows = preparedUpdates.filter(({ current, data }) => (String(current.session_id ?? '') !== String(data.session_id ?? '')
+        || normalizedText(current.subject) !== normalizedText(data.subject)
+        || current.start_time.getTime() !== data.start_time.getTime()
+        || current.end_time.getTime() !== data.end_time.getTime()
+        || normalizedText(current.teacher) !== normalizedText(data.teacher)
+        || normalizedText(current.assistant_teacher) !== normalizedText(data.assistant_teacher)
+        || normalizedText(current.lesson_name) !== normalizedText(data.lesson_name)
+        || normalizedJson(current.lesson_document) !== normalizedJson(data.lesson_document)
+        || normalizedText(current.evg_banner) !== normalizedText(data.evg_banner)
+        || normalizedText(current.evg_stream) !== normalizedText(data.evg_stream)));
     const now = new Date();
-    changedRows.forEach((row) => {
-        const current = existingByKey.get(row.sourceKey);
+    changedRows.forEach(({ key, current }) => {
         if (Number(current.lesson_status) === 1 || current.start_time <= now) {
             addError(errors, {
-                row: row.row,
+                row: inputRows.find((row) => row.sourceKey === key)?.row ?? 1,
                 field: 'key',
                 errorCode: 'INVALID_ROW',
-                message: `Lịch ${row.sourceKey} đã diễn ra hoặc đã nghỉ, không thể cập nhật`,
+                message: `Lịch ${key} đã diễn ra hoặc đã nghỉ, không thể cập nhật`,
             });
         }
     });
@@ -587,48 +705,30 @@ const updateCalendarsFromSheet = async (inputRows, changeActor) => {
             summary: buildSummary(inputRows, errors, 0, 0),
             errors,
         };
-    const preparedUpdates = changedRows.map((row) => {
-        const current = existingByKey.get(row.sourceKey);
-        return {
-            key: row.sourceKey,
-            current,
-            data: {
-                session_id: row.calendar.session_id ?? null,
-                subject: row.calendar.subject ?? null,
-                start_time: new Date(row.calendar.start_time),
-                end_time: new Date(row.calendar.end_time),
-                teacher: row.calendar.teacher ?? null,
-                lesson_name: row.calendar.lesson_name ?? null,
-                lesson_document: row.calendar.lesson_document ?? null,
-                evg_banner: row.calendar.evg_banner ?? null,
-                evg_stream: row.calendar.evg_stream ?? null,
-            },
-        };
-    });
-    if (preparedUpdates.length) {
+    if (changedRows.length) {
         const fields = [
             'session_id', 'subject', 'start_time', 'end_time', 'teacher',
-            'lesson_name', 'lesson_document', 'evg_banner', 'evg_stream',
+            'assistant_teacher', 'lesson_name', 'lesson_document', 'evg_banner', 'evg_stream',
         ];
-        await prisma.$transaction(async (tx) => {
-            const assignments = fields.map((field) => (`\`${field}\` = CASE \`key\` ${preparedUpdates
+        await prisma_1.default.$transaction(async (tx) => {
+            const assignments = fields.map((field) => (`\`${field}\` = CASE \`key\` ${changedRows
                 .map(() => 'WHEN ? THEN ?')
                 .join(' ')} ELSE \`${field}\` END`)).join(', ');
-            const caseValues = fields.flatMap((field) => preparedUpdates.flatMap((update) => [
+            const caseValues = fields.flatMap((field) => changedRows.flatMap((update) => [
                 update.key,
                 update.data[field],
             ]));
-            const keyPlaceholders = preparedUpdates.map(() => '?').join(', ');
+            const keyPlaceholders = changedRows.map(() => '?').join(', ');
             await tx.$executeRawUnsafe(`UPDATE calendar
          SET ${assignments}, updated_at = CURRENT_TIMESTAMP
-         WHERE \`key\` IN (${keyPlaceholders})`, ...caseValues, ...preparedUpdates.map((update) => update.key));
+         WHERE \`key\` IN (${keyPlaceholders})`, ...caseValues, ...changedRows.map((update) => update.key));
             const updatedCalendars = await tx.calendar.findMany({
-                where: { key: { in: preparedUpdates.map((update) => update.key) } },
+                where: { key: { in: changedRows.map((update) => update.key) } },
             });
             const updatedByKey = new Map(updatedCalendars
                 .filter((calendar) => calendar.key)
                 .map((calendar) => [calendar.key, calendar]));
-            await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, preparedUpdates.flatMap((update) => {
+            await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, changedRows.flatMap((update) => {
                 const after = updatedByKey.get(update.key);
                 return after ? [{
                         eventType: 'updated',

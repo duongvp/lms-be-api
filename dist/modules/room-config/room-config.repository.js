@@ -1,8 +1,10 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RoomConfigRepository = void 0;
-const client_1 = require("@prisma/client");
-const prisma = new client_1.PrismaClient();
+const prisma_1 = __importDefault(require("../../lib/prisma"));
 const withoutLegacyStaffAssignments = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value))
         return value || {};
@@ -33,13 +35,13 @@ class RoomConfigRepository {
             where.learn_number = Number(filter.learn_number);
         }
         const [items, total] = await Promise.all([
-            prisma.room_config.findMany({
+            prisma_1.default.room_config.findMany({
                 where,
                 orderBy: [{ updated_at: 'desc' }, { code: 'asc' }],
                 skip,
                 take: limit,
             }),
-            prisma.room_config.count({ where }),
+            prisma_1.default.room_config.count({ where }),
         ]);
         return {
             items: items.map((item) => ({
@@ -53,7 +55,7 @@ class RoomConfigRepository {
         };
     }
     async findByKey(code, learn_number) {
-        const item = await prisma.room_config.findUnique({
+        const item = await prisma_1.default.room_config.findUnique({
             where: {
                 code_learn_number: {
                     code,
@@ -90,10 +92,10 @@ class RoomConfigRepository {
         });
     }
     async upsertRoomConfig(input) {
-        return prisma.$transaction((tx) => this.upsertRoomConfigInTransaction(tx, input));
+        return prisma_1.default.$transaction((tx) => this.upsertRoomConfigInTransaction(tx, input));
     }
     async bulkUpsertRoomConfigs(inputs) {
-        return prisma.$transaction(async (tx) => {
+        return prisma_1.default.$transaction(async (tx) => {
             const results = [];
             for (const input of inputs) {
                 results.push(await this.upsertRoomConfigInTransaction(tx, input));

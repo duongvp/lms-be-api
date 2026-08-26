@@ -1,9 +1,8 @@
-import { PrismaClient, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import prisma from '../../lib/prisma';
 import { randomUUID } from 'crypto';
 import ApiError from '../../utils/ApiError';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
-
-const prisma = new PrismaClient();
 
 type UserListQuery = {
     page: number;

@@ -36,13 +36,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
+exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const livestream_io_1 = require("./livestream.io");
+const google_sheet_csv_1 = require("../../integrations/google-sheet-csv");
 const auto_schedule_service_1 = require("./auto-schedule.service");
 const calendar_import_service_1 = require("./calendar-import.service");
 const authorization_service_1 = require("../../services/authorization.service");
+const classroom_assignment_service_1 = require("./classroom-assignment.service");
 const getChangeActor = (req) => ({
     userId: Number(req.user?.userId),
     username: String(req.user?.username || ''),
@@ -109,6 +111,16 @@ const getProgramLessonHocmaiSections = async (req, res, next) => {
     }
 };
 exports.getProgramLessonHocmaiSections = getProgramLessonHocmaiSections;
+const getProgramLessonsHocmaiSections = async (req, res, next) => {
+    try {
+        const data = await livestreamService.getHocmaiSectionsForProgramLessons(String(req.params.code || ''), req.body?.lesson_ids);
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getProgramLessonsHocmaiSections = getProgramLessonsHocmaiSections;
 const commitAutoSchedule = async (req, res, next) => {
     try {
         const preview = (0, auto_schedule_service_1.previewAutoSchedule)(req.body);
@@ -145,6 +157,32 @@ const backfillMissingTeachingUsers = async (req, res) => {
     }
 };
 exports.backfillMissingTeachingUsers = backfillMissingTeachingUsers;
+const previewStudentClassroomAssignment = async (req, res, next) => {
+    try {
+        const data = await (0, classroom_assignment_service_1.previewClassroomAssignment)(Number(req.params.id), {
+            maxStudentsPerClassroom: req.body?.max_students_per_classroom,
+        });
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+exports.previewStudentClassroomAssignment = previewStudentClassroomAssignment;
+const applyStudentClassroomAssignment = async (req, res, next) => {
+    try {
+        const data = await (0, classroom_assignment_service_1.applyClassroomAssignment)(Number(req.params.id), {
+            username: req.user?.username,
+        }, {
+            maxStudentsPerClassroom: req.body?.max_students_per_classroom,
+        });
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+exports.applyStudentClassroomAssignment = applyStudentClassroomAssignment;
 const updateSchedule = async (req, res, next) => {
     try {
         const { id } = req.params;
@@ -219,10 +257,14 @@ exports.getCalendar = getCalendar;
 const exportFile = async (req, res) => {
     try {
         const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
-        const rows = await livestreamService.getCalendarRowsForExport(req.query.ids, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.export'));
-        const buffer = (0, livestream_io_1.buildCalendarFile)(rows, format);
-        res.setHeader('Content-Type', (0, livestream_io_1.getCalendarFileContentType)(format));
-        res.setHeader('Content-Disposition', `attachment; filename="calendar-export-${Date.now()}.${format}"`);
+        const updateTemplate = req.query.purpose === 'update';
+        const rows = await livestreamService.getCalendarRowsForExport(req.query.ids, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.export'), String(req.query.program_code || '').trim() || undefined);
+        const buffer = updateTemplate
+            ? (0, livestream_io_1.buildCalendarUpdateFile)(rows)
+            : (0, livestream_io_1.buildCalendarFile)(rows, format);
+        const responseFormat = updateTemplate ? 'xlsx' : format;
+        res.setHeader('Content-Type', (0, livestream_io_1.getCalendarFileContentType)(responseFormat));
+        res.setHeader('Content-Disposition', `attachment; filename="calendar-${updateTemplate ? 'update-assistants' : 'export'}-${Date.now()}.${responseFormat}"`);
         res.send(buffer);
     }
     catch (err) {
@@ -237,25 +279,6 @@ const importTemplate = async (req, res) => {
     res.send((0, livestream_io_1.buildCalendarTemplate)(format));
 };
 exports.importTemplate = importTemplate;
-const getGoogleSheetCsv = async (sheetUrl) => {
-    let parsed;
-    try {
-        parsed = new URL(sheetUrl);
-    }
-    catch {
-        throw new Error('Link Google Sheets không hợp lệ');
-    }
-    if (parsed.hostname !== 'docs.google.com')
-        throw new Error('Chỉ hỗ trợ link Google Sheets từ docs.google.com');
-    const match = parsed.pathname.match(/^\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-    if (!match)
-        throw new Error('Link Google Sheets không hợp lệ');
-    const gid = parsed.searchParams.get('gid') || '0';
-    const response = await fetch(`https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${encodeURIComponent(gid)}`, { signal: AbortSignal.timeout(15_000) });
-    if (!response.ok)
-        throw new Error('Không thể đọc Google Sheets. Hãy kiểm tra quyền chia sẻ công khai.');
-    return Buffer.from(await response.arrayBuffer());
-};
 const importFile = async (req, res) => {
     try {
         const sheetUrl = String(req.body?.sheet_url || '').trim();
@@ -263,7 +286,7 @@ const importFile = async (req, res) => {
             res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
             return;
         }
-        const buffer = req.file?.buffer ?? await getGoogleSheetCsv(sheetUrl);
+        const buffer = req.file?.buffer ?? await (0, google_sheet_csv_1.getPublicGoogleSheetCsv)(sheetUrl);
         const originalName = req.file?.originalname ?? 'google-sheet.csv';
         const rows = (0, livestream_io_1.parseCalendarImportFile)(buffer, originalName);
         const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
@@ -338,7 +361,7 @@ const updateImportFile = async (req, res) => {
             res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
             return;
         }
-        const buffer = req.file?.buffer ?? await getGoogleSheetCsv(sheetUrl);
+        const buffer = req.file?.buffer ?? await (0, google_sheet_csv_1.getPublicGoogleSheetCsv)(sheetUrl);
         const originalName = req.file?.originalname ?? 'google-sheet.csv';
         const rows = (0, livestream_io_1.parseCalendarImportFile)(buffer, originalName);
         const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
@@ -383,7 +406,15 @@ const updateImportFile = async (req, res) => {
             });
             return;
         }
-        const result = await (0, calendar_import_service_1.updateCalendarsFromSheet)(importRows, getChangeActor(req));
+        const rawExistingDataMode = String(req.body?.existing_data_mode || req.body?.assistant_conflict_mode || 'skip');
+        if (rawExistingDataMode !== 'skip' && rawExistingDataMode !== 'overwrite') {
+            res.status(400).json({
+                success: false,
+                message: 'existing_data_mode chỉ nhận skip hoặc overwrite',
+            });
+            return;
+        }
+        const result = await (0, calendar_import_service_1.updateCalendarsFromSheet)(importRows, getChangeActor(req), rawExistingDataMode);
         if (result.status === 'validation_error') {
             res.status(400).json({
                 success: false,

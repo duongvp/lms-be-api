@@ -407,7 +407,7 @@ model users {
 
   userRoles userRoles[]
 
-  @@unique([username, code, learn_number, class_id], map: "uq_users_enroll")
+  @@unique([username, code, learn_number], map: "uq_users_enroll")
   @@index([code, learn_number], map: "idx_users_code_learn")
   @@index([student_hmid], map: "idx_users_hmid")
   @@index([name], map: "idx_users_name")

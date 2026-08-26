@@ -3,18 +3,19 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
+exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getHocmaiSectionsForProgramLessons = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
+const prisma_1 = __importDefault(require("../../lib/prisma"));
 const package_course_sheet_service_1 = require("../../integrations/package-course-sheet.service");
 const hocmai_course_outline_service_1 = require("../../integrations/hocmai-course-outline.service");
 const hocmai_sync_queue_service_1 = require("./hocmai-sync-queue.service");
 const teams_notifications_1 = require("../teams-notifications");
 const dateTime_1 = require("../../utils/dateTime");
 const calendar_user_sync_service_1 = require("./calendar-user-sync.service");
-const prisma = new client_1.PrismaClient();
-const hmoSectionsCache = new Map();
+const hmoSectionsByPackageCourseCache = new Map();
 const HMO_SECTIONS_CACHE_TTL_MS = 5 * 60 * 1000;
+const packageCourseKey = (packageId, courseId) => (JSON.stringify([String(packageId), String(courseId)]));
 const normalizeChangeReason = (payload) => {
     const reason = String(payload?.reason ?? payload?.change_reason ?? '').trim();
     if (!reason) {
@@ -220,31 +221,13 @@ const hydrateAssistantTeachers = async (client, records) => {
 };
 const createCalendarRecord = async (client, data, previousTeachingCalendar = null) => {
     const skipTeacherUserSync = data.skip_teacher_user_sync === true;
-    const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
-    const assistantTeacher = data.assistant_teacher ?? null;
-    const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'session_id');
-    const sessionId = data.session_id ?? null;
     const prismaData = { ...data };
     delete prismaData.skip_teacher_user_sync;
-    delete prismaData.assistant_teacher;
-    delete prismaData.session_id;
+    // Hai cột này đã có trong Prisma schema, vì vậy ghi ngay trong INSERT.
+    // Trước đây mỗi calendar phải UPDATE hai lần rồi SELECT lại, khiến bulk
+    // create phát sinh thêm tới 3 round-trip DB cho từng buổi.
     const created = await client.calendar.create({ data: prismaData });
-    if (hasAssistants) {
-        await client.$executeRaw `
-      UPDATE calendar
-      SET assistant_teacher = ${assistantTeacher}
-      WHERE id = ${created.id}
-    `;
-    }
-    if (hasSessionId) {
-        await client.$executeRaw `
-      UPDATE calendar
-      SET session_id = ${sessionId}
-      WHERE id = ${created.id}
-    `;
-    }
     const result = { ...created };
-    await hydrateAssistantTeachers(client, [result]);
     if (!skipTeacherUserSync) {
         await (0, calendar_user_sync_service_1.syncCalendarTeachingUsers)(client, previousTeachingCalendar, result);
     }
@@ -303,7 +286,7 @@ const normalizeRoom = (data) => {
     delete data.room;
     return data;
 };
-const hydrateLessonData = async (tx, input) => {
+const hydrateLessonData = async (tx, input, lessonCache) => {
     const data = { ...input };
     // session_id references the internal `lessons.id`. External HMO lesson_id
     // is a section ID and only belongs inside package_lesson_mappings.
@@ -332,8 +315,10 @@ const hydrateLessonData = async (tx, input) => {
     catch {
         throw new Error("session_id không hợp lệ");
     }
-    const lessons = await tx.$queryRawUnsafe('SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1 FOR SHARE', parsedSessionId);
-    const lesson = lessons[0];
+    const lessons = lessonCache
+        ? []
+        : await tx.$queryRawUnsafe('SELECT * FROM lessons WHERE id = ? AND status <> 0 LIMIT 1 FOR SHARE', parsedSessionId);
+    const lesson = lessonCache?.get(parsedSessionId.toString()) || lessons[0];
     if (!lesson) {
         throw new Error("Bài học không tồn tại hoặc đã ngừng hoạt động");
     }
@@ -423,7 +408,7 @@ const isTransactionConflict = (error) => {
 const withSerializableTransaction = async (operation, maxAttempts = 3, timeoutMs = 15_000) => {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-            return await prisma.$transaction(operation, {
+            return await prisma_1.default.$transaction(operation, {
                 isolationLevel: client_1.Prisma.TransactionIsolationLevel.Serializable,
                 maxWait: 5_000,
                 timeout: timeoutMs,
@@ -487,8 +472,8 @@ const assertLessonCountAvailable = async (tx, code, systemType, learnNumber, les
         throw new Error(`Bài ${learnNumber} của khóa ${code} đã có lịch b${lessonCount + 1}${existing.key ? ` (${existing.key})` : ''}`);
     }
 };
-const prepareCalendarCreateData = async (tx, input, reservedCounts) => {
-    const data = normalizeRoom(await hydrateLessonData(tx, input));
+const prepareCalendarCreateData = async (tx, input, reservedCounts, lessonCache) => {
+    const data = normalizeRoom(await hydrateLessonData(tx, input, lessonCache));
     const skipTeacherProfileValidation = data.skip_teacher_profile_validation === true;
     delete data.skip_teacher_profile_validation;
     if (!skipTeacherProfileValidation) {
@@ -796,7 +781,7 @@ const getRescheduleLessonNameOptions = (payload) => ({
     makeupLessonName: (lessonName) => formatRescheduledLessonName(lessonName, normalizeLessonNameAffix(payload?.new_lesson_name_prefix, DEFAULT_MAKEUP_LESSON_NAME_PREFIX, 'Tiền tố tên bài mới'), normalizeLessonNameAffix(payload?.new_lesson_name_suffix, '', 'Hậu tố tên bài mới')),
 });
 // 1.3 & 5 Kiểm tra trùng lặp
-const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, start_time, end_time, id, client = prisma, }) => {
+const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, start_time, end_time, id, client = prisma_1.default, }) => {
     ensureValidTimeRange(start_time, end_time);
     if (teacher) {
         const conflictTeacher = await client.calendar.findFirst({
@@ -854,7 +839,7 @@ const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, s
 // 1.1. Thêm từng lịch
 const createSingle = async (data, changeActor) => {
     const resolvedMappings = await resolvePackageLessonMappings(data?.package_lesson_mappings);
-    return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
+    return await withCalendarTriggerErrorHint(() => prisma_1.default.$transaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
         const { calendarData } = await prepareCalendarCreateData(tx, data);
         await checkConflict({
             teacher: calendarData.teacher,
@@ -883,8 +868,8 @@ const getProgramLessonsForScheduling = async (programCode) => {
     const code = String(programCode || '').trim();
     if (!code)
         throw new Error('Vui lòng chọn Chương trình');
-    const rows = await prisma.$queryRaw(client_1.Prisma.sql `
-    SELECT lesson.id, lesson.learn_number, lesson.lesson_name,
+    const rows = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+    SELECT lesson.id, lesson.learn_number, lesson.lesson_name, lesson.system_type,
       (
         SELECT COUNT(*)
         FROM calendar AS calendar_row
@@ -917,7 +902,7 @@ const getProgramLessonsForScheduling = async (programCode) => {
 };
 exports.getProgramLessonsForScheduling = getProgramLessonsForScheduling;
 const getSchedulingPrograms = async (allowedPrograms = null) => {
-    const rows = await prisma.$queryRaw(client_1.Prisma.sql `
+    const rows = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
     SELECT program.code,
            COALESCE(
              MAX(CASE
@@ -948,51 +933,140 @@ const getSchedulingPrograms = async (allowedPrograms = null) => {
     }));
 };
 exports.getSchedulingPrograms = getSchedulingPrograms;
-const getHocmaiSectionsForProgramLesson = async (programCode, lessonId) => {
+const normalizeHocmaiBatchLessonIds = (lessonIds) => {
+    if (!Array.isArray(lessonIds) || !lessonIds.length) {
+        throw new Error('lesson_ids phải là danh sách không rỗng');
+    }
+    if (lessonIds.length > 500) {
+        throw new Error('Chỉ được tải tối đa 500 bài học mỗi lần');
+    }
+    const rawLessonIds = lessonIds.map((lessonId) => String(lessonId).trim());
+    if (rawLessonIds.some((lessonId) => !/^\d+$/.test(lessonId) || BigInt(lessonId) <= 0n)) {
+        throw new Error('Danh sách bài học không hợp lệ');
+    }
+    return Array.from(new Set(rawLessonIds.map((lessonId) => String(BigInt(lessonId)))));
+};
+const getHocmaiSectionsForProgramLessons = async (programCode, lessonIds) => {
     const code = String(programCode || '').trim();
-    let parsedLessonId;
-    try {
-        parsedLessonId = BigInt(lessonId);
-    }
-    catch {
-        throw new Error('Bài học không hợp lệ');
-    }
-    const mappings = await prisma.$queryRaw(client_1.Prisma.sql `
-    SELECT DISTINCT mapping.package_id, mapping.course_id
+    if (!code)
+        throw new Error('Chương trình không hợp lệ');
+    const normalizedLessonIds = normalizeHocmaiBatchLessonIds(lessonIds);
+    const parsedLessonIds = normalizedLessonIds.map((lessonId) => BigInt(lessonId));
+    const byLessonId = Object.fromEntries(normalizedLessonIds.map((lessonId) => [lessonId, []]));
+    const mappings = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+    SELECT DISTINCT mapping.lesson_id, mapping.package_id, mapping.course_id
     FROM lesson_course_mapping AS mapping
     INNER JOIN lessons AS lesson ON lesson.id = mapping.lesson_id
-    WHERE lesson.id = ${parsedLessonId}
+    WHERE lesson.id IN (${client_1.Prisma.join(parsedLessonIds)})
       AND lesson.subject_code = ${code}
       AND lesson.status <> 0
-    ORDER BY mapping.package_id ASC, mapping.course_id ASC
+    ORDER BY mapping.lesson_id ASC, mapping.package_id ASC, mapping.course_id ASC
   `);
-    if (!mappings.length)
-        return [];
-    const identity = mappings
-        .map((mapping) => `${mapping.package_id}:${mapping.course_id}`)
-        .join('|');
-    const cacheKey = `${code}:${lessonId}:${identity}`;
-    const cached = hmoSectionsCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now())
-        return cached.data;
-    const outlines = await (0, hocmai_course_outline_service_1.fetchHocmaiCourseOutlines)(mappings.map((mapping) => ({
-        packageId: String(mapping.package_id),
-        courseId: String(mapping.course_id),
-    })));
-    const data = outlines.flatMap((outline) => outline.lessons.map((lesson) => ({
-        package_id: outline.packageId,
-        course_id: outline.courseId,
-        lesson_id: lesson.lessonId,
-        lesson_name: lesson.name,
-    })));
-    // Không cache danh sách rỗng: HMO có thể trả success trước khi hydrate lessons.
-    if (data.length) {
-        hmoSectionsCache.set(cacheKey, {
-            expiresAt: Date.now() + HMO_SECTIONS_CACHE_TTL_MS,
-            data,
-        });
+    if (!mappings.length) {
+        return { by_lesson_id: byLessonId, errors_by_lesson_id: {} };
     }
-    return data;
+    const pairKeysByLessonId = new Map();
+    const uniquePairs = new Map();
+    mappings.forEach((mapping) => {
+        const lessonId = String(mapping.lesson_id);
+        const pair = {
+            packageId: String(mapping.package_id),
+            courseId: String(mapping.course_id),
+        };
+        const pairKey = packageCourseKey(pair.packageId, pair.courseId);
+        uniquePairs.set(pairKey, pair);
+        const lessonPairs = pairKeysByLessonId.get(lessonId) || new Set();
+        lessonPairs.add(pairKey);
+        pairKeysByLessonId.set(lessonId, lessonPairs);
+    });
+    const optionsByPair = new Map();
+    const errorsByPair = new Map();
+    const missingPairs = [];
+    const now = Date.now();
+    uniquePairs.forEach((pair, pairKey) => {
+        const cached = hmoSectionsByPackageCourseCache.get(pairKey);
+        if (cached && cached.expiresAt > now) {
+            optionsByPair.set(pairKey, cached.data);
+            return;
+        }
+        if (cached)
+            hmoSectionsByPackageCourseCache.delete(pairKey);
+        missingPairs.push(pair);
+    });
+    if (missingPairs.length) {
+        // Tách lỗi theo từng cặp để một Course HMO lỗi không làm mất dữ liệu của
+        // tất cả lesson trong batch. Concurrency vẫn được giới hạn như luồng cũ.
+        const configuredConcurrency = Number(process.env.HMO_COURSE_OUTLINE_CONCURRENCY || 5);
+        const concurrency = Number.isInteger(configuredConcurrency) && configuredConcurrency > 0
+            ? Math.min(configuredConcurrency, 20)
+            : 5;
+        let nextPairIndex = 0;
+        const worker = async () => {
+            while (nextPairIndex < missingPairs.length) {
+                const pair = missingPairs[nextPairIndex];
+                nextPairIndex += 1;
+                const pairKey = packageCourseKey(pair.packageId, pair.courseId);
+                try {
+                    const [outline] = await (0, hocmai_course_outline_service_1.fetchHocmaiCourseOutlines)([pair]);
+                    const options = outline.lessons.map((lesson) => ({
+                        package_id: outline.packageId,
+                        course_id: outline.courseId,
+                        lesson_id: lesson.lessonId,
+                        lesson_name: lesson.name,
+                    }));
+                    optionsByPair.set(pairKey, options);
+                    // Không cache danh sách rỗng: HMO có thể trả success trước khi hydrate lessons.
+                    if (options.length) {
+                        hmoSectionsByPackageCourseCache.set(pairKey, {
+                            expiresAt: Date.now() + HMO_SECTIONS_CACHE_TTL_MS,
+                            data: options,
+                        });
+                    }
+                }
+                catch (error) {
+                    errorsByPair.set(pairKey, error?.message || 'Không thể tải dữ liệu HMO');
+                }
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(concurrency, missingPairs.length) }, () => worker()));
+    }
+    const errorsByLessonId = {};
+    pairKeysByLessonId.forEach((pairKeys, lessonId) => {
+        const uniqueOptions = new Map();
+        const lessonErrors = [];
+        pairKeys.forEach((pairKey) => {
+            const pairError = errorsByPair.get(pairKey);
+            if (pairError)
+                lessonErrors.push(pairError);
+            (optionsByPair.get(pairKey) || []).forEach((option) => {
+                const optionKey = JSON.stringify([
+                    option.package_id,
+                    option.course_id,
+                    option.lesson_id,
+                ]);
+                uniqueOptions.set(optionKey, option);
+            });
+        });
+        byLessonId[lessonId] = Array.from(uniqueOptions.values());
+        if (lessonErrors.length)
+            errorsByLessonId[lessonId] = Array.from(new Set(lessonErrors));
+    });
+    return {
+        by_lesson_id: byLessonId,
+        errors_by_lesson_id: errorsByLessonId,
+    };
+};
+exports.getHocmaiSectionsForProgramLessons = getHocmaiSectionsForProgramLessons;
+const getHocmaiSectionsForProgramLesson = async (programCode, lessonId) => {
+    const normalizedLessonId = String(lessonId || '').trim();
+    const result = await (0, exports.getHocmaiSectionsForProgramLessons)(programCode, [normalizedLessonId]);
+    const canonicalLessonId = /^\d+$/.test(normalizedLessonId)
+        ? String(BigInt(normalizedLessonId))
+        : normalizedLessonId;
+    const errors = result.errors_by_lesson_id[canonicalLessonId];
+    if (errors?.length)
+        throw new Error(errors[0]);
+    return result.by_lesson_id[canonicalLessonId] || [];
 };
 exports.getHocmaiSectionsForProgramLesson = getHocmaiSectionsForProgramLesson;
 // 1.2. Thêm nhiều lịch
@@ -1007,12 +1081,43 @@ const createBulk = async (config, changeActor) => {
     for (const calendar of calendars) {
         resolvedMappingsByIndex.push(await resolvePackageLessonMappings(calendar?.package_lesson_mappings));
     }
-    return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
+    // Tạo lịch tự động có thể gồm hàng chục bài, và mỗi bài còn đồng bộ nhân sự,
+    // mapping HMO, queue và outbox thông báo. Timeout mặc định 5 giây của Prisma
+    // làm transaction bị đóng giữa lô dù dữ liệu vẫn hoàn toàn hợp lệ.
+    const configuredTimeout = Number(process.env.CALENDAR_BULK_CREATE_TRANSACTION_TIMEOUT_MS || 180_000);
+    const transactionTimeout = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : 180_000;
+    return await withCalendarTriggerErrorHint(() => prisma_1.default.$transaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
         const createdCalendars = [];
+        const teamsEvents = [];
+        // Toàn bộ bài học của lô được đọc và khóa chia sẻ bằng một query thay vì
+        // SELECT từng session_id. Map cũng giúp giữ nguyên lỗi theo đúng buổi.
+        const sessionIds = Array.from(new Set(calendars.flatMap((calendar) => {
+            const rawSessionId = calendar?.session_id ?? calendar?.sessionId;
+            if (rawSessionId === undefined || rawSessionId === null || rawSessionId === '')
+                return [];
+            try {
+                return [BigInt(rawSessionId)];
+            }
+            catch {
+                return [];
+            }
+        }).map((sessionId) => sessionId.toString()))).map((sessionId) => BigInt(sessionId));
+        const lessons = sessionIds.length
+            ? await tx.$queryRaw(client_1.Prisma.sql `
+          SELECT *
+          FROM lessons
+          WHERE id IN (${client_1.Prisma.join(sessionIds)})
+            AND status <> 0
+          FOR SHARE
+        `)
+            : [];
+        const lessonCache = new Map(lessons.map((lesson) => [String(lesson.id), lesson]));
         for (let index = 0; index < calendars.length; index += 1) {
             const cal = calendars[index];
             try {
-                const { calendarData } = await prepareCalendarCreateData(tx, cal, reservedCounts);
+                const { calendarData } = await prepareCalendarCreateData(tx, cal, reservedCounts, lessonCache);
                 await checkConflict({
                     teacher: calendarData.teacher,
                     assistant_teacher: calendarData.assistant_teacher,
@@ -1027,7 +1132,7 @@ const createBulk = async (config, changeActor) => {
                 if (resolvedMappingsByIndex[index].length) {
                     await (0, hocmai_sync_queue_service_1.enqueueCalendarSync)(tx, crypto_1.default.randomUUID(), 1, 'create', calendar);
                 }
-                await (0, teams_notifications_1.enqueueCalendarTeamsNotification)(tx, {
+                teamsEvents.push({
                     eventType: 'created',
                     after: calendar,
                     actor: changeActor,
@@ -1039,8 +1144,14 @@ const createBulk = async (config, changeActor) => {
                 throw new Error(`Buổi ${index + 1}${lessonLabel}: ${error.message || 'Không thể tạo lịch học'}`);
             }
         }
+        // Một INSERT nhiều dòng cho outbox thay vì một INSERT cho từng buổi.
+        await (0, teams_notifications_1.enqueueManyCalendarTeamsNotifications)(tx, teamsEvents);
         return { count: createdCalendars.length, calendars: createdCalendars };
-    })));
+    }), {
+        isolationLevel: client_1.Prisma.TransactionIsolationLevel.ReadCommitted,
+        maxWait: 10_000,
+        timeout: transactionTimeout,
+    }));
 };
 exports.createBulk = createBulk;
 const createValidatedCalendarImport = async (rows, changeActor) => {
@@ -1051,7 +1162,7 @@ const createValidatedCalendarImport = async (rows, changeActor) => {
     return withCalendarTriggerErrorHint(async () => {
         for (let attempt = 1; attempt <= 3; attempt += 1) {
             try {
-                return await prisma.$transaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
+                return await prisma_1.default.$transaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
                     // Khởi tạo lại ở mỗi lần retry để lesson_count không bị giữ từ
                     // transaction trước đã rollback.
                     const reservedCounts = new Map();
@@ -1103,7 +1214,7 @@ const createValidatedInternalCalendarImport = async (rows, changeActor) => {
     if (!rows.length)
         throw new Error('Không có lịch hợp lệ để import');
     const codes = Array.from(new Set(rows.map((row) => row.calendar.code)));
-    return withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
+    return withCalendarTriggerErrorHint(() => prisma_1.default.$transaction(async (tx) => (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
         const existingCounts = await tx.$queryRaw(client_1.Prisma.sql `
         SELECT code, system_type, learn_number,
                MAX(COALESCE(lesson_count, -1)) AS max_count
@@ -1554,10 +1665,10 @@ const updateSchedule = async (id, data, updateMode, changeActor) => {
     if (data?.lesson_status !== undefined || data?.cancel_reason !== undefined) {
         throw new Error('Chỉ được đánh dấu nghỉ học qua thao tác Nghỉ học để bắt buộc lưu lý do');
     }
-    const current = await prisma.calendar.findUnique({ where: { id } });
+    const current = await prisma_1.default.calendar.findUnique({ where: { id } });
     if (!current)
         throw new Error("Not found");
-    await hydrateAssistantTeachers(prisma, [current]);
+    await hydrateAssistantTeachers(prisma_1.default, [current]);
     assertCanUpdateSession(current);
     if (data.code !== undefined && String(data.code) !== String(current.code)) {
         throw new Error('Không được thay đổi code khi cập nhật lịch học');
@@ -1575,7 +1686,7 @@ const updateSchedule = async (id, data, updateMode, changeActor) => {
     if (data.sessionId !== undefined
         || data.session_id !== undefined
         || data.lesson_id !== undefined) {
-        data = await hydrateLessonData(prisma, data);
+        data = await hydrateLessonData(prisma_1.default, data);
         if (String(data.code) !== String(current.code)
             || Number(data.learn_number) !== Number(current.learn_number)) {
             throw new Error('Bài học mới phải giữ nguyên code và learn_number của lịch hiện tại');
@@ -1610,9 +1721,13 @@ const updateSchedule = async (id, data, updateMode, changeActor) => {
             id,
         });
     }
-    return await withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
+    return await withCalendarTriggerErrorHint(() => prisma_1.default.$transaction(async (tx) => {
         const operation = async () => {
             const updated = await updateCalendarRecord(tx, id, data);
+            // updateCalendarRecord đang nhận cờ skip từ luồng cập nhật để tránh sync
+            // sớm. Sau khi snapshot mới hoàn chỉnh, đồng bộ hai chiều: thêm người mới
+            // và thu hồi người cũ nếu không còn lịch hoạt động khác sử dụng họ.
+            await (0, calendar_user_sync_service_1.syncCalendarTeachingUsers)(tx, current, updated);
             await auditTimeChange(tx, current, updated, changeActor, auditReason);
             if (resolvedMappingUpdate) {
                 await replacePackageLessonMappingForCalendar(tx, updated, resolvedMappingUpdate);
@@ -1633,7 +1748,7 @@ exports.updateSchedule = updateSchedule;
 // 2.3 Nghỉ không dời
 const cancelSession = async (id, payload, changeActor) => (0, exports.rescheduleSession)(id, { ...payload, mode: 'cancel' }, changeActor);
 exports.cancelSession = cancelSession;
-const deleteSession = async (id, changeActor) => withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
+const deleteSession = async (id, changeActor) => withCalendarTriggerErrorHint(() => prisma_1.default.$transaction(async (tx) => {
     const current = await tx.calendar.findUnique({ where: { id } });
     if (!current)
         throw new Error("Not found");
@@ -1705,7 +1820,7 @@ const normalizeSortOrder = (value) => {
 const getCalendarIdsForPrograms = async (programs) => {
     if (!programs.length)
         return [];
-    const rows = await prisma.$queryRaw(client_1.Prisma.sql `
+    const rows = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
     SELECT DISTINCT calendar_row.id
     FROM calendar AS calendar_row
     LEFT JOIN lessons AS session_lesson
@@ -1727,7 +1842,7 @@ const getCalendarIdsForPrograms = async (programs) => {
     return rows.map((row) => Number(row.id));
 };
 const assertSchedulingProgramExists = async (programCode) => {
-    const program = await prisma.lessons.findFirst({
+    const program = await prisma_1.default.lessons.findFirst({
         where: { subject_code: programCode, status: { not: 0 } },
         select: { id: true },
     });
@@ -1760,7 +1875,10 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
     const keyword = normalizeString(query.keyword);
     const code = normalizeString(query.code);
     const exactCode = normalizeString(query.code_exact);
-    let teacher = normalizeString(query.teacher);
+    const requestedTeachers = Array.from(new Set(String(query.teacher ?? '')
+        .split(',')
+        .map((teacher) => teacher.trim())
+        .filter(Boolean)));
     const subject = normalizeString(query.subject);
     const classroom = normalizeString(query.classroom);
     const systemTypes = Array.from(new Set(String(query.system_type ?? '')
@@ -1771,6 +1889,13 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
         .split(',')
         .map((status) => status.trim())
         .filter(Boolean)));
+    const weekdayTokens = String(query.weekdays ?? '')
+        .split(',')
+        .map((weekday) => weekday.trim())
+        .filter(Boolean);
+    const weekdays = Array.from(new Set(weekdayTokens.map(Number)));
+    const fromLearnNumber = normalizeNumber(query.from_learn_number, 'from_learn_number');
+    const toLearnNumber = normalizeNumber(query.to_learn_number, 'to_learn_number');
     const startTime = normalizeDate(query.start_time, 'start_time');
     const endTime = normalizeDate(query.end_time, 'end_time');
     if (!exactCode && !code && !allowAllPrograms) {
@@ -1783,24 +1908,34 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
     const requestedSortOrders = (normalizeString(query.sort_order) || '')
         .split(',')
         .map((order) => normalizeSortOrder(order));
-    if (teacher) {
-        const teacherProfiles = await prisma.$queryRaw(client_1.Prisma.sql `
+    const teacherNames = [];
+    for (const requestedTeacher of requestedTeachers) {
+        const teacherProfiles = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
       SELECT display_name
       FROM teacher_profiles
-      WHERE username = ${teacher}
+      WHERE username = ${requestedTeacher}
         AND can_view_stream_key = 1
         AND status = 1
       LIMIT 1
     `);
-        if (teacherProfiles[0]?.display_name) {
-            teacher = teacherProfiles[0].display_name.trim();
-        }
+        teacherNames.push(teacherProfiles[0]?.display_name?.trim() || requestedTeacher);
     }
     if (systemTypes.some((systemType) => !CALENDAR_SYSTEM_TYPES.includes(systemType))) {
         throw new Error('system_type không hợp lệ');
     }
     if (timeStatuses.some((status) => !['upcoming', 'ongoing', 'completed'].includes(status))) {
         throw new Error('time_status không hợp lệ');
+    }
+    if (weekdays.some((weekday) => !Number.isInteger(weekday) || weekday < 1 || weekday > 7)) {
+        throw new Error('weekdays chỉ nhận giá trị từ 1 (Thứ 2) đến 7 (Chủ nhật)');
+    }
+    if ((fromLearnNumber !== undefined && fromLearnNumber < 1)
+        || (toLearnNumber !== undefined && toLearnNumber < 1)) {
+        throw new Error('Khoảng bài phải lớn hơn 0');
+    }
+    if (fromLearnNumber !== undefined && toLearnNumber !== undefined
+        && fromLearnNumber > toLearnNumber) {
+        throw new Error('Khoảng bài không hợp lệ');
     }
     if (startTime && endTime && startTime > endTime) {
         throw new Error('Khoảng thời gian không hợp lệ');
@@ -1831,12 +1966,22 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
             { channel_name: { contains: keyword } },
         ];
     }
-    if (teacher)
-        where.teacher = { contains: teacher };
+    if (teacherNames.length) {
+        const teacherCondition = {
+            OR: teacherNames.map((teacher) => ({ teacher: { contains: teacher } })),
+        };
+        where.AND = [...(Array.isArray(where.AND) ? where.AND : []), teacherCondition];
+    }
     if (subject)
         where.subject = { contains: subject };
     if (classroom)
         where.channel_name = { contains: classroom };
+    if (fromLearnNumber !== undefined || toLearnNumber !== undefined) {
+        where.learn_number = {
+            ...(fromLearnNumber !== undefined ? { gte: fromLearnNumber } : {}),
+            ...(toLearnNumber !== undefined ? { lte: toLearnNumber } : {}),
+        };
+    }
     // Chọn cả Topclass và Topuni tương đương không lọc hệ thống.
     if (systemTypes.length === 1)
         where.system_type = systemTypes[0];
@@ -1863,25 +2008,38 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
             { OR: timeConditions },
         ];
     }
+    if (weekdays.length && weekdays.length < 7) {
+        // calendar.start_time được lưu dưới dạng giờ nghiệp vụ Việt Nam. WEEKDAY
+        // đọc trực tiếp giá trị MySQL, tránh trình điều khiển chuyển múi giờ làm lệch thứ.
+        const weekdayRows = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+      SELECT id
+      FROM calendar
+      WHERE WEEKDAY(start_time) + 1 IN (${client_1.Prisma.join(weekdays)})
+    `);
+        where.AND = [
+            ...(Array.isArray(where.AND) ? where.AND : []),
+            { id: { in: weekdayRows.map((row) => Number(row.id)) } },
+        ];
+    }
     const orderBy = sortFields.length
         ? sortFields.map((field, index) => ({
             [field]: requestedSortOrders[index] ?? 'asc',
         }))
         : [{ start_time: 'asc' }];
     const [total, data] = await Promise.all([
-        prisma.calendar.count({ where }),
-        prisma.calendar.findMany({
+        prisma_1.default.calendar.count({ where }),
+        prisma_1.default.calendar.findMany({
             where,
             skip,
             take,
             orderBy,
         }),
     ]);
-    await hydrateAssistantTeachers(prisma, data);
+    await hydrateAssistantTeachers(prisma_1.default, data);
     const mappingKeys = data
         .map((record) => record.key)
         .filter((key) => Boolean(key));
-    const mappingsByKey = await loadMappingsByKeys(prisma, mappingKeys);
+    const mappingsByKey = await loadMappingsByKeys(prisma_1.default, mappingKeys);
     return {
         total,
         page,
@@ -1893,7 +2051,7 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
     };
 };
 exports.getCalendar = getCalendar;
-const getCalendarRowsForExport = async (rawIds, allowedPrograms = null) => {
+const getCalendarRowsForExport = async (rawIds, allowedPrograms = null, programCode) => {
     const ids = String(rawIds ?? '')
         .split(',')
         .map((id) => Number(id.trim()))
@@ -1903,18 +2061,19 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null) => {
         : await getCalendarIdsForPrograms(allowedPrograms);
     const conditions = [
         ...(ids.length ? [{ id: { in: ids } }] : []),
+        ...(String(programCode || '').trim() ? [{ code: String(programCode).trim() }] : []),
         ...(scopedCalendarIds === null ? [] : [{ id: { in: scopedCalendarIds } }]),
     ];
-    const calendars = await prisma.calendar.findMany({
+    const calendars = await prisma_1.default.calendar.findMany({
         where: conditions.length ? { AND: conditions } : {},
         orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
     });
-    await hydrateAssistantTeachers(prisma, calendars);
+    await hydrateAssistantTeachers(prisma_1.default, calendars);
     const keys = calendars
         .map((calendar) => calendar.key)
         .filter((key) => Boolean(key));
     const mappings = keys.length
-        ? await prisma.package_lesson_mapping.findMany({
+        ? await prisma_1.default.package_lesson_mapping.findMany({
             where: { key: { in: keys } },
             orderBy: [{ course_id: 'asc' }, { lesson_id: 'asc' }],
         })
@@ -1924,7 +2083,7 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null) => {
         ...parseAssistantTeachers(calendar.assistant_teacher),
     ]).filter(Boolean)));
     const teachingProfiles = teachingUsernames.length
-        ? await prisma.teacher_profiles.findMany({
+        ? await prisma_1.default.teacher_profiles.findMany({
             where: { username: { in: teachingUsernames } },
             select: { username: true, display_name: true },
         })
@@ -1954,6 +2113,10 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null) => {
         ].join(':');
         return { date, time, weekday: local.getUTCDay() };
     };
+    const formatDirectDateTime = (value) => [
+        `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCDate()).padStart(2, '0')}`,
+        `${String(value.getUTCHours()).padStart(2, '0')}:${String(value.getUTCMinutes()).padStart(2, '0')}:${String(value.getUTCSeconds()).padStart(2, '0')}`,
+    ].join(' ');
     const exportDocumentLinks = (value) => {
         const text = String(value || '').trim();
         if (!text)
@@ -1983,6 +2146,15 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null) => {
         const assistants = parseAssistantTeachers(calendar.assistant_teacher);
         const weekday = start.weekday === 0 ? 'Chủ Nhật' : `Thứ ${start.weekday + 1}`;
         return {
+            key: calendar.key || '',
+            start_time: formatDirectDateTime(calendar.start_time),
+            end_time: formatDirectDateTime(calendar.end_time),
+            learn_number: calendar.learn_number,
+            teacher: calendar.teacher || '',
+            evg_banner: calendar.evg_banner || '',
+            evg_stream: calendar.evg_stream || '',
+            lesson_count: calendar.lesson_count ?? '',
+            system_type: calendar.system_type || 'topclass',
             subject: calendar.subject || '',
             code: calendar.code,
             lesson_name: calendar.lesson_name || '',
@@ -2049,7 +2221,7 @@ const buildMappingUpdatePlan = async (updates) => {
     const seenCalendarIds = new Set();
     for (const update of updates) {
         try {
-            const calendar = await findCalendarForMappingUpdate(prisma, update);
+            const calendar = await findCalendarForMappingUpdate(prisma_1.default, update);
             if (!calendar)
                 throw new Error('Không tìm thấy lịch học cần cập nhật');
             assertCanUpdateSession(calendar);
@@ -2059,7 +2231,7 @@ const buildMappingUpdatePlan = async (updates) => {
             seenCalendarIds.add(Number(calendar.id));
             const nextMappings = await normalizePackageLessonMappingsForUpdate(update.package_lesson_mappings);
             const currentMappings = calendar.key
-                ? await prisma.package_lesson_mapping.findMany({
+                ? await prisma_1.default.package_lesson_mapping.findMany({
                     where: { key: calendar.key },
                     orderBy: [{ id: 'asc' }],
                 })
@@ -2105,7 +2277,7 @@ exports.previewCalendarMappingUpdates = previewCalendarMappingUpdates;
 const updateCalendarMappings = async (payload, changeActor) => {
     const updates = normalizeCalendarMappingUpdates(payload?.updates);
     const plan = await buildMappingUpdatePlan(updates);
-    return withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
+    return withCalendarTriggerErrorHint(() => prisma_1.default.$transaction(async (tx) => {
         const operationId = crypto_1.default.randomUUID();
         const results = [];
         await (0, hocmai_sync_queue_service_1.withManualHocmaiQueue)(tx, async () => {
@@ -2194,7 +2366,7 @@ const updateBulk = async (config, changeActor) => {
             || dataToUpdate.teacher
             || dataToUpdate.assistant_teacher !== undefined
             || dataToUpdate.channel_name) {
-            return await prisma.$transaction(async (tx) => {
+            return await prisma_1.default.$transaction(async (tx) => {
                 const results = [];
                 const normalizedIds = ids.map((id) => Number(id));
                 const sessions = await tx.calendar.findMany({
@@ -2203,7 +2375,6 @@ const updateBulk = async (config, changeActor) => {
                 await hydrateAssistantTeachers(tx, sessions);
                 sessions.forEach(assertCanUpdateSession);
                 const sessionsById = new Map(sessions.map((session) => [Number(session.id), session]));
-                const teachingProfileCache = new Map();
                 const teamsEvents = [];
                 const applyUpdates = async () => {
                     for (const idStr of ids) {
@@ -2240,7 +2411,7 @@ const updateBulk = async (config, changeActor) => {
                             start_time: newStart,
                             end_time: newEnd,
                         }, current);
-                        await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, updated, teachingProfileCache);
+                        await (0, calendar_user_sync_service_1.syncCalendarTeachingUsers)(tx, current, updated);
                         await auditTimeChange(tx, current, updated, changeActor, config?.reason ?? config?.change_reason);
                         if (commonMappingUpdate) {
                             await assertMappingsBelongToCalendarLesson(tx, current, commonMappingUpdate);
@@ -2263,7 +2434,7 @@ const updateBulk = async (config, changeActor) => {
         }
         // Dù chỉ đổi giáo viên/phòng vẫn phải khóa và kiểm tra từng buổi để
         // không cập nhật lịch đã bắt đầu.
-        return await prisma.$transaction(async (tx) => {
+        return await prisma_1.default.$transaction(async (tx) => {
             const normalizedIds = ids.map((id) => Number(id));
             const sessions = await tx.calendar.findMany({
                 where: { id: { in: normalizedIds } },
@@ -2278,7 +2449,12 @@ const updateBulk = async (config, changeActor) => {
                     const updated = hasCommonCalendarFieldUpdate
                         ? await updateCalendarRecord(tx, current.id, dataToUpdate, current)
                         : current;
-                    await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, updated, teachingProfileCache);
+                    if (hasCommonCalendarFieldUpdate) {
+                        await (0, calendar_user_sync_service_1.syncCalendarTeachingUsers)(tx, current, updated);
+                    }
+                    else {
+                        await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, updated, teachingProfileCache);
+                    }
                     if (hasCommonCalendarFieldUpdate) {
                         await auditTimeChange(tx, current, updated, changeActor, config?.reason ?? config?.change_reason);
                     }
@@ -2312,7 +2488,7 @@ const updateBulk = async (config, changeActor) => {
                 mappingUpdatesById.set(Number(item.id), await normalizePackageLessonMappingsForUpdate(item.package_lesson_mappings));
             }
         }
-        return await prisma.$transaction(async (tx) => {
+        return await prisma_1.default.$transaction(async (tx) => {
             const normalizedIds = update_data
                 .map((item) => Number(item.id))
                 .filter((id) => Number.isInteger(id) && id > 0);
@@ -2384,7 +2560,12 @@ const updateBulk = async (config, changeActor) => {
                         updated = await updateCalendarRecord(tx, id, dataToUpdate, current);
                         await auditTimeChange(tx, current, updated, changeActor, item?.reason ?? config?.reason);
                     }
-                    await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, updated, teachingProfileCache);
+                    if (hasCalendarFieldUpdate) {
+                        await (0, calendar_user_sync_service_1.syncCalendarTeachingUsers)(tx, current, updated);
+                    }
+                    else {
+                        await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, updated, teachingProfileCache);
+                    }
                     if (mappingUpdate) {
                         await assertMappingsBelongToCalendarLesson(tx, current, mappingUpdate);
                         await replacePackageLessonMappingForCalendar(tx, updated, mappingUpdate);
@@ -2409,31 +2590,34 @@ const updateBulk = async (config, changeActor) => {
 exports.updateBulk = updateBulk;
 /**
  * Quét lịch legacy để bổ sung enrollment giáo viên/trợ giảng còn thiếu trong
- * users. Không sửa calendar và không đụng tới user đã tồn tại. Xử lý theo lô
- * để không giữ transaction quá lâu trên production.
+ * users. Không sửa calendar; với user đã tồn tại chỉ vá student_hmid còn thiếu
+ * và tên vai trò trợ giảng. Xử lý theo lô để không giữ transaction quá lâu.
  */
 const backfillMissingCalendarTeachingUsers = async (ids) => {
     const batchSize = 100;
     let scanned = 0;
     let created = 0;
+    let updated = 0;
     const errors = [];
     if (ids && ids.length > 0) {
         for (let i = 0; i < ids.length; i += batchSize) {
             const batchIds = ids.slice(i, i + batchSize);
-            const batchResult = await prisma.$transaction(async (tx) => {
+            const batchResult = await prisma_1.default.$transaction(async (tx) => {
                 const calendars = await tx.calendar.findMany({
                     where: { id: { in: batchIds } },
                     orderBy: { id: 'asc' },
                 });
                 if (!calendars.length)
-                    return { scanned: 0, created: 0, errors: [] };
+                    return { scanned: 0, created: 0, updated: 0, errors: [] };
                 await hydrateAssistantTeachers(tx, calendars);
                 let batchCreated = 0;
+                let batchUpdated = 0;
                 const batchErrors = [];
                 for (const calendar of calendars) {
                     try {
                         const result = await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, calendar);
                         batchCreated += result.created;
+                        batchUpdated += result.updated;
                     }
                     catch (error) {
                         batchErrors.push({
@@ -2445,18 +2629,20 @@ const backfillMissingCalendarTeachingUsers = async (ids) => {
                 return {
                     scanned: calendars.length,
                     created: batchCreated,
+                    updated: batchUpdated,
                     errors: batchErrors,
                 };
             }, { maxWait: 10_000, timeout: 60_000 });
             scanned += batchResult.scanned;
             created += batchResult.created;
+            updated += batchResult.updated;
             errors.push(...batchResult.errors);
         }
     }
     else {
         let lastId = 0;
         while (true) {
-            const batchResult = await prisma.$transaction(async (tx) => {
+            const batchResult = await prisma_1.default.$transaction(async (tx) => {
                 const calendars = await tx.calendar.findMany({
                     where: {
                         id: { gt: lastId },
@@ -2469,14 +2655,16 @@ const backfillMissingCalendarTeachingUsers = async (ids) => {
                     take: batchSize,
                 });
                 if (!calendars.length)
-                    return { lastId: null, scanned: 0, created: 0, errors: [] };
+                    return { lastId: null, scanned: 0, created: 0, updated: 0, errors: [] };
                 await hydrateAssistantTeachers(tx, calendars);
                 let batchCreated = 0;
+                let batchUpdated = 0;
                 const batchErrors = [];
                 for (const calendar of calendars) {
                     try {
                         const result = await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, calendar);
                         batchCreated += result.created;
+                        batchUpdated += result.updated;
                     }
                     catch (error) {
                         batchErrors.push({
@@ -2489,6 +2677,7 @@ const backfillMissingCalendarTeachingUsers = async (ids) => {
                     lastId: Number(calendars[calendars.length - 1].id),
                     scanned: calendars.length,
                     created: batchCreated,
+                    updated: batchUpdated,
                     errors: batchErrors,
                 };
             }, { maxWait: 10_000, timeout: 60_000 });
@@ -2497,12 +2686,14 @@ const backfillMissingCalendarTeachingUsers = async (ids) => {
             lastId = batchResult.lastId;
             scanned += batchResult.scanned;
             created += batchResult.created;
+            updated += batchResult.updated;
             errors.push(...batchResult.errors);
         }
     }
     return {
         scanned,
         created,
+        updated,
         failed: errors.length,
         errors: errors.slice(0, 100),
     };

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildCalendarClassId,
+  buildCalendarRoomClassId,
   ensureCalendarTeachingUsers,
   excelDateSerialFromCalendarDate,
   resolveCalendarTeacherProfile,
@@ -33,6 +34,17 @@ test('tạo class_id đúng công thức N & VALUE(D) & O & "1"', () => {
   );
 });
 
+test('tạo class_id từng room theo đúng ngày của calendar được chọn', () => {
+  assert.equal(
+    buildCalendarRoomClassId('sinhhoc-7-2027', '2026-08-30T01:00:00.000Z', 1, 3),
+    'sinhhoc-7-20274626413'
+  );
+  assert.equal(
+    buildCalendarRoomClassId('sinhhoc-7-2027', '2026-08-31T01:00:00.000Z', 1, 3),
+    'sinhhoc-7-20274626513'
+  );
+});
+
 test('ưu tiên username khi nhiều giáo viên có cùng display_name', async () => {
   const profile = await resolveCalendarTeacherProfile({
     teacher_profiles: {
@@ -58,7 +70,15 @@ test('tạo lịch thêm giáo viên và toàn bộ trợ giảng theo cùng cla
           })),
     },
     users: {
-      findFirst: async () => null,
+      findFirst: async ({ where }: any) => {
+        if (where.learn_number !== undefined) return null;
+        const hmidByUsername: Record<string, string> = {
+          gv01: 'HM-GV01',
+          tg01: 'HM-TG01',
+          tg02: 'HM-TG02',
+        };
+        return { student_hmid: hmidByUsername[where.username] };
+      },
       create: async (input: any) => { creates.push(input); },
       deleteMany: async () => undefined,
     },
@@ -79,14 +99,19 @@ test('tạo lịch thêm giáo viên và toàn bộ trợ giảng theo cùng cla
     creates.map((item) => item.data.username),
     ['gv01', 'tg01', 'tg02']
   );
+  assert.deepEqual(
+    creates.map((item) => item.data.name),
+    ['Giáo viên 01', 'HM-TG01 - Giáo viên', 'HM-TG02 - Giáo viên']
+  );
   assert.ok(creates.every(
     (item) => item.data.class_id === 'tongondinhluonghsav20274624791'
       && item.data.room_id === 1
   ));
 });
 
-test('bulk bổ sung enrollment còn thiếu và giữ nguyên user đã đủ dữ liệu', async () => {
+test('bulk tạo enrollment còn thiếu và cập nhật enrollment đã tồn tại', async () => {
   const creates: any[] = [];
+  const updates: any[] = [];
   const existingUsernames = new Set(['gv01']);
   const client = {
     teacher_profiles: {
@@ -98,12 +123,12 @@ test('bulk bổ sung enrollment còn thiếu và giữ nguyên user đã đủ d
           })),
     },
     users: {
-      findFirst: async ({ where }: any) => (
-        where.class_id && existingUsernames.has(where.username)
-          ? { id: 1 }
-          : null
-      ),
+      findFirst: async ({ where }: any) => where.learn_number !== undefined
+        && existingUsernames.has(where.username)
+        ? { id: 1, student_hmid: null, name: 'Giáo viên 01' }
+        : null,
       create: async (input: any) => { creates.push(input); },
+      update: async (input: any) => { updates.push(input); },
     },
   };
 
@@ -117,6 +142,7 @@ test('bulk bổ sung enrollment còn thiếu và giữ nguyên user đã đủ d
   });
 
   assert.equal(result.created, 1);
+  assert.equal(result.updated, 1);
   assert.equal(creates.length, 1);
   assert.equal(creates[0].data.username, 'tg01');
   assert.equal(creates[0].data.name, 'Giáo viên');
@@ -124,23 +150,24 @@ test('bulk bổ sung enrollment còn thiếu và giữ nguyên user đã đủ d
   assert.equal(creates[0].data.class_id, 'tongondinhluonghsav20274624791');
 });
 
-test('quét hai lịch khác ngày của cùng bài tạo hai enrollment theo class_id', async () => {
+test('quét hai lịch khác ngày của cùng bài chỉ tạo một enrollment theo khóa 3 cột', async () => {
   const creates: any[] = [];
-  const existingClassIds = new Set<string>();
+  const updates: any[] = [];
+  let enrollmentExists = false;
   const client = {
     teacher_profiles: {
       findMany: async () => [{ username: 'gv01', display_name: 'Giáo viên 01' }],
     },
     users: {
-      findFirst: async ({ where }: any) => {
-        if (!where.class_id) return null;
-        const classId = where.class_id;
-        return existingClassIds.has(classId) ? { id: 1, student_hmid: null, name: 'Giáo viên 01' } : null;
-      },
+      findFirst: async ({ where }: any) => where.learn_number !== undefined
+        && enrollmentExists
+        ? { id: 1, student_hmid: null, name: 'Giáo viên 01' }
+        : null,
       create: async (input: any) => {
-        existingClassIds.add(input.data.class_id);
+        enrollmentExists = true;
         creates.push(input);
       },
+      update: async (input: any) => { updates.push(input); },
     },
   };
   const base = {
@@ -161,9 +188,49 @@ test('quét hai lịch khác ngày của cùng bài tạo hai enrollment theo cl
   });
 
   assert.equal(first.created, 1);
-  assert.equal(second.created, 1);
-  assert.equal(creates.length, 2);
-  assert.notEqual(creates[0].data.class_id, creates[1].data.class_id);
+  assert.equal(second.created, 0);
+  assert.equal(second.updated, 1);
+  assert.equal(creates.length, 1);
+  assert.equal(updates.length, 1);
+  assert.equal(creates[0].data.class_id, 'sinhhoc-7-20274626411');
+});
+
+test('P2002 do tạo đồng thời sẽ đọc lại và cập nhật enrollment đã thắng race', async () => {
+  const updates: any[] = [];
+  let identityLookups = 0;
+  const client = {
+    teacher_profiles: {
+      findMany: async () => [{ username: 'gv01', display_name: 'Giáo viên 01' }],
+    },
+    users: {
+      findFirst: async ({ where }: any) => {
+        if (where.learn_number === undefined) return null;
+        identityLookups += 1;
+        return identityLookups === 1 ? null : { id: 77 };
+      },
+      create: async () => {
+        const error: any = new Error('Unique constraint failed');
+        error.code = 'P2002';
+        throw error;
+      },
+      update: async (input: any) => { updates.push(input); },
+    },
+  };
+
+  const result = await ensureCalendarTeachingUsers(client, {
+    code: 'sinhhoc-7-2027',
+    learn_number: 1,
+    start_time: '2026-08-30T01:00:00.000Z',
+    teacher: 'Giáo viên 01',
+    assistant_teacher: null,
+    lesson_status: 0,
+  });
+
+  assert.equal(result.created, 0);
+  assert.equal(result.updated, 1);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].where.id, 77);
+  assert.equal(updates[0].data.class_id, 'sinhhoc-7-20274626411');
 });
 
 test('quét user lưu name của trợ giảng theo quy ước student_hmid - Giáo viên', async () => {
@@ -176,7 +243,7 @@ test('quét user lưu name của trợ giảng theo quy ước student_hmid - Gi
     },
     users: {
       findFirst: async ({ where }: any) => {
-        if (where.class_id) return null;
+        if (where.learn_number !== undefined) return null;
         return where.username === 'tg01'
           ? { student_hmid: 'HM12345' }
           : { student_hmid: 'HM-GV01' };
@@ -213,7 +280,7 @@ test('quét lại vá student_hmid null và chuẩn hóa name của trợ giản
     users: {
       findFirst: async ({ where }: any) => {
         const username = where.username;
-        if (where.class_id) {
+        if (where.learn_number !== undefined) {
           return username === 'tg01'
             ? { id: 2, student_hmid: null, name: 'Trợ giảng 01' }
             : { id: 1, student_hmid: 'HM-GV01', name: 'Giáo viên 01' };
@@ -235,11 +302,11 @@ test('quét lại vá student_hmid null và chuẩn hóa name của trợ giản
   });
 
   assert.equal(result.created, 0);
-  assert.equal(result.updated, 1);
-  assert.equal(updates.length, 1);
-  assert.equal(updates[0].where.id, 2);
-  assert.equal(updates[0].data.student_hmid, 'HM12345');
-  assert.equal(updates[0].data.name, 'HM12345 - Giáo viên');
+  assert.equal(result.updated, 2);
+  assert.equal(updates.length, 2);
+  const assistantUpdate = updates.find((item) => item.where.id === 2);
+  assert.equal(assistantUpdate.data.student_hmid, 'HM12345');
+  assert.equal(assistantUpdate.data.name, 'HM12345 - Giáo viên');
 });
 
 test('vá HMID ưu tiên giá trị cùng chương trình khi username có HMID khác ở chương trình khác', async () => {
@@ -251,7 +318,9 @@ test('vá HMID ưu tiên giá trị cùng chương trình khi username có HMID 
     },
     users: {
       findFirst: async ({ where }: any) => {
-        if (where.class_id) return { id: 5, student_hmid: null, name: 'Giáo viên 01' };
+        if (where.learn_number !== undefined) {
+          return { id: 5, student_hmid: null, name: 'Giáo viên 01' };
+        }
         if (where.code === 'sinhhoc-7-2027') return { student_hmid: '3589517' };
         globalFallbackCalled = true;
         return { student_hmid: '1000009' };
@@ -308,6 +377,7 @@ test('đổi ngày cập nhật class_id trên đúng user hiện tại, không 
     updates[0].where.code,
     'tongondinhluonghsav2027'
   );
+  assert.equal(updates[0].where.class_id, undefined);
   assert.equal(updates[0].data.class_id, 'tongondinhluonghsav20274624791');
   assert.equal(deletes.length, 0);
 });
@@ -375,6 +445,7 @@ test('nghỉ học thu hồi user room_id = 1 khi không còn lịch hoạt đ�
 
   assert.equal(deletes.length, 1);
   assert.equal(deletes[0].where.username, 'gv01');
+  assert.equal(deletes[0].where.class_id, undefined);
   assert.equal(deletes[0].where.room_id, 1);
   assert.equal(deletes[0].where.islearn, 0);
 });
@@ -475,7 +546,7 @@ test('đổi đồng thời giáo viên và trợ giảng tạo người mới, 
   )));
 });
 
-test('không thu hồi giáo viên hoặc trợ giảng cũ khi còn buổi khác cùng lớp và bài đang dùng', async () => {
+test('không thu hồi giáo viên hoặc trợ giảng cũ khi còn buổi khác cùng chương trình và bài đang dùng', async () => {
   const creates: any[] = [];
   const deletes: any[] = [];
   const client = {

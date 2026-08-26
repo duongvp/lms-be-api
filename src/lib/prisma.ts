@@ -1,5 +1,37 @@
 import { PrismaClient } from "@prisma/client";
 
-const prisma = new PrismaClient();
+const globalForPrisma = globalThis as unknown as {
+  prisma?: PrismaClient;
+};
+
+const buildDatabaseUrl = () => {
+  const rawUrl = process.env.DATABASE_URL;
+  if (!rawUrl) return undefined;
+
+  const url = new URL(rawUrl);
+  if (!url.searchParams.has("connection_limit")) {
+    url.searchParams.set(
+      "connection_limit",
+      process.env.PRISMA_CONNECTION_LIMIT || "10"
+    );
+  }
+  if (!url.searchParams.has("pool_timeout")) {
+    url.searchParams.set(
+      "pool_timeout",
+      process.env.PRISMA_POOL_TIMEOUT_SECONDS || "60"
+    );
+  }
+  return url.toString();
+};
+
+const createPrismaClient = () => {
+  const datasourceUrl = buildDatabaseUrl();
+  return datasourceUrl
+    ? new PrismaClient({ datasources: { db: { url: datasourceUrl } } })
+    : new PrismaClient();
+};
+
+const prisma = globalForPrisma.prisma ?? createPrismaClient();
+globalForPrisma.prisma = prisma;
 
 export default prisma;

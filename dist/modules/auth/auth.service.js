@@ -6,12 +6,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.resetPassword = exports.verifyOTP = exports.requestPasswordReset = exports.register = exports.logout = exports.refreshToken = exports.getMe = exports.login = exports.generateTokens = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
-const client_1 = require("@prisma/client");
+const prisma_1 = __importDefault(require("../../lib/prisma"));
 const constants_1 = require("./constants");
 const logger_1 = require("../../utils/logger");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const authorization_service_1 = require("../../services/authorization.service");
-const prisma = new client_1.PrismaClient();
 const getRequiredSecret = (name) => {
     const value = process.env[name];
     if (!value) {
@@ -102,7 +101,7 @@ const verifyCredentials = async (username, password) => {
     return verifyHocmaiCredentials(username, password);
 };
 const login = async (username, password, rememberMe = false) => {
-    const findAuthorizedUser = (authorizedUsername) => prisma.users.findFirst({
+    const findAuthorizedUser = (authorizedUsername) => prisma_1.default.users.findFirst({
         where: {
             username: authorizedUsername,
             userRoles: {
@@ -137,7 +136,7 @@ const login = async (username, password, rememberMe = false) => {
     }
     const sessionId = crypto_1.default.randomUUID();
     const tokens = (0, exports.generateTokens)(user.id, sessionId, Boolean(rememberMe));
-    await prisma.$executeRaw `
+    await prisma_1.default.$executeRaw `
         INSERT INTO auth_sessions (
             id, user_id, refresh_token_hash, expires_at, created_at, updated_at
         ) VALUES (
@@ -196,7 +195,7 @@ const refreshToken = async (refreshTokenString) => {
         || !decoded.userId) {
         throw new ApiError_1.default('Invalid refresh token', 401);
     }
-    const sessions = await prisma.$queryRaw `
+    const sessions = await prisma_1.default.$queryRaw `
         SELECT id, user_id, refresh_token_hash, expires_at, revoked_at
         FROM auth_sessions
         WHERE id = ${String(decoded.sessionId)}
@@ -214,7 +213,7 @@ const refreshToken = async (refreshTokenString) => {
     const sessionUserId = Number(session.user_id);
     await (0, authorization_service_1.loadUserAccess)(sessionUserId);
     const tokens = (0, exports.generateTokens)(sessionUserId, session.id, Boolean(decoded.rememberMe));
-    const updated = await prisma.$executeRaw `
+    const updated = await prisma_1.default.$executeRaw `
         UPDATE auth_sessions
         SET
             refresh_token_hash = ${hashToken(tokens.refreshToken)},
@@ -231,7 +230,7 @@ const refreshToken = async (refreshTokenString) => {
 };
 exports.refreshToken = refreshToken;
 const logout = async (sessionId) => {
-    await prisma.$executeRaw `
+    await prisma_1.default.$executeRaw `
         UPDATE auth_sessions
         SET revoked_at = NOW(), updated_at = NOW(3)
         WHERE id = ${sessionId} AND revoked_at IS NULL

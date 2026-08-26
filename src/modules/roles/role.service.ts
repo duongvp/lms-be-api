@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../../lib/prisma';
 import ApiError from '../../utils/ApiError';
 import FieldPermissionService from './field-permission.service';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
@@ -7,8 +7,6 @@ import {
     RBAC_MENU_LABELS,
     RBAC_MENU_MODULE_CODES,
 } from './rbac-ui.constants';
-
-const prisma = new PrismaClient();
 
 const ACTION_LABELS: Record<string, string> = {
     view: 'Xem DS',

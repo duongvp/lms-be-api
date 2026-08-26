@@ -63,6 +63,14 @@ const buildWhere = (query) => {
         clauses.push('learn_number = ?');
         values.push(query.learn_number);
     }
+    if (query.from_learn_number !== undefined) {
+        clauses.push('learn_number >= ?');
+        values.push(query.from_learn_number);
+    }
+    if (query.to_learn_number !== undefined) {
+        clauses.push('learn_number <= ?');
+        values.push(query.to_learn_number);
+    }
     if (query.keyword) {
         clauses.push('lesson_name LIKE ?');
         values.push(`%${query.keyword}%`);
@@ -120,10 +128,17 @@ exports.findLessonSubjectOptions = findLessonSubjectOptions;
 const findLessonProgramOptions = async (allowedPrograms = null) => {
     const rows = await prisma_1.default.$queryRawUnsafe(`SELECT program.subject_code,
             COALESCE(
-              MAX(CASE
-                WHEN program.subject_name IS NOT NULL
+             MAX(CASE
+                WHEN program.source_priority = 1
+                 AND program.subject_name IS NOT NULL
                  AND TRIM(program.subject_name) <> ''
                  AND TRIM(program.subject_name) <> TRIM(program.subject_code)
+                THEN program.subject_name
+              END),
+              MAX(CASE
+                WHEN program.source_priority = 1
+                 AND program.subject_name IS NOT NULL
+                 AND TRIM(program.subject_name) <> ''
                 THEN program.subject_name
               END),
               MAX(program.subject_name)
@@ -131,11 +146,11 @@ const findLessonProgramOptions = async (allowedPrograms = null) => {
             MIN(program.grade) AS grade,
             MAX(program.system_type) AS system_type
      FROM (
-       SELECT subject_code, subject_name, grade, system_type
+       SELECT subject_code, subject_name, grade, system_type, 1 AS source_priority
        FROM lessons
        WHERE subject_code IS NOT NULL AND TRIM(subject_code) <> ''
        UNION ALL
-       SELECT code AS subject_code, subject AS subject_name, NULL AS grade, NULL AS system_type
+       SELECT code AS subject_code, subject AS subject_name, NULL AS grade, NULL AS system_type, 0 AS source_priority
        FROM calendar
        WHERE code IS NOT NULL AND TRIM(code) <> ''
      ) AS program

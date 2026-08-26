@@ -173,6 +173,7 @@ router.get('/export', authorize(['calendar.export']), livestreamController.expor
 router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
 router.get('/programs', authorize(['calendar.view']), livestreamController.getPrograms);
 router.get('/programs/:code/lessons', authorize(['calendar.view']), authorizeProgram('calendar.view', (req) => String(req.params.code)), livestreamController.getProgramLessons);
+router.post('/programs/:code/lessons/hmo-sections/batch', authorize(['calendar.view']), authorizeProgram('calendar.view', (req) => String(req.params.code)), livestreamController.getProgramLessonsHocmaiSections);
 router.get('/programs/:code/lessons/:lessonId/hmo-sections', authorize(['calendar.view']), authorizeProgram('calendar.view', (req) => String(req.params.code)), livestreamController.getProgramLessonHocmaiSections);
 router.post('/import', authorize(['calendar.import']), upload.single('file'), livestreamController.importFile);
 router.post('/import/update', authorize(['calendar.update']), upload.single('file'), livestreamController.updateImportFile);
@@ -191,6 +192,8 @@ router.put('/bulk', authorize(['calendar.update']), authorizePrograms('calendar.
 // Công cụ khôi phục enrollment cho dữ liệu calendar legacy. Không yêu cầu
 // quyền nghiệp vụ riêng theo yêu cầu tạm thời, nhưng vẫn phải đăng nhập.
 router.post('/sync-missing-teaching-users', livestreamController.backfillMissingTeachingUsers);
+router.post('/:id/classroom-assignment/preview', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), livestreamController.previewStudentClassroomAssignment);
+router.post('/:id/classroom-assignment/apply', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), livestreamController.applyStudentClassroomAssignment);
 router.put('/:id/reschedule', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body?.new_session || {}))), livestreamController.rescheduleSession);
 router.put('/:id', authorize(['calendar.update']), authorizePrograms('calendar.update', async (req) => [
     ...await calendarCodeById(req),

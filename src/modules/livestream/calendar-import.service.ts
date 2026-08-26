@@ -1,4 +1,5 @@
-import { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import prisma from '../../lib/prisma';
 import {
   fetchHocmaiCourseOutlines,
   HmoCourseOutlineError,
@@ -18,8 +19,6 @@ import {
   createValidatedInternalCalendarImport,
 } from './livestream.service';
 import { enqueueManyCalendarTeamsNotifications } from '../teams-notifications';
-
-const prisma = new PrismaClient();
 
 type RowWithPackages = CalendarImportRow & {
   packageIds: string[];
@@ -48,6 +47,43 @@ const mappingScheduleKey = (
 ].join('::');
 
 const unique = (values: string[]) => Array.from(new Set(values));
+
+const normalizeTeachingIdentifier = (value: unknown) => String(value ?? '')
+  .trim()
+  .replace(/\s+/g, ' ');
+
+const splitAssistantIdentifiers = (value: unknown) => Array.from(new Set(
+  String(value ?? '')
+    .split(/[;,]/)
+    .map(normalizeTeachingIdentifier)
+    .filter(Boolean)
+));
+
+export const resolveCalendarImportFieldValue = (
+  currentValue: unknown,
+  importedValue: unknown,
+  mode: 'skip' | 'overwrite'
+) => {
+  const hasCurrentValue = currentValue !== undefined
+    && currentValue !== null
+    && String(currentValue).trim() !== '';
+  const hasImportedValue = importedValue !== undefined
+    && importedValue !== null
+    && String(importedValue).trim() !== '';
+  // Ô trống trong file không dùng để xóa dữ liệu. Chế độ skip chỉ bổ sung
+  // những trường đang trống; overwrite thay dữ liệu khi file có giá trị.
+  if (!hasImportedValue) return hasCurrentValue ? currentValue : null;
+  if (mode === 'skip' && hasCurrentValue) return currentValue;
+  return importedValue;
+};
+
+export const shouldResolveCalendarImportField = (
+  currentValue: unknown,
+  importedValue: unknown,
+  mode: 'skip' | 'overwrite'
+) => Boolean(String(importedValue ?? '').trim()) && (
+  mode === 'overwrite' || !String(currentValue ?? '').trim()
+);
 
 const addError = (
   errors: CalendarImportError[],
@@ -96,6 +132,66 @@ const buildSummary = (
     uniquePackageCoursePairs: pairCount,
     hmoRequests,
   };
+};
+
+/**
+ * File import dùng tên hiển thị để người vận hành dễ quản lý, còn calendar
+ * luôn lưu username. Username từ format Email TG cũ vẫn được hỗ trợ.
+ */
+const resolveCalendarImportAssistants = async (rows: CalendarImportRow[]) => {
+  const errors: CalendarImportError[] = [];
+  const rowsWithAssistants = rows.map((row) => ({
+    row,
+    identifiers: splitAssistantIdentifiers(row.calendar.assistant_teacher),
+  })).filter((item) => item.identifiers.length > 0);
+  if (!rowsWithAssistants.length) return errors;
+
+  const profiles = await prisma.teacher_profiles.findMany({
+    where: { can_view_stream_key: 0, status: 1 },
+    select: { username: true, display_name: true },
+    orderBy: { id: 'asc' },
+  });
+  const usernameMap = new Map<string, typeof profiles[number]>();
+  const displayNameMap = new Map<string, typeof profiles>();
+  profiles.forEach((profile) => {
+    usernameMap.set(normalizeTeachingIdentifier(profile.username).toLowerCase(), profile);
+    const displayName = normalizeTeachingIdentifier(profile.display_name).toLowerCase();
+    if (!displayName) return;
+    const matches = displayNameMap.get(displayName) ?? [];
+    matches.push(profile);
+    displayNameMap.set(displayName, matches);
+  });
+
+  rowsWithAssistants.forEach(({ row, identifiers }) => {
+    const resolvedUsernames: string[] = [];
+    identifiers.forEach((identifier) => {
+      const normalized = identifier.toLowerCase();
+      const usernameMatch = usernameMap.get(normalized);
+      const matches = usernameMatch ? [usernameMatch] : (displayNameMap.get(normalized) ?? []);
+      if (!matches.length) {
+        addError(errors, {
+          row: row.row,
+          field: 'Trợ giảng',
+          errorCode: 'INVALID_ROW',
+          message: `Không tìm thấy trợ giảng đang hoạt động có tên "${identifier}"`,
+        });
+        return;
+      }
+      if (matches.length > 1) {
+        addError(errors, {
+          row: row.row,
+          field: 'Trợ giảng',
+          errorCode: 'INVALID_ROW',
+          message: `Tên trợ giảng "${identifier}" trùng nhiều tài khoản; hãy dùng Email TG`,
+        });
+        return;
+      }
+      resolvedUsernames.push(matches[0].username);
+    });
+    row.calendar.assistant_teacher = Array.from(new Set(resolvedUsernames)).join(',') || undefined;
+  });
+
+  return errors;
 };
 
 const validateInternalLessonRows = async (
@@ -481,6 +577,15 @@ export const importCalendarFromSheet = async (
     };
   }
 
+  const assistantErrors = await resolveCalendarImportAssistants(inputRows);
+  if (assistantErrors.length) {
+    return {
+      status: 'validation_error' as const,
+      summary: buildSummary(inputRows, assistantErrors, 0, 0),
+      errors: assistantErrors,
+    };
+  }
+
   if (directRows.length === inputRows.length) {
     const errors = await validateInternalLessonRows(inputRows);
     if (errors.length) return {
@@ -565,7 +670,8 @@ export const importCalendarFromSheet = async (
 
 export const updateCalendarsFromSheet = async (
   inputRows: CalendarImportRow[],
-  changeActor?: { userId: number; username: string }
+  changeActor?: { userId: number; username: string },
+  existingDataMode: 'skip' | 'overwrite' = 'skip'
 ) => {
   const errors: CalendarImportError[] = [];
   const directRows = inputRows.filter((row) => row.sourceFormat === 'direct');
@@ -611,6 +717,16 @@ export const updateCalendarsFromSheet = async (
   const existingByKey = new Map(
     existing.filter((calendar) => calendar.key).map((calendar) => [calendar.key!, calendar])
   );
+  const rowsNeedingAssistantResolution = inputRows.filter((row) => {
+    const current = existingByKey.get(String(row.sourceKey || '').trim());
+    if (!current) return false;
+    return shouldResolveCalendarImportField(
+      current.assistant_teacher,
+      row.calendar.assistant_teacher,
+      existingDataMode
+    );
+  });
+  errors.push(...await resolveCalendarImportAssistants(rowsNeedingAssistantResolution));
   const ignoredCalendarKeyByRow = new Map<number, string>();
 
   inputRows.forEach((row) => {
@@ -683,28 +799,49 @@ export const updateCalendarsFromSheet = async (
     }
   };
   const normalizedText = (value: unknown) => String(value ?? '').trim();
-  const changedRows = inputRows.filter((row) => {
+  const preparedUpdates = inputRows.map((row) => {
     const current = existingByKey.get(row.sourceKey!)!;
-    return String(current.session_id ?? '') !== String(row.calendar.session_id ?? '')
-      || normalizedText(current.subject) !== normalizedText(row.calendar.subject)
-      || current.start_time.getTime() !== new Date(row.calendar.start_time).getTime()
-      || current.end_time.getTime() !== new Date(row.calendar.end_time).getTime()
-      || normalizedText(current.teacher) !== normalizedText(row.calendar.teacher)
-      || normalizedText(current.lesson_name) !== normalizedText(row.calendar.lesson_name)
-      || normalizedJson(current.lesson_document) !== normalizedJson(row.calendar.lesson_document)
-      || normalizedText(current.evg_banner) !== normalizedText(row.calendar.evg_banner)
-      || normalizedText(current.evg_stream) !== normalizedText(row.calendar.evg_stream);
+    const merge = (currentValue: unknown, importedValue: unknown) => (
+      resolveCalendarImportFieldValue(currentValue, importedValue, existingDataMode)
+    );
+    return {
+      key: row.sourceKey!,
+      current,
+      data: {
+        session_id: merge(current.session_id, row.calendar.session_id),
+        subject: merge(current.subject, row.calendar.subject),
+        start_time: merge(current.start_time, new Date(row.calendar.start_time)) as Date,
+        end_time: merge(current.end_time, new Date(row.calendar.end_time)) as Date,
+        teacher: merge(current.teacher, row.calendar.teacher),
+        assistant_teacher: merge(current.assistant_teacher, row.calendar.assistant_teacher),
+        lesson_name: merge(current.lesson_name, row.calendar.lesson_name),
+        lesson_document: merge(current.lesson_document, row.calendar.lesson_document),
+        evg_banner: merge(current.evg_banner, row.calendar.evg_banner),
+        evg_stream: merge(current.evg_stream, row.calendar.evg_stream),
+      },
+    };
   });
+  const changedRows = preparedUpdates.filter(({ current, data }) => (
+    String(current.session_id ?? '') !== String(data.session_id ?? '')
+      || normalizedText(current.subject) !== normalizedText(data.subject)
+      || current.start_time.getTime() !== data.start_time.getTime()
+      || current.end_time.getTime() !== data.end_time.getTime()
+      || normalizedText(current.teacher) !== normalizedText(data.teacher)
+      || normalizedText(current.assistant_teacher) !== normalizedText(data.assistant_teacher)
+      || normalizedText(current.lesson_name) !== normalizedText(data.lesson_name)
+      || normalizedJson(current.lesson_document) !== normalizedJson(data.lesson_document)
+      || normalizedText(current.evg_banner) !== normalizedText(data.evg_banner)
+      || normalizedText(current.evg_stream) !== normalizedText(data.evg_stream)
+  ));
 
   const now = new Date();
-  changedRows.forEach((row) => {
-    const current = existingByKey.get(row.sourceKey!)!;
+  changedRows.forEach(({ key, current }) => {
     if (Number(current.lesson_status) === 1 || current.start_time <= now) {
       addError(errors, {
-        row: row.row,
+        row: inputRows.find((row) => row.sourceKey === key)?.row ?? 1,
         field: 'key',
         errorCode: 'INVALID_ROW',
-        message: `Lịch ${row.sourceKey} đã diễn ra hoặc đã nghỉ, không thể cập nhật`,
+        message: `Lịch ${key} đã diễn ra hoặc đã nghỉ, không thể cập nhật`,
       });
     }
   });
@@ -714,50 +851,32 @@ export const updateCalendarsFromSheet = async (
     errors,
   };
 
-  const preparedUpdates = changedRows.map((row) => {
-    const current = existingByKey.get(row.sourceKey!)!;
-    return {
-      key: row.sourceKey!,
-      current,
-      data: {
-        session_id: row.calendar.session_id ?? null,
-        subject: row.calendar.subject ?? null,
-        start_time: new Date(row.calendar.start_time),
-        end_time: new Date(row.calendar.end_time),
-        teacher: row.calendar.teacher ?? null,
-        lesson_name: row.calendar.lesson_name ?? null,
-        lesson_document: row.calendar.lesson_document ?? null,
-        evg_banner: row.calendar.evg_banner ?? null,
-        evg_stream: row.calendar.evg_stream ?? null,
-      },
-    };
-  });
-  if (preparedUpdates.length) {
+  if (changedRows.length) {
     const fields = [
       'session_id', 'subject', 'start_time', 'end_time', 'teacher',
-      'lesson_name', 'lesson_document', 'evg_banner', 'evg_stream',
+      'assistant_teacher', 'lesson_name', 'lesson_document', 'evg_banner', 'evg_stream',
     ] as const;
     await prisma.$transaction(async (tx) => {
       const assignments = fields.map((field) => (
-        `\`${field}\` = CASE \`key\` ${preparedUpdates
+        `\`${field}\` = CASE \`key\` ${changedRows
           .map(() => 'WHEN ? THEN ?')
           .join(' ')} ELSE \`${field}\` END`
       )).join(', ');
-      const caseValues = fields.flatMap((field) => preparedUpdates.flatMap((update) => [
+      const caseValues = fields.flatMap((field) => changedRows.flatMap((update) => [
         update.key,
         update.data[field],
       ]));
-      const keyPlaceholders = preparedUpdates.map(() => '?').join(', ');
+      const keyPlaceholders = changedRows.map(() => '?').join(', ');
       await tx.$executeRawUnsafe(
         `UPDATE calendar
          SET ${assignments}, updated_at = CURRENT_TIMESTAMP
          WHERE \`key\` IN (${keyPlaceholders})`,
         ...caseValues,
-        ...preparedUpdates.map((update) => update.key)
+        ...changedRows.map((update) => update.key)
       );
 
       const updatedCalendars = await tx.calendar.findMany({
-        where: { key: { in: preparedUpdates.map((update) => update.key) } },
+        where: { key: { in: changedRows.map((update) => update.key) } },
       });
       const updatedByKey = new Map(
         updatedCalendars
@@ -766,7 +885,7 @@ export const updateCalendarsFromSheet = async (
       );
       await enqueueManyCalendarTeamsNotifications(
         tx,
-        preparedUpdates.flatMap((update) => {
+        changedRows.flatMap((update) => {
           const after = updatedByKey.get(update.key);
           return after ? [{
             eventType: 'updated' as const,

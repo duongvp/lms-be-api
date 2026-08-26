@@ -3,12 +3,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-const client_1 = require("@prisma/client");
+const prisma_1 = __importDefault(require("../../lib/prisma"));
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const field_permission_service_1 = __importDefault(require("./field-permission.service"));
 const dateTime_1 = require("../../utils/dateTime");
 const rbac_ui_constants_1 = require("./rbac-ui.constants");
-const prisma = new client_1.PrismaClient();
 const ACTION_LABELS = {
     view: 'Xem DS',
     create: 'Thêm mới',
@@ -30,7 +29,7 @@ function getActionLabel(action) {
 const RoleService = {
     async getAllRoles() {
         try {
-            const roles = await prisma.roles.findMany({
+            const roles = await prisma_1.default.roles.findMany({
                 where: { isActive: true },
             });
             // Convert BigInt to Number
@@ -46,7 +45,7 @@ const RoleService = {
     async getRoleById(roleId) {
         try {
             const id = BigInt(roleId);
-            const role = await prisma.roles.findUnique({
+            const role = await prisma_1.default.roles.findUnique({
                 where: { id },
                 include: {
                     rolePermissions: {
@@ -81,7 +80,7 @@ const RoleService = {
     },
     async createRoleWithPermissions(roleData) {
         try {
-            return await prisma.$transaction(async (tx) => {
+            return await prisma_1.default.$transaction(async (tx) => {
                 // 1. Check if code or name exists
                 const code = roleData.code || roleData.role_name.toLowerCase().replace(/\s+/g, '_');
                 const name = roleData.role_name || roleData.name;
@@ -159,7 +158,7 @@ const RoleService = {
     async updateRoleWithPermissions(roleId, roleData) {
         try {
             const id = BigInt(roleId);
-            return await prisma.$transaction(async (tx) => {
+            return await prisma_1.default.$transaction(async (tx) => {
                 // 1. Check existing role
                 const existingRole = await tx.roles.findUnique({
                     where: { id }
@@ -236,7 +235,7 @@ const RoleService = {
     async deleteRole(roleId) {
         try {
             const id = BigInt(roleId);
-            return await prisma.$transaction(async (tx) => {
+            return await prisma_1.default.$transaction(async (tx) => {
                 const role = await tx.roles.findUnique({
                     where: { id },
                     select: {
@@ -268,7 +267,7 @@ const RoleService = {
     },
     async getModulesStructure() {
         try {
-            const modules = await prisma.modules.findMany({
+            const modules = await prisma_1.default.modules.findMany({
                 where: {
                     code: { in: [...rbac_ui_constants_1.RBAC_FIELD_MODULE_CODES] },
                 },
@@ -305,7 +304,7 @@ const RoleService = {
     },
     async getPermissionsStructure() {
         try {
-            const permissions = await prisma.permissions.findMany({
+            const permissions = await prisma_1.default.permissions.findMany({
                 where: {
                     OR: rbac_ui_constants_1.RBAC_MENU_MODULE_CODES.map((moduleCode) => ({
                         code: { startsWith: `${moduleCode}.` },

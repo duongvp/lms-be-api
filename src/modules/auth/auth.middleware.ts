@@ -1,12 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../../lib/prisma';
 import { logger } from '../../utils/logger';
 import { TOKEN_TYPES } from './constants';
 import FieldPermissionService from '../roles/field-permission.service';
 import { assertProgramAccess, loadUserAccess } from '../../services/authorization.service';
-
-const prisma = new PrismaClient();
 
 // Extending Express Request to include our custom user object
 declare global {

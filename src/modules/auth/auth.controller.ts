@@ -1,10 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import * as authServices from './auth.service';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../../lib/prisma';
 import { SuccessResponse, ErrorResponse } from '../../utils/apiResponse';
 import { logger } from '../../utils/logger';
-
-const prisma = new PrismaClient();
 
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const refreshCookieOptions = {

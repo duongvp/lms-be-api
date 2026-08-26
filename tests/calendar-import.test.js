@@ -4,11 +4,15 @@ const XLSX = require('xlsx');
 
 const {
   CALENDAR_IMPORT_FILE_COLUMNS,
+  buildCalendarUpdateFile,
+  buildCalendarTemplate,
   parseCalendarImportFile,
   validateCalendarImportRows,
 } = require('../dist/modules/livestream/livestream.io');
 const {
   buildUniquePackageCoursePairs,
+  resolveCalendarImportFieldValue,
+  shouldResolveCalendarImportField,
   validateCalendarImportOutlines,
 } = require('../dist/modules/livestream/calendar-import.service');
 const {
@@ -71,6 +75,52 @@ test('parse format Sheet thực tế thành các danh sách ID độc lập', ()
   assert.deepEqual(result.importRows[0].packageIds, ['9025', '9028']);
   assert.equal(result.importRows[0].calendar.learn_number, 1);
   assert.equal(result.importRows[0].calendar.teacher, 'gv@example.com');
+  assert.equal(result.importRows[0].calendar.assistant_teacher, 'Trần Thị B');
+});
+
+test('template trực tiếp có cột assistant_teacher và giữ nguyên tên hiển thị', () => {
+  const parsed = parseCalendarImportFile(
+    buildCalendarTemplate('xlsx'),
+    'calendar-import-template.xlsx'
+  );
+  const result = validateCalendarImportRows(parsed);
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(
+    result.importRows[0].calendar.assistant_teacher,
+    'Nguyễn Văn Trợ Giảng'
+  );
+});
+
+test('file Excel cập nhật export có key và có thể import lại tên trợ giảng', () => {
+  const parsed = parseCalendarImportFile(buildCalendarUpdateFile([{
+    code: 'TEST_PROGRAM',
+    subject: 'Ngữ văn',
+    start_time: '2026-08-17 19:00:00',
+    end_time: '2026-08-17 20:30:00',
+    learn_number: 1,
+    teacher: 'Cô An',
+    assistant_name: 'Trợ Giảng Một; Trợ Giảng Hai',
+    lesson_name: 'Bài 1',
+    system_type: 'topclass',
+    key: 'tc_46251_TEST_PROGRAM_1',
+  }]), 'calendar-update.xlsx');
+  const result = validateCalendarImportRows(parsed);
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.importRows[0].sourceKey, 'tc_46251_TEST_PROGRAM_1');
+  assert.equal(result.importRows[0].calendar.assistant_teacher, 'Trợ Giảng Một,Trợ Giảng Hai');
+});
+
+test('xử lý bỏ qua hoặc ghi đè cho mọi trường khi import cập nhật', () => {
+  assert.equal(resolveCalendarImportFieldValue('', 'Giá trị mới', 'skip'), 'Giá trị mới');
+  assert.equal(resolveCalendarImportFieldValue('Giá trị cũ', 'Giá trị mới', 'skip'), 'Giá trị cũ');
+  assert.equal(resolveCalendarImportFieldValue('Giá trị cũ', 'Giá trị mới', 'overwrite'), 'Giá trị mới');
+  assert.equal(resolveCalendarImportFieldValue('Giá trị cũ', '', 'overwrite'), 'Giá trị cũ');
+  assert.equal(shouldResolveCalendarImportField('old@hocmai.vn', 'Tên Sai', 'skip'), false);
+  assert.equal(shouldResolveCalendarImportField('old@hocmai.vn', 'Tên Mới', 'overwrite'), true);
+  assert.equal(shouldResolveCalendarImportField('', 'Tên Mới', 'skip'), true);
+  assert.equal(shouldResolveCalendarImportField('', '', 'overwrite'), false);
 });
 
 test('tự tìm dòng tiêu đề và chấp nhận Mã buổi học có dấu (*)', () => {

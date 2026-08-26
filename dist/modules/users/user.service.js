@@ -4,10 +4,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
+const prisma_1 = __importDefault(require("../../lib/prisma"));
 const crypto_1 = require("crypto");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const dateTime_1 = require("../../utils/dateTime");
-const prisma = new client_1.PrismaClient();
 const serializeUser = (user) => ({
     id: user.id,
     username: user.username,
@@ -52,7 +52,7 @@ const UserService = {
         }
         let userId;
         try {
-            userId = await prisma.$transaction(async (tx) => {
+            userId = await prisma_1.default.$transaction(async (tx) => {
                 // Username có thể lặp trong bảng users theo code/learn_number.
                 // Chỉ chặn khi đã có bất kỳ user cùng username được gán role.
                 const assignedUser = await tx.userRoles.findFirst({
@@ -123,7 +123,7 @@ const UserService = {
                     : {}),
             };
             const [users, total] = await Promise.all([
-                prisma.users.findMany({
+                prisma_1.default.users.findMany({
                     where,
                     skip: (page - 1) * limit,
                     take: limit,
@@ -142,7 +142,7 @@ const UserService = {
                     },
                     orderBy: { id: 'asc' },
                 }),
-                prisma.users.count({ where }),
+                prisma_1.default.users.count({ where }),
             ]);
             return {
                 data: users.map(serializeUser),
@@ -157,7 +157,7 @@ const UserService = {
     },
     async getUserById(userId) {
         try {
-            const user = await prisma.users.findUnique({
+            const user = await prisma_1.default.users.findUnique({
                 where: { id: userId },
                 include: {
                     userRoles: {
@@ -187,7 +187,7 @@ const UserService = {
     async updateUser(userId, data) {
         try {
             // Kiểm tra user tồn tại
-            const existingUser = await prisma.users.findUnique({
+            const existingUser = await prisma_1.default.users.findUnique({
                 where: { id: userId },
             });
             if (!existingUser) {
@@ -204,7 +204,7 @@ const UserService = {
             // Username được phép trùng trong users, nhưng không được trùng với
             // một tài khoản quản trị khác đã có user_roles.
             if (data.username !== undefined && data.username !== existingUser.username) {
-                const duplicate = await prisma.userRoles.findFirst({
+                const duplicate = await prisma_1.default.userRoles.findFirst({
                     where: {
                         userId: { not: userId },
                         user: { username: data.username },
@@ -225,23 +225,23 @@ const UserService = {
             // users.updated_at chưa khai báo @updatedAt trong Prisma schema.
             updateData.updated_at = (0, dateTime_1.getVietnamWallClockDate)();
             // Cập nhật thông tin cơ bản
-            const updatedUser = await prisma.users.update({
+            const updatedUser = await prisma_1.default.users.update({
                 where: { id: userId },
                 data: updateData,
             });
             // Xử lý roles nếu có
             if (data.roleIds && Array.isArray(data.roleIds)) {
                 // Kiểm tra role tồn tại
-                const roles = await prisma.roles.findMany({
+                const roles = await prisma_1.default.roles.findMany({
                     where: { id: { in: data.roleIds.map((id) => BigInt(id)) } },
                 });
                 if (roles.length !== data.roleIds.length) {
                     throw new ApiError_1.default('One or more roles not found', 400);
                 }
                 // Xóa userRoles cũ
-                await prisma.userRoles.deleteMany({ where: { userId } });
+                await prisma_1.default.userRoles.deleteMany({ where: { userId } });
                 // Thêm mới
-                await prisma.userRoles.createMany({
+                await prisma_1.default.userRoles.createMany({
                     data: data.roleIds.map((roleId) => ({
                         userId,
                         roleId: BigInt(roleId),
@@ -264,7 +264,7 @@ const UserService = {
         if (userId === actorUserId) {
             throw new ApiError_1.default('Không thể xóa tài khoản đang đăng nhập', 400);
         }
-        return prisma.$transaction(async (tx) => {
+        return prisma_1.default.$transaction(async (tx) => {
             const user = await tx.users.findUnique({
                 where: { id: userId },
                 select: {

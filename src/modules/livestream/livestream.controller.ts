@@ -3,12 +3,14 @@ import * as livestreamService from './livestream.service';
 import FieldPermissionService from '../roles/field-permission.service';
 import {
   buildCalendarFile,
+  buildCalendarUpdateFile,
   buildCalendarTemplate,
   getCalendarFileContentType,
   parseCalendarMappingImportFile,
   parseCalendarImportFile,
   validateCalendarImportRows,
 } from './livestream.io';
+import { getPublicGoogleSheetCsv } from '../../integrations/google-sheet-csv';
 import { previewAutoSchedule as buildAutoSchedulePreview } from './auto-schedule.service';
 import {
   importCalendarFromSheet,
@@ -86,6 +88,18 @@ export const getProgramLessonHocmaiSections = async (req: Request, res: Response
   }
 };
 
+export const getProgramLessonsHocmaiSections = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.getHocmaiSectionsForProgramLessons(
+      String(req.params.code || ''),
+      req.body?.lesson_ids
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const commitAutoSchedule = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const preview = buildAutoSchedulePreview(req.body);
@@ -125,7 +139,9 @@ export const previewStudentClassroomAssignment = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const data = await previewClassroomAssignment(Number(req.params.id));
+    const data = await previewClassroomAssignment(Number(req.params.id), {
+      maxStudentsPerClassroom: req.body?.max_students_per_classroom,
+    });
     res.status(200).json({ success: true, data });
   } catch (error: any) {
     res.status(400).json({ success: false, message: error.message });
@@ -140,6 +156,8 @@ export const applyStudentClassroomAssignment = async (
   try {
     const data = await applyClassroomAssignment(Number(req.params.id), {
       username: req.user?.username,
+    }, {
+      maxStudentsPerClassroom: req.body?.max_students_per_classroom,
     });
     res.status(200).json({ success: true, data });
   } catch (error: any) {
@@ -237,15 +255,20 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
 export const exportFile = async (req: Request, res: Response): Promise<void> => {
   try {
     const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+    const updateTemplate = req.query.purpose === 'update';
     const rows = await livestreamService.getCalendarRowsForExport(
       req.query.ids,
-      getProgramScopeFilter(req.user, 'calendar.export')
+      getProgramScopeFilter(req.user, 'calendar.export'),
+      String(req.query.program_code || '').trim() || undefined
     );
-    const buffer = buildCalendarFile(rows, format);
-    res.setHeader('Content-Type', getCalendarFileContentType(format));
+    const buffer = updateTemplate
+      ? buildCalendarUpdateFile(rows)
+      : buildCalendarFile(rows, format);
+    const responseFormat = updateTemplate ? 'xlsx' : format;
+    res.setHeader('Content-Type', getCalendarFileContentType(responseFormat));
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="calendar-export-${Date.now()}.${format}"`
+      `attachment; filename="calendar-${updateTemplate ? 'update-assistants' : 'export'}-${Date.now()}.${responseFormat}"`
     );
     res.send(buffer);
   } catch (err: any) {
@@ -263,21 +286,6 @@ export const importTemplate = async (req: Request, res: Response): Promise<void>
   res.send(buildCalendarTemplate(format));
 };
 
-const getGoogleSheetCsv = async (sheetUrl: string) => {
-  let parsed: URL;
-  try { parsed = new URL(sheetUrl); } catch { throw new Error('Link Google Sheets không hợp lệ'); }
-  if (parsed.hostname !== 'docs.google.com') throw new Error('Chỉ hỗ trợ link Google Sheets từ docs.google.com');
-  const match = parsed.pathname.match(/^\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-  if (!match) throw new Error('Link Google Sheets không hợp lệ');
-  const gid = parsed.searchParams.get('gid') || '0';
-  const response = await fetch(
-    `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${encodeURIComponent(gid)}`,
-    { signal: AbortSignal.timeout(15_000) }
-  );
-  if (!response.ok) throw new Error('Không thể đọc Google Sheets. Hãy kiểm tra quyền chia sẻ công khai.');
-  return Buffer.from(await response.arrayBuffer());
-};
-
 export const importFile = async (req: Request, res: Response): Promise<void> => {
   try {
     const sheetUrl = String(req.body?.sheet_url || '').trim();
@@ -285,7 +293,7 @@ export const importFile = async (req: Request, res: Response): Promise<void> => 
       res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
       return;
     }
-    const buffer = req.file?.buffer ?? await getGoogleSheetCsv(sheetUrl);
+    const buffer = req.file?.buffer ?? await getPublicGoogleSheetCsv(sheetUrl);
     const originalName = req.file?.originalname ?? 'google-sheet.csv';
     const rows = parseCalendarImportFile(buffer, originalName);
     const { importRows, errors } = validateCalendarImportRows(rows);
@@ -363,7 +371,7 @@ export const updateImportFile = async (req: Request, res: Response): Promise<voi
       res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
       return;
     }
-    const buffer = req.file?.buffer ?? await getGoogleSheetCsv(sheetUrl);
+    const buffer = req.file?.buffer ?? await getPublicGoogleSheetCsv(sheetUrl);
     const originalName = req.file?.originalname ?? 'google-sheet.csv';
     const rows = parseCalendarImportFile(buffer, originalName);
     const { importRows, errors } = validateCalendarImportRows(rows);
@@ -413,7 +421,21 @@ export const updateImportFile = async (req: Request, res: Response): Promise<voi
       return;
     }
 
-    const result = await updateCalendarsFromSheet(importRows, getChangeActor(req));
+    const rawExistingDataMode = String(
+      req.body?.existing_data_mode || req.body?.assistant_conflict_mode || 'skip'
+    );
+    if (rawExistingDataMode !== 'skip' && rawExistingDataMode !== 'overwrite') {
+      res.status(400).json({
+        success: false,
+        message: 'existing_data_mode chỉ nhận skip hoặc overwrite',
+      });
+      return;
+    }
+    const result = await updateCalendarsFromSheet(
+      importRows,
+      getChangeActor(req),
+      rawExistingDataMode
+    );
     if (result.status === 'validation_error') {
       res.status(400).json({
         success: false,

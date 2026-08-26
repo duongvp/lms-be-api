@@ -5,6 +5,8 @@ export interface LessonListQuery {
   subject_code?: string;
   subject?: string;
   learn_number?: number;
+  from_learn_number?: number;
+  to_learn_number?: number;
   keyword?: string;
   course_code?: string;
   status?: number;

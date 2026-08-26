@@ -17,6 +17,8 @@ type AutoScheduleLesson = {
   learn_number: number;
   session_id?: string | number;
   lesson_name?: string;
+  lesson_name_prefix?: string;
+  lesson_name_suffix?: string;
   sessions: AutoScheduleSession[];
 };
 
@@ -30,6 +32,12 @@ export type AutoSchedulePayload = {
   program_code: string;
   system_type: 'topclass' | 'topuni';
   start_date: string;
+  /** Các thứ lặp lại cho TopUni. Bỏ trống để tương thích lịch cũ theo weekday của buổi mẫu. */
+  topuni_weekdays?: number[];
+  /** Khi bật, mỗi bài TopUni dùng chính session duy nhất của bài làm lịch ngoại lệ. */
+  topuni_per_lesson_schedule?: boolean;
+  /** Nhịp lặp theo tuần của TopUni: 1 = hàng tuần, 2 = cách tuần. */
+  topuni_week_interval?: number;
   strategy?: 'by_block' | 'interleaved';
   holidays?: string[];
   customize_lesson_names?: boolean;
@@ -163,16 +171,39 @@ const orderedSessions = (blocks: AutoScheduleBlock[], strategy: string, maxSessi
 
 const nextStudyDate = (
   cursor: Date,
-  weekday: number,
-  holidays: Set<string>
+  weekdays: number[],
+  holidays: Set<string>,
+  weekInterval = 1,
+  anchorDate?: Date
 ) => {
-  if (!Number.isInteger(weekday) || weekday < 1 || weekday > 7) {
+  const normalizedWeekdays = [...new Set(weekdays.map(Number))];
+  if (!normalizedWeekdays.length || normalizedWeekdays.some((weekday) => (
+    !Number.isInteger(weekday) || weekday < 1 || weekday > 7
+  ))) {
     throw new Error('weekday phải nằm trong khoảng 1 (Thứ 2) đến 7 (Chủ nhật)');
   }
-  const targetJsDay = weekday === 7 ? 0 : weekday;
+  if (!Number.isInteger(weekInterval) || weekInterval < 1 || weekInterval > 52) {
+    throw new Error('Khoảng cách tuần phải là số nguyên từ 1 đến 52');
+  }
+  const startOfWeek = (value: Date) => {
+    const result = new Date(value);
+    const weekday = result.getDay() === 0 ? 7 : result.getDay();
+    result.setDate(result.getDate() - (weekday - 1));
+    result.setHours(0, 0, 0, 0);
+    return result;
+  };
+  const anchorWeek = anchorDate ? startOfWeek(anchorDate) : null;
   const candidate = new Date(cursor);
   for (let offset = 0; offset < 3660; offset += 1) {
-    if (candidate.getDay() === targetJsDay && !holidays.has(dateOnly(candidate))) {
+    const candidateWeekday = candidate.getDay() === 0 ? 7 : candidate.getDay();
+    const weeksFromAnchor = anchorWeek
+      ? Math.round((startOfWeek(candidate).getTime() - anchorWeek.getTime()) / (7 * 24 * 60 * 60 * 1000))
+      : 0;
+    const isActiveWeek = !anchorWeek
+      || (weeksFromAnchor >= 0 && weeksFromAnchor % weekInterval === 0);
+    if (isActiveWeek
+      && normalizedWeekdays.includes(candidateWeekday)
+      && !holidays.has(dateOnly(candidate))) {
       return candidate;
     }
     candidate.setDate(candidate.getDate() + 1);
@@ -206,7 +237,23 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
     payload.strategy || 'by_block',
     payload.system_type === 'topuni' ? 1 : undefined
   );
+  const topuniWeekdays = [...new Set((payload.topuni_weekdays || []).map(Number))];
+  const topuniWeekInterval = Number(payload.topuni_week_interval ?? 1);
+  if (payload.system_type === 'topuni'
+    && (!Number.isInteger(topuniWeekInterval) || topuniWeekInterval < 1 || topuniWeekInterval > 52)) {
+    throw new Error('topuni_week_interval phải là số nguyên từ 1 đến 52');
+  }
+  if (payload.system_type === 'topuni' && topuniWeekdays.length) {
+    // Kiểm tra sớm để báo lỗi rõ ràng kể cả khi danh sách bài đang trống/không hợp lệ.
+    nextStudyDate(parseDateOnly(payload.start_date), topuniWeekdays, holidays);
+  }
   let cursor = parseDateOnly(payload.start_date);
+  const topuniAnchorWeekdays = topuniWeekdays.length
+    ? topuniWeekdays
+    : [Number(sequence[0]?.session.weekday)];
+  const topuniAnchorDate = payload.system_type === 'topuni'
+    ? nextStudyDate(cursor, topuniAnchorWeekdays, holidays)
+    : undefined;
   const lessonOccurrences = new Map<string, number>();
   const customizeLessonNames = Boolean(payload.customize_lesson_names);
   const lessonNamePrefix = String(payload.lesson_name_prefix || '').slice(0, 100);
@@ -217,9 +264,28 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
     if (!Number.isInteger(lesson.learn_number) || lesson.learn_number <= 0) {
       throw new Error(`Block ${index + 1} có learn_number không hợp lệ`);
     }
-    const studyDate = nextStudyDate(cursor, Number(session.weekday), holidays);
-    const startTime = combineDateTime(studyDate, session.start_time);
-    const endTime = combineDateTime(studyDate, session.end_time);
+    const studyDate = nextStudyDate(
+      cursor,
+      payload.system_type === 'topuni' && payload.topuni_per_lesson_schedule
+        ? [Number(session.weekday)]
+        : payload.system_type === 'topuni' && topuniWeekdays.length
+        ? topuniWeekdays
+        : [Number(session.weekday)],
+      holidays,
+      payload.system_type === 'topuni' ? topuniWeekInterval : 1,
+      topuniAnchorDate
+    );
+    const studyWeekday = studyDate.getDay() === 0 ? 7 : studyDate.getDay();
+    const activeSession = payload.system_type === 'topuni'
+      && topuniWeekdays.length
+      && !payload.topuni_per_lesson_schedule
+      ? lesson.sessions.find((item) => Number(item.weekday) === studyWeekday)
+      : session;
+    if (!activeSession) {
+      throw new Error(`TopUni chưa cấu hình khung giờ cho thứ ${studyWeekday}`);
+    }
+    const startTime = combineDateTime(studyDate, activeSession.start_time);
+    const endTime = combineDateTime(studyDate, activeSession.end_time);
     if (endTime <= startTime) throw new Error('Giờ kết thúc phải sau giờ bắt đầu');
     cursor = new Date(studyDate);
     cursor.setDate(cursor.getDate() + 1);
@@ -229,6 +295,8 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
     const occurrence = (lessonOccurrences.get(lessonKey) || 0) + 1;
     lessonOccurrences.set(lessonKey, occurrence);
     const masterLessonName = String(lesson.lesson_name || '');
+    const perLessonPrefix = String(lesson.lesson_name_prefix || '').slice(0, 100);
+    const perLessonSuffix = String(lesson.lesson_name_suffix || '').slice(0, 100);
     const lessonNameRule = lessonNameRules.find((rule) => (
       lesson.learn_number >= rule.from_learn_number && lesson.learn_number <= rule.to_learn_number
     ));
@@ -237,7 +305,9 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
     // Khoảng bài chỉ quyết định dùng bộ tiền tố/hậu tố nào. Tất cả mẫu tên
     // (riêng hoặc chung) đều chỉ áp dụng từ buổi thứ hai của từng bài.
     const shouldApplyNamePattern = customizeLessonNames && occurrence > 1;
-    const lessonName = shouldApplyNamePattern
+    const lessonName = perLessonPrefix || perLessonSuffix
+      ? `${perLessonPrefix}${masterLessonName}${perLessonSuffix}`.slice(0, 400)
+      : shouldApplyNamePattern
       ? `${renderNamePattern(prefix, occurrence)}${masterLessonName}${renderNamePattern(suffix, occurrence)}`.slice(0, 400)
       : masterLessonName;
 
@@ -247,13 +317,13 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
       learn_number: lesson.learn_number,
       session_id: lesson.session_id,
       lesson_name: lessonName,
-      teacher: session.teacher,
-      assistant_teacher: session.assistant_teacher,
-      room: session.room,
+      teacher: activeSession.teacher,
+      assistant_teacher: activeSession.assistant_teacher,
+      room: activeSession.room,
       start_time: formatCalendarWallTime(startTime),
       end_time: formatCalendarWallTime(endTime),
       lesson_status: 0,
-      package_lesson_mappings: (session.hmo_mappings || []).map((mapping) => ({
+      package_lesson_mappings: (activeSession.hmo_mappings || []).map((mapping) => ({
         package_ids: [mapping.package_id],
         course_id: mapping.course_id,
         lesson_ids: [mapping.lesson_id],
@@ -261,8 +331,8 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
       auto_schedule: {
         block_index: payload.blocks.indexOf(block),
         lesson_index: lessonsOf(block).indexOf(lesson),
-        session_index: lesson.sessions.indexOf(session),
-        hmo_section_id: session.lesson_id,
+        session_index: lesson.sessions.indexOf(activeSession),
+        hmo_section_id: activeSession.lesson_id,
       },
     };
   });
@@ -270,6 +340,12 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
   return {
     program_code: programCode,
     strategy: payload.strategy || 'by_block',
+    ...(payload.system_type === 'topuni' && topuniWeekdays.length
+      ? { topuni_weekdays: topuniWeekdays }
+      : {}),
+    ...(payload.system_type === 'topuni'
+      ? { topuni_week_interval: topuniWeekInterval }
+      : {}),
     holidays: [...holidays],
     count: calendars.length,
     calendars,

@@ -3,11 +3,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-const client_1 = require("@prisma/client");
+const prisma_1 = __importDefault(require("../../lib/prisma"));
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const dateTime_1 = require("../../utils/dateTime");
 const rbac_ui_constants_1 = require("./rbac-ui.constants");
-const prisma = new client_1.PrismaClient();
 const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const normalizeRoleIds = (roleIds) => roleIds.map((roleId) => BigInt(roleId));
 const validateFieldPolicyShape = (fieldPolicy) => {
@@ -40,7 +39,7 @@ const validateFieldPolicyShape = (fieldPolicy) => {
 };
 const validateFieldPolicyAgainstModules = async (fieldPolicy) => {
     const moduleCodes = Object.keys(fieldPolicy.modules);
-    const modules = await prisma.modules.findMany({
+    const modules = await prisma_1.default.modules.findMany({
         where: { code: { in: moduleCodes } },
         include: { fields: true },
     });
@@ -84,7 +83,7 @@ const FieldPermissionService = {
         return normalizedPolicy;
     },
     async getModules() {
-        const modules = await prisma.modules.findMany({
+        const modules = await prisma_1.default.modules.findMany({
             where: {
                 code: { in: [...rbac_ui_constants_1.RBAC_FIELD_MODULE_CODES] },
             },
@@ -106,7 +105,7 @@ const FieldPermissionService = {
         }));
     },
     async getModuleFields(moduleCode) {
-        const module = await prisma.modules.findUnique({
+        const module = await prisma_1.default.modules.findUnique({
             where: { code: moduleCode },
             include: {
                 fields: {
@@ -131,7 +130,7 @@ const FieldPermissionService = {
         };
     },
     async getRoleFieldPolicy(roleId) {
-        const role = await prisma.roles.findUnique({
+        const role = await prisma_1.default.roles.findUnique({
             where: { id: BigInt(roleId) },
             select: {
                 id: true,
@@ -152,13 +151,13 @@ const FieldPermissionService = {
     },
     async updateRoleFieldPolicy(roleId, fieldPolicy) {
         const normalizedPolicy = await this.validateFieldPolicy(fieldPolicy);
-        const role = await prisma.roles.findUnique({
+        const role = await prisma_1.default.roles.findUnique({
             where: { id: BigInt(roleId) },
         });
         if (!role) {
             throw new ApiError_1.default('Role not found', 404);
         }
-        const updatedRole = await prisma.roles.update({
+        const updatedRole = await prisma_1.default.roles.update({
             where: { id: BigInt(roleId) },
             data: {
                 fieldPolicy: normalizedPolicy,
@@ -182,7 +181,7 @@ const FieldPermissionService = {
         if (!roleIds.length) {
             return { visible: false, editable: false };
         }
-        const roles = await prisma.roles.findMany({
+        const roles = await prisma_1.default.roles.findMany({
             where: {
                 id: { in: normalizeRoleIds(roleIds) },
                 isActive: true,
@@ -203,7 +202,7 @@ const FieldPermissionService = {
     async filterVisibleRecords(roleIds, moduleCode, records) {
         if (!roleIds.length)
             return records.map(() => ({}));
-        const roles = await prisma.roles.findMany({
+        const roles = await prisma_1.default.roles.findMany({
             where: {
                 id: { in: normalizeRoleIds(roleIds) },
                 isActive: true,

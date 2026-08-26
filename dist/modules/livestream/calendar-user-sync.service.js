@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.syncCalendarTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarClassId = exports.excelDateSerialFromCalendarDate = void 0;
+exports.syncCalendarTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarRoomClassId = exports.buildCalendarClassId = exports.excelDateSerialFromCalendarDate = void 0;
 const client_1 = require("@prisma/client");
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -40,6 +40,22 @@ const buildCalendarClassId = (code, startTime, learnNumber) => {
     return classId;
 };
 exports.buildCalendarClassId = buildCalendarClassId;
+/**
+ * Công thức class_id có room 1 ở ký tự cuối. Các classroom tiếp theo giữ
+ * nguyên code + ngày lịch + bài và chỉ thay hậu tố bằng room_id tương ứng.
+ */
+const buildCalendarRoomClassId = (code, startTime, learnNumber, roomId) => {
+    const normalizedRoomId = Number(roomId);
+    if (!Number.isInteger(normalizedRoomId) || normalizedRoomId <= 0) {
+        throw new Error('Không thể tạo class_id khi room_id không hợp lệ');
+    }
+    const roomOneClassId = (0, exports.buildCalendarClassId)(code, startTime, learnNumber);
+    const classId = `${roomOneClassId.slice(0, -1)}${normalizedRoomId}`;
+    if (classId.length > 100)
+        throw new Error('class_id vượt quá 100 ký tự');
+    return classId;
+};
+exports.buildCalendarRoomClassId = buildCalendarRoomClassId;
 const resolveCalendarTeacherProfile = async (client, identifier) => {
     const normalizedIdentifier = normalizeText(identifier);
     if (!normalizedIdentifier)
@@ -85,8 +101,11 @@ const resolveTeachingProfiles = async (client, calendar) => {
         throw new Error(`Không xác định được tài khoản trợ giảng: ${missingAssistants.join(', ')}`);
     }
     return [
-        ...(teacher ? [teacher] : []),
-        ...assistantUsernames.map((username) => assistantByUsername.get(username)),
+        ...(teacher ? [{ ...teacher, role: 'teacher' }] : []),
+        ...assistantUsernames.map((username) => ({
+            ...assistantByUsername.get(username),
+            role: 'assistant',
+        })),
     ];
 };
 const resolvePreviousTeachingProfiles = async (client, calendar) => {
@@ -111,58 +130,101 @@ const resolvePreviousTeachingProfiles = async (client, calendar) => {
         throw error;
     }
 };
+const findTeachingStudentHmid = async (client, username, code) => {
+    const validHmidWhere = {
+        username,
+        student_hmid: { not: null },
+        NOT: { student_hmid: '' },
+    };
+    // Cùng username có thể mang HMID khác nhau giữa các chương trình. Luôn ưu
+    // tiên row của chính chương trình đang quét để không sao chép nhầm HMID.
+    const sameProgram = await client.users.findFirst({
+        where: { ...validHmidWhere, code },
+        select: { student_hmid: true },
+        orderBy: { id: 'asc' },
+    });
+    const sameProgramHmid = normalizeText(sameProgram?.student_hmid);
+    if (sameProgramHmid)
+        return sameProgramHmid;
+    const fallback = await client.users.findFirst({
+        where: validHmidWhere,
+        select: { student_hmid: true },
+        orderBy: { id: 'asc' },
+    });
+    return normalizeText(fallback?.student_hmid) || null;
+};
 const upsertTeachingUser = async (client, calendar, profile, classId) => {
     const username = normalizeText(profile.username);
-    const displayName = normalizeText(profile.display_name) || username;
     if (username.length > 100) {
         throw new Error(`Username nhân sự "${username}" vượt quá 100 ký tự`);
     }
-    const existingWithHmid = await client.users.findFirst({
-        where: { username, student_hmid: { not: null } },
-        select: { student_hmid: true }
+    const studentHmid = await findTeachingStudentHmid(client, username, calendar.code);
+    // Giáo viên chính hiển thị theo tên hồ sơ. Trợ giảng trong bảng users dùng
+    // đúng quy ước nghiệp vụ HMID - Giáo viên, giống luồng quét/bổ sung user.
+    const displayName = profile.role === 'assistant'
+        ? [normalizeText(studentHmid), 'Giáo viên'].filter(Boolean).join(' - ')
+        : normalizeText(profile.display_name) || username;
+    const identityWhere = {
+        username,
+        code: calendar.code,
+        learn_number: calendar.learn_number,
+    };
+    const existing = await client.users.findFirst({
+        where: identityWhere,
+        select: { id: true },
     });
-    const studentHmid = existingWithHmid?.student_hmid || null;
-    await client.users.upsert({
-        where: {
-            username_code_learn_number: {
-                username,
-                code: calendar.code,
-                learn_number: calendar.learn_number,
-            },
-        },
-        create: {
-            username,
-            student_hmid: studentHmid,
-            email: username,
-            phone: null,
-            name: displayName,
-            code: calendar.code,
-            learn_number: calendar.learn_number,
-            islearn: 0,
-            room_id: 1,
-            class_id: classId,
-            created_at: new Date(),
-            updated_at: new Date(),
-        },
-        update: {
-            name: displayName,
-            islearn: 0,
-            room_id: 1,
-            class_id: classId,
-            ...(studentHmid ? { student_hmid: studentHmid } : {}),
-            updated_at: new Date(),
-        },
-    });
+    const createData = {
+        username,
+        student_hmid: studentHmid,
+        email: username,
+        phone: null,
+        name: displayName,
+        code: calendar.code,
+        learn_number: calendar.learn_number,
+        islearn: 0,
+        room_id: 1,
+        class_id: classId,
+        created_at: new Date(),
+        updated_at: new Date(),
+    };
+    const updateData = {
+        name: displayName,
+        islearn: 0,
+        room_id: 1,
+        class_id: classId,
+        ...(studentHmid ? { student_hmid: studentHmid } : {}),
+        updated_at: new Date(),
+    };
+    if (existing) {
+        await client.users.update({ where: { id: existing.id }, data: updateData });
+        return;
+    }
+    try {
+        await client.users.create({ data: createData });
+    }
+    catch (error) {
+        // Hai request có thể cùng không tìm thấy row rồi tạo đồng thời. Unique
+        // index 3 cột chặn duplicate; request thua race cập nhật row vừa được tạo.
+        if (error?.code !== 'P2002')
+            throw error;
+        const concurrent = await client.users.findFirst({
+            where: identityWhere,
+            select: { id: true },
+        });
+        if (!concurrent)
+            throw error;
+        await client.users.update({ where: { id: concurrent.id }, data: updateData });
+    }
 };
 /**
  * Bổ sung enrollment cho nhân sự đã gán trên calendar nhưng chưa có trong
  * users. Dùng ở cập nhật hàng loạt để khôi phục các lịch legacy đã tồn tại
- * trước khi cơ chế tự đồng bộ được bật. Hàm này tuyệt đối không cập nhật hay
- * xóa user đã có; chỉ tạo đúng các bản ghi còn thiếu.
+ * trước khi cơ chế tự đồng bộ được bật. Với enrollment đã có, hàm chỉ vá
+ * student_hmid còn thiếu và chuẩn hóa tên trợ giảng; không xóa user.
  */
 const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
     if (!isActiveSchedule(calendar))
-        return { created: 0 };
+        return { created: 0, updated: 0 };
     const profileCacheKey = [
         normalizeText(calendar.teacher),
         parseAssistantTeachers(calendar.assistant_teacher).sort().join(','),
@@ -173,29 +235,42 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
         profileCache?.set(profileCacheKey, profiles);
     }
     if (!profiles.length)
-        return { created: 0 };
+        return { created: 0, updated: 0 };
     const classId = (0, exports.buildCalendarClassId)(calendar.code, calendar.start_time, calendar.learn_number);
     let created = 0;
+    let updated = 0;
     for (const profile of profiles) {
         const username = normalizeText(profile.username);
-        const existing = await client.users.findUnique({
-            where: {
-                username_code_learn_number: {
-                    username,
-                    code: calendar.code,
-                    learn_number: calendar.learn_number,
-                },
-            },
-            select: { id: true },
+        const identityWhere = {
+            username,
+            code: calendar.code,
+            learn_number: calendar.learn_number,
+        };
+        const existing = await client.users.findFirst({
+            where: identityWhere,
+            select: { id: true, student_hmid: true, name: true },
         });
-        if (existing)
+        const studentHmid = normalizeText(existing?.student_hmid)
+            || await findTeachingStudentHmid(client, username, calendar.code);
+        const displayName = profile.role === 'assistant'
+            ? [normalizeText(studentHmid), 'Giáo viên'].filter(Boolean).join(' - ')
+            : normalizeText(profile.display_name) || username;
+        const updateData = {
+            name: displayName,
+            islearn: 0,
+            room_id: 1,
+            class_id: classId,
+            ...(studentHmid ? { student_hmid: studentHmid } : {}),
+            updated_at: new Date(),
+        };
+        if (existing) {
+            await client.users.update({
+                where: { id: existing.id },
+                data: updateData,
+            });
+            updated += 1;
             continue;
-        const displayName = normalizeText(profile.display_name) || username;
-        const existingWithHmid = await client.users.findFirst({
-            where: { username, student_hmid: { not: null } },
-            select: { student_hmid: true },
-        });
-        const studentHmid = existingWithHmid?.student_hmid || null;
+        }
         try {
             await client.users.create({
                 data: {
@@ -216,13 +291,24 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
             created += 1;
         }
         catch (error) {
-            // Một request khác có thể vừa tạo cùng enrollment. Khi đó giữ nguyên
-            // bản ghi vừa có, không coi đây là lỗi của cập nhật lịch hàng loạt.
             if (error?.code !== 'P2002')
                 throw error;
+            // Unique index 3 cột xử lý race giữa bước kiểm tra và tạo. Request thua
+            // race đọc lại đúng enrollment rồi cập nhật, thay vì bỏ qua dữ liệu mới.
+            const concurrent = await client.users.findFirst({
+                where: identityWhere,
+                select: { id: true },
+            });
+            if (!concurrent)
+                throw error;
+            await client.users.update({
+                where: { id: concurrent.id },
+                data: updateData,
+            });
+            updated += 1;
         }
     }
-    return { created };
+    return { created, updated };
 };
 exports.ensureCalendarTeachingUsers = ensureCalendarTeachingUsers;
 const isStillAssigned = async (client, calendar, profile) => {
@@ -242,6 +328,8 @@ const isStillAssigned = async (client, calendar, profile) => {
         || parseAssistantTeachers(row.assistant_teacher).includes(profile.username)));
 };
 const removeUnassignedTeachingUser = async (client, calendar, profile) => {
+    // Một row users được định danh bởi username + code + learn_number. class_id
+    // là trạng thái lớp hiện tại, không phải thành phần identity của enrollment.
     if (await isStillAssigned(client, calendar, profile))
         return;
     await client.users.deleteMany({

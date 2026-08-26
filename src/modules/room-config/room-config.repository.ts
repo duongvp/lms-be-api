@@ -1,7 +1,6 @@
-import { PrismaClient, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import prisma from '../../lib/prisma';
 import { RoomConfigFilter, SaveRoomConfigInput } from './room-config.types';
-
-const prisma = new PrismaClient();
 
 const withoutLegacyStaffAssignments = (value: unknown) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value || {};

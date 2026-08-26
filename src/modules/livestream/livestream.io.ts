@@ -19,7 +19,7 @@ export const CALENDAR_IMPORT_FILE_COLUMNS = [
   'Nhiệm vụ học tập',
   'Tài liệu lưu trữ',
   'BTV ND',
-  'Trợ giảng',
+  'assistant_teacher',
   'Link sharepoint',
   'ID course\n(TSA,HSA,V-ACT,TN THPT)',
   'ID Bài giảng\n(TSA,HSA,V-ACT,TN THPT)',
@@ -58,6 +58,23 @@ export const CALENDAR_FILE_COLUMNS = CALENDAR_IMPORT_FILE_COLUMNS.map(
   })
 );
 
+export const CALENDAR_UPDATE_FILE_COLUMNS = [
+  { key: 'code', header: 'code' },
+  { key: 'subject', header: 'subject' },
+  { key: 'start_time', header: 'start_time' },
+  { key: 'end_time', header: 'end_time' },
+  { key: 'learn_number', header: 'learn_number' },
+  { key: 'teacher', header: 'teacher' },
+  { key: 'assistant_name', header: 'assistant_teacher' },
+  { key: 'lesson_name', header: 'lesson_name' },
+  { key: 'lesson_document', header: 'lesson_document' },
+  { key: 'evg_banner', header: 'evg_banner' },
+  { key: 'evg_stream', header: 'evg_stream' },
+  { key: 'lesson_count', header: 'lesson_count' },
+  { key: 'system_type', header: 'system_type' },
+  { key: 'key', header: 'key' },
+] as const;
+
 const normalizeHeader = (value: unknown) => String(value ?? '')
   .trim()
   .normalize('NFD')
@@ -86,6 +103,8 @@ const HEADER_ALIASES: Record<string, string> = {
   'end time': 'end_time',
   'learn number': 'learn_number',
   teacher: 'teacher',
+  'assistant teacher': 'assistant_name',
+  'assistant name': 'assistant_name',
   'lesson name': 'lesson_name',
   'lesson document': 'lesson_document',
   'evg banner': 'evg_banner',
@@ -509,6 +528,20 @@ const normalizeAssignment = (value: unknown) => Array.from(new Set(
     .filter(Boolean)
 )).join(',');
 
+const normalizeAssistantNames = (value: unknown) => {
+  const assistants = Array.from(new Set(
+    String(value ?? '')
+      .split(/[;,]/)
+      .map((item) => item.trim().replace(/\s+/g, ' '))
+      .filter(Boolean)
+  ));
+  const normalized = assistants.join(',');
+  if (normalized.length > 500) {
+    throw new Error('Trợ giảng không được vượt quá 500 ký tự');
+  }
+  return normalized;
+};
+
 const normalizeOptionalTeacher = (value: unknown) => {
   const text = limitedText(value, 'Email GV', 120);
   if (!text || /\s/.test(text)) return undefined;
@@ -624,7 +657,14 @@ export const validateCalendarImportRows = (rows: Record<string, unknown>[]) => {
       const teacher = directFormat
         ? limitedText(row.teacher, 'Giáo viên', 150)
         : normalizeOptionalTeacher(row.teacher_email);
-      const assistantTeacher = normalizeAssignment(row.assistant_email);
+      // Người vận hành quản lý trợ giảng bằng tên hiển thị. Vẫn nhận Email TG
+      // của file cũ làm fallback; bước validate async sẽ đổi tên thành username
+      // chuẩn từ teacher_profiles trước khi ghi calendar.
+      const assistantTeacher = normalizeAssistantNames(
+        String(row.assistant_name ?? '').trim()
+          ? row.assistant_name
+          : row.assistant_email
+      );
       const subject = limitedText(row.subject, 'Môn', 100, true);
       const lessonName = limitedText(row.lesson_name, 'Tên bài giảng', 400, true);
       const lessonExercise = limitedText(row.lesson_baitap, 'Nhiệm vụ học tập', 500);
@@ -711,6 +751,25 @@ export const buildCalendarFile = (rows: any[], format: CalendarFileFormat) => {
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 };
 
+export const buildCalendarUpdateFile = (rows: any[]) => {
+  const worksheet = XLSX.utils.json_to_sheet(rows.map((row) => Object.fromEntries(
+    CALENDAR_UPDATE_FILE_COLUMNS.map((column) => [column.header, row[column.key] ?? ''])
+  )), {
+    header: CALENDAR_UPDATE_FILE_COLUMNS.map((column) => column.header),
+  });
+  worksheet['!cols'] = CALENDAR_UPDATE_FILE_COLUMNS.map((column) => ({
+    wch: ['lesson_name', 'lesson_document', 'key'].includes(column.key) ? 38
+      : column.key === 'assistant_name' ? 28
+        : 20,
+  }));
+  worksheet['!autofilter'] = {
+    ref: `A1:${XLSX.utils.encode_col(CALENDAR_UPDATE_FILE_COLUMNS.length - 1)}${Math.max(2, rows.length + 1)}`,
+  };
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Cập nhật lịch');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+};
+
 export const getCalendarFileContentType = (format: CalendarFileFormat) => (
   format === 'csv'
     ? 'text/csv; charset=utf-8'
@@ -718,14 +777,10 @@ export const getCalendarFileContentType = (format: CalendarFileFormat) => (
 );
 
 export const buildCalendarTemplate = (format: CalendarFileFormat) => {
-  const headers = [
-    'code', 'subject', 'start_time', 'end_time', 'learn_number', 'teacher',
-    'lesson_name', 'lesson_document', 'evg_banner', 'evg_stream',
-    'lesson_count', 'system_type', 'key',
-  ];
+  const headers = CALENDAR_UPDATE_FILE_COLUMNS.map((column) => column.header);
   const sample = [
     'tongon2dinhluonghsav2027', 'Định lượng', '2026-08-17 21:00:00',
-    '2026-08-17 22:00:00', 1, 'Phạm Thái Sơn',
+    '2026-08-17 22:00:00', 1, 'Phạm Thái Sơn', 'Nguyễn Văn Trợ Giảng',
     'Nhập môn HSA - phần Tư duy định lượng',
     '[{"link":"https://example.com/tai-lieu.pdf","title":"Tài liệu","type":"pdf"}]',
     '', '', '', 'topuni', 'tu_2627_tongon2dinhluonghsav2027_1',
@@ -752,6 +807,7 @@ export const buildCalendarTemplate = (format: CalendarFileFormat) => {
     { wch: 22 },
     { wch: 14 },
     { wch: 24 },
+    { wch: 28 },
     { wch: 38 },
     { wch: 38 },
     { wch: 28 },

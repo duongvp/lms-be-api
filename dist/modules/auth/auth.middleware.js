@@ -4,12 +4,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
-const client_1 = require("@prisma/client");
+const prisma_1 = __importDefault(require("../../lib/prisma"));
 const logger_1 = require("../../utils/logger");
 const constants_1 = require("./constants");
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const authorization_service_1 = require("../../services/authorization.service");
-const prisma = new client_1.PrismaClient();
 // Middleware xác thực JWT
 const authenticate = async (req, res, next) => {
     try {
@@ -29,7 +28,7 @@ const authenticate = async (req, res, next) => {
             res.status(401).json({ success: false, message: 'Invalid token type' });
             return;
         }
-        const sessions = await prisma.$queryRaw `
+        const sessions = await prisma_1.default.$queryRaw `
       SELECT id, user_id, expires_at, revoked_at
       FROM auth_sessions
       WHERE id = ${String(decoded.sessionId)}
@@ -43,7 +42,7 @@ const authenticate = async (req, res, next) => {
             res.status(401).json({ success: false, message: 'Session is invalid or revoked' });
             return;
         }
-        const user = await prisma.users.findUnique({
+        const user = await prisma_1.default.users.findUnique({
             where: { id: decoded.userId }
         });
         if (!user) {

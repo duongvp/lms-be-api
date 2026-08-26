@@ -140,6 +140,12 @@ router.get('/export', authorize(['calendar.export']), livestreamController.expor
 router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
 router.get('/programs', authorize(['calendar.view']), livestreamController.getPrograms);
 router.get('/programs/:code/lessons', authorize(['calendar.view']), authorizeProgram('calendar.view', (req) => String(req.params.code)), livestreamController.getProgramLessons);
+router.post(
+  '/programs/:code/lessons/hmo-sections/batch',
+  authorize(['calendar.view']),
+  authorizeProgram('calendar.view', (req) => String(req.params.code)),
+  livestreamController.getProgramLessonsHocmaiSections
+);
 router.get(
   '/programs/:code/lessons/:lessonId/hmo-sections',
   authorize(['calendar.view']),

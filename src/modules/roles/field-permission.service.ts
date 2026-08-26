@@ -1,9 +1,7 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../../lib/prisma';
 import ApiError from '../../utils/ApiError';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 import { RBAC_FIELD_MODULE_CODES } from './rbac-ui.constants';
-
-const prisma = new PrismaClient();
 
 type FieldRule = {
     visible: boolean;

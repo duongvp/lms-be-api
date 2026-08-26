@@ -1,12 +1,10 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../../lib/prisma';
 import { TOKEN_TYPES } from './constants';
 import { logger } from '../../utils/logger';
 import ApiError from '../../utils/ApiError';
 import { loadUserAccess } from '../../services/authorization.service';
-
-const prisma = new PrismaClient();
 
 const getRequiredSecret = (name: 'ACCESS_TOKEN_SECRET' | 'REFRESH_TOKEN_SECRET') => {
     const value = process.env[name];

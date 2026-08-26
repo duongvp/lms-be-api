@@ -46,6 +46,7 @@ app.use("/api/teacher-profiles", teacher_profiles_1.teacherProfileRoutes);
 app.use("/api/quizzes", quizzes_1.quizRoutes);
 app.use("/api/dashboard", dashboard_1.dashboardRoutes);
 app.use("/api/room-config", room_config_1.roomConfigRoutes);
+app.use("/api/livestreams", livestream_1.livestreamRoute);
 app.use("/livestreams", livestream_1.livestreamRoute);
 app.use("/api/auth", auth_1.authRoutes);
 app.use((_req, _res, next) => {

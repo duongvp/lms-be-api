@@ -52,6 +52,7 @@ app.use("/api/teacher-profiles", teacherProfileRoutes);
 app.use("/api/quizzes", quizRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/room-config", roomConfigRoutes);
+app.use("/api/livestreams", livestreamRoute);
 app.use("/livestreams", livestreamRoute);
 app.use("/api/auth", authRoutes)
 

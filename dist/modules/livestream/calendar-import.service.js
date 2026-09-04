@@ -546,40 +546,94 @@ const updateCalendarsFromSheet = async (inputRows, changeActor, existingDataMode
             row: 1,
             field: 'file',
             errorCode: 'INVALID_ROW',
-            message: 'Cập nhật lịch chỉ hỗ trợ file mẫu có code, start_time, end_time và key',
+            message: 'Cập nhật lịch chỉ hỗ trợ file mẫu có start_time, end_time và learn_number',
         });
     }
-    const firstRowByKey = new Map();
+    const firstRowByIdentity = new Map();
     inputRows.forEach((row) => {
         const key = String(row.sourceKey || '').trim();
-        if (!key) {
+        if (!key && row.calendar.lesson_count === undefined) {
             addError(errors, {
                 row: row.row,
-                field: 'key',
+                field: 'lesson_count',
                 errorCode: 'INVALID_ROW',
-                message: 'Cập nhật lịch bắt buộc phải có key',
+                message: 'Cập nhật lịch cần có lesson_count để xác định đúng lịch trong Chương trình đã chọn',
             });
             return;
         }
-        const firstRow = firstRowByKey.get(key);
+        const identity = key
+            ? `key:${key}`
+            : `lesson:${row.calendar.code}:${row.calendar.learn_number}:${row.calendar.lesson_count}`;
+        const firstRow = firstRowByIdentity.get(identity);
         if (firstRow !== undefined) {
             addError(errors, {
                 row: row.row,
-                field: 'key',
+                field: key ? 'key' : 'lesson_count',
                 errorCode: 'DUPLICATE_SCHEDULE_IN_FILE',
                 duplicateWithRow: firstRow,
-                message: `Key ${key} bị lặp với dòng ${firstRow}`,
+                message: key
+                    ? `Key ${key} bị lặp với dòng ${firstRow}`
+                    : `Bài ${row.calendar.learn_number}, lần ${row.calendar.lesson_count} bị lặp với dòng ${firstRow}`,
             });
         }
         else {
-            firstRowByKey.set(key, row.row);
+            firstRowByIdentity.set(identity, row.row);
         }
     });
-    const keys = Array.from(firstRowByKey.keys());
-    const existing = keys.length ? await prisma_1.default.calendar.findMany({
-        where: { key: { in: keys } },
-    }) : [];
+    const keys = inputRows.map((row) => String(row.sourceKey || '').trim()).filter(Boolean);
+    const occurrenceConditions = inputRows
+        .filter((row) => !row.sourceKey && row.calendar.lesson_count !== undefined)
+        .map((row) => ({
+        code: row.calendar.code,
+        learn_number: row.calendar.learn_number,
+        lesson_count: row.calendar.lesson_count,
+    }));
+    const existing = keys.length || occurrenceConditions.length
+        ? await prisma_1.default.calendar.findMany({
+            where: {
+                OR: [
+                    ...(keys.length ? [{ key: { in: keys } }] : []),
+                    ...occurrenceConditions,
+                ],
+            },
+        })
+        : [];
     const existingByKey = new Map(existing.filter((calendar) => calendar.key).map((calendar) => [calendar.key, calendar]));
+    inputRows.forEach((row) => {
+        if (row.sourceKey || row.calendar.lesson_count === undefined)
+            return;
+        const matches = existing.filter((calendar) => (calendar.code === row.calendar.code
+            && Number(calendar.learn_number) === row.calendar.learn_number
+            && Number(calendar.lesson_count) === row.calendar.lesson_count));
+        if (!matches.length) {
+            addError(errors, {
+                row: row.row,
+                field: 'lesson_count',
+                errorCode: 'INVALID_ROW',
+                message: `Không tìm thấy lịch Bài ${row.calendar.learn_number}, lần ${row.calendar.lesson_count} trong Chương trình ${row.calendar.code}`,
+            });
+            return;
+        }
+        if (matches.length > 1) {
+            addError(errors, {
+                row: row.row,
+                field: 'lesson_count',
+                errorCode: 'INVALID_ROW',
+                message: `Có nhiều lịch cùng Bài ${row.calendar.learn_number}, lần ${row.calendar.lesson_count}; không thể xác định an toàn`,
+            });
+            return;
+        }
+        if (!matches[0].key) {
+            addError(errors, {
+                row: row.row,
+                field: 'lesson_count',
+                errorCode: 'INVALID_ROW',
+                message: `Lịch Bài ${row.calendar.learn_number}, lần ${row.calendar.lesson_count} chưa có key nội bộ`,
+            });
+            return;
+        }
+        row.sourceKey = matches[0].key;
+    });
     const rowsNeedingAssistantResolution = inputRows.filter((row) => {
         const current = existingByKey.get(String(row.sourceKey || '').trim());
         if (!current)

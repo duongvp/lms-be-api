@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getHocmaiSectionsForProgramLessons = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
+exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.getCalendarImportProgramContext = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getHocmaiSectionsForProgramLessons = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
@@ -103,7 +103,7 @@ const generateKey = (systemType, startTime, code, learnNumber, lessonCount) => {
         schoolYear = `${(startYear - 1).toString().slice(-2)}${startYear.toString().slice(-2)}`;
     }
     const sessionNum = (lessonCount || 0) + 1;
-    const sessionSuffix = sessionNum > 1 ? `_b${sessionNum}` : '';
+    const sessionSuffix = sessionNum > 1 ? `_B${sessionNum}` : '';
     return `${sysCode}_${schoolYear}_${code}_${learnNumber}${sessionSuffix}`;
 };
 const COPY_SESSION_FIELDS = [
@@ -1850,6 +1850,27 @@ const assertSchedulingProgramExists = async (programCode) => {
         throw new Error('Chương trình không tồn tại hoặc chưa có đề cương');
 };
 exports.assertSchedulingProgramExists = assertSchedulingProgramExists;
+const getCalendarImportProgramContext = async (programCode) => {
+    const code = String(programCode || '').trim();
+    if (!code)
+        throw new Error('Vui lòng chọn Chương trình trước khi import lịch học');
+    const program = await prisma_1.default.lessons.findFirst({
+        where: { subject_code: code, status: { not: 0 } },
+        orderBy: { id: 'asc' },
+        select: { subject_code: true, subject_name: true, system_type: true },
+    });
+    if (!program)
+        throw new Error('Chương trình không tồn tại hoặc chưa có đề cương');
+    if (program.system_type !== 'topclass' && program.system_type !== 'topuni') {
+        throw new Error(`Chương trình ${code} chưa có system_type hợp lệ`);
+    }
+    return {
+        code,
+        subject: String(program.subject_name || '').trim() || code,
+        systemType: program.system_type,
+    };
+};
+exports.getCalendarImportProgramContext = getCalendarImportProgramContext;
 const assertCalendarIdsInProgram = async (ids, programCode) => {
     const uniqueIds = Array.from(new Set(ids.filter((id) => Number.isInteger(id) && id > 0)));
     if (!uniqueIds.length)
@@ -2048,16 +2069,25 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
         .map((record) => record.key)
         .filter((key) => Boolean(key));
     const mappingsByKey = await loadMappingsByKeys(prisma_1.default, mappingKeys);
+    const classroomStatusNow = (0, dateTime_1.getVietnamWallClockDate)();
     return {
         total,
         page,
         limit,
-        data: data.map((record) => ({
-            ...record,
-            classroom_assigned: assignmentStatusByCalendarId.has(record.id),
-            classroom_assigned_at: assignmentStatusByCalendarId.get(record.id) ?? null,
-            package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
-        })),
+        data: data.map((record) => {
+            const hasAssignmentHistory = assignmentStatusByCalendarId.has(record.id);
+            const hasStarted = Boolean(record.start_time && record.start_time <= classroomStatusNow);
+            const isCancelled = Number(record.lesson_status) === 1;
+            return {
+                ...record,
+                // Các lịch cũ có thể đã được phân lớp trước khi hệ thống bắt đầu lưu
+                // classroom_assignment_history. Lịch đã bắt đầu được coi là đã chia lớp.
+                // Lịch nghỉ học không có trạng thái phân lớp trên giao diện.
+                classroom_assigned: !isCancelled && (hasAssignmentHistory || hasStarted),
+                classroom_assigned_at: assignmentStatusByCalendarId.get(record.id) ?? null,
+                package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
+            };
+        }),
     };
 };
 exports.getCalendar = getCalendar;

@@ -258,19 +258,25 @@ export const updateLessonCourseMappings = async (input: {
   );
   if (!lessons.length) throw new Error('Chương trình không có bài học phù hợp');
 
-  const lockedIds = await tx.$queryRawUnsafe<Array<{ id: bigint }>>(
-    `SELECT DISTINCT lesson.id
-     FROM lessons AS lesson
-     INNER JOIN calendar AS calendar_row
-       ON calendar_row.session_id = lesson.id
-       OR (calendar_row.code = lesson.subject_code AND calendar_row.learn_number = lesson.learn_number)
-     WHERE lesson.subject_code = ?
-       AND calendar_row.start_time <= NOW()
-       AND lesson.id IN (${lessons.map(() => '?').join(', ')})`,
-    input.programCode,
-    ...lessons.map((lesson) => lesson.id)
-  );
-  const locked = new Set(lockedIds.map((row) => String(row.id)));
+  // Khi thao tác toàn bộ Chương trình, mapping phải được áp dụng cả cho bài
+  // đã từng diễn ra vì bài đó có thể được xếp lịch và giảng dạy lại sau này.
+  // Chỉ giữ cơ chế bảo vệ bài quá khứ với thao tác trên danh sách chọn cụ thể.
+  const locked = new Set<string>();
+  if (input.lessonIds?.length) {
+    const lockedIds = await tx.$queryRawUnsafe<Array<{ id: bigint }>>(
+      `SELECT DISTINCT lesson.id
+       FROM lessons AS lesson
+       INNER JOIN calendar AS calendar_row
+         ON calendar_row.session_id = lesson.id
+         OR (calendar_row.code = lesson.subject_code AND calendar_row.learn_number = lesson.learn_number)
+       WHERE lesson.subject_code = ?
+         AND calendar_row.start_time <= NOW()
+         AND lesson.id IN (${lessons.map(() => '?').join(', ')})`,
+      input.programCode,
+      ...lessons.map((lesson) => lesson.id)
+    );
+    lockedIds.forEach((row) => locked.add(String(row.id)));
+  }
   const eligible = lessons.filter((lesson) => !locked.has(String(lesson.id)));
 
   for (const lesson of eligible) {

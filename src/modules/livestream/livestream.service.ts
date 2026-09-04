@@ -164,7 +164,7 @@ const generateKey = (
   }
 
   const sessionNum = (lessonCount || 0) + 1;
-  const sessionSuffix = sessionNum > 1 ? `_b${sessionNum}` : '';
+  const sessionSuffix = sessionNum > 1 ? `_B${sessionNum}` : '';
   return `${sysCode}_${schoolYear}_${code}_${learnNumber}${sessionSuffix}`;
 };
 
@@ -2339,6 +2339,25 @@ export const assertSchedulingProgramExists = async (programCode: string) => {
   if (!program) throw new Error('Chương trình không tồn tại hoặc chưa có đề cương');
 };
 
+export const getCalendarImportProgramContext = async (programCode: string) => {
+  const code = String(programCode || '').trim();
+  if (!code) throw new Error('Vui lòng chọn Chương trình trước khi import lịch học');
+  const program = await prisma.lessons.findFirst({
+    where: { subject_code: code, status: { not: 0 } },
+    orderBy: { id: 'asc' },
+    select: { subject_code: true, subject_name: true, system_type: true },
+  });
+  if (!program) throw new Error('Chương trình không tồn tại hoặc chưa có đề cương');
+  if (program.system_type !== 'topclass' && program.system_type !== 'topuni') {
+    throw new Error(`Chương trình ${code} chưa có system_type hợp lệ`);
+  }
+  return {
+    code,
+    subject: String(program.subject_name || '').trim() || code,
+    systemType: program.system_type,
+  } as const;
+};
+
 export const assertCalendarIdsInProgram = async (ids: number[], programCode: string) => {
   const uniqueIds = Array.from(new Set(ids.filter((id) => Number.isInteger(id) && id > 0)));
   if (!uniqueIds.length) throw new Error('File import không có lịch học hợp lệ');
@@ -2559,17 +2578,26 @@ export const getCalendar = async (
     .map((record) => record.key)
     .filter((key): key is string => Boolean(key));
   const mappingsByKey = await loadMappingsByKeys(prisma, mappingKeys);
+  const classroomStatusNow = getVietnamWallClockDate();
 
   return {
     total,
     page,
     limit,
-    data: data.map((record) => ({
-      ...record,
-      classroom_assigned: assignmentStatusByCalendarId.has(record.id),
-      classroom_assigned_at: assignmentStatusByCalendarId.get(record.id) ?? null,
-      package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
-    })),
+    data: data.map((record) => {
+      const hasAssignmentHistory = assignmentStatusByCalendarId.has(record.id);
+      const hasStarted = Boolean(record.start_time && record.start_time <= classroomStatusNow);
+      const isCancelled = Number(record.lesson_status) === 1;
+      return {
+        ...record,
+        // Các lịch cũ có thể đã được phân lớp trước khi hệ thống bắt đầu lưu
+        // classroom_assignment_history. Lịch đã bắt đầu được coi là đã chia lớp.
+        // Lịch nghỉ học không có trạng thái phân lớp trên giao diện.
+        classroom_assigned: !isCancelled && (hasAssignmentHistory || hasStarted),
+        classroom_assigned_at: assignmentStatusByCalendarId.get(record.id) ?? null,
+        package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
+      };
+    }),
   };
 };
 

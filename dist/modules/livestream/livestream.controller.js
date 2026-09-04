@@ -288,36 +288,20 @@ const importFile = async (req, res) => {
             res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
             return;
         }
-        const buffer = req.file?.buffer ?? await (0, google_sheet_csv_1.getPublicGoogleSheetCsv)(sheetUrl);
-        const originalName = req.file?.originalname ?? 'google-sheet.csv';
-        const rows = (0, livestream_io_1.parseCalendarImportFile)(buffer, originalName);
-        const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
         const programCode = String(req.body?.program_code || '').trim();
-        const isAdmin = Boolean(req.user?.permissions?.includes('*')
-            || req.user?.roles?.some((role) => (String(role?.code || role?.name || role).toLowerCase() === 'admin')));
-        if (!isAdmin && !programCode) {
+        if (!programCode) {
             res.status(400).json({
                 success: false,
-                message: 'Vui lòng lọc đúng Chương trình trước khi import lịch học',
+                message: 'Vui lòng chọn đúng một Chương trình trước khi import lịch học',
             });
             return;
         }
-        if (!isAdmin) {
-            importRows.forEach((row) => {
-                if (row.calendar.code !== programCode)
-                    errors.push({
-                        row: row.row,
-                        field: 'code',
-                        errorCode: 'INVALID_ROW',
-                        message: `Dòng này thuộc Chương trình ${row.calendar.code}; chỉ được import ${programCode}`,
-                    });
-            });
-            (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.import', programCode);
-        }
-        else {
-            Array.from(new Set(importRows.map((row) => row.calendar.code)))
-                .forEach((code) => (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.import', code));
-        }
+        (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.import', programCode);
+        const programContext = await livestreamService.getCalendarImportProgramContext(programCode);
+        const buffer = req.file?.buffer ?? await (0, google_sheet_csv_1.getPublicGoogleSheetCsv)(sheetUrl);
+        const originalName = req.file?.originalname ?? 'google-sheet.csv';
+        const rows = (0, livestream_io_1.parseCalendarImportFile)(buffer, originalName);
+        const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows, programContext);
         if (errors.length) {
             const invalidRows = new Set(errors.map((error) => error.row)).size;
             res.status(400).json({
@@ -363,36 +347,20 @@ const updateImportFile = async (req, res) => {
             res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
             return;
         }
-        const buffer = req.file?.buffer ?? await (0, google_sheet_csv_1.getPublicGoogleSheetCsv)(sheetUrl);
-        const originalName = req.file?.originalname ?? 'google-sheet.csv';
-        const rows = (0, livestream_io_1.parseCalendarImportFile)(buffer, originalName);
-        const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows);
         const programCode = String(req.body?.program_code || '').trim();
-        const isAdmin = Boolean(req.user?.permissions?.includes('*')
-            || req.user?.roles?.some((role) => (String(role?.code || role?.name || role).toLowerCase() === 'admin')));
-        if (!isAdmin && !programCode) {
+        if (!programCode) {
             res.status(400).json({
                 success: false,
-                message: 'Vui lòng lọc đúng Chương trình trước khi cập nhật lịch học',
+                message: 'Vui lòng chọn đúng một Chương trình trước khi cập nhật lịch học',
             });
             return;
         }
-        if (!isAdmin) {
-            importRows.forEach((row) => {
-                if (row.calendar.code !== programCode)
-                    errors.push({
-                        row: row.row,
-                        field: 'code',
-                        errorCode: 'INVALID_ROW',
-                        message: `Dòng này thuộc Chương trình ${row.calendar.code}; chỉ được cập nhật ${programCode}`,
-                    });
-            });
-            (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.update', programCode);
-        }
-        else {
-            Array.from(new Set(importRows.map((row) => row.calendar.code)))
-                .forEach((code) => (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.update', code));
-        }
+        (0, authorization_service_1.assertProgramAccess)(req.user, 'calendar.update', programCode);
+        const programContext = await livestreamService.getCalendarImportProgramContext(programCode);
+        const buffer = req.file?.buffer ?? await (0, google_sheet_csv_1.getPublicGoogleSheetCsv)(sheetUrl);
+        const originalName = req.file?.originalname ?? 'google-sheet.csv';
+        const rows = (0, livestream_io_1.parseCalendarImportFile)(buffer, originalName);
+        const { importRows, errors } = (0, livestream_io_1.validateCalendarImportRows)(rows, programContext);
         if (errors.length) {
             const invalidRows = new Set(errors.map((error) => error.row)).size;
             res.status(400).json({

@@ -59,8 +59,6 @@ export const CALENDAR_FILE_COLUMNS = CALENDAR_IMPORT_FILE_COLUMNS.map(
 );
 
 export const CALENDAR_UPDATE_FILE_COLUMNS = [
-  { key: 'code', header: 'code' },
-  { key: 'subject', header: 'subject' },
   { key: 'start_time', header: 'start_time' },
   { key: 'end_time', header: 'end_time' },
   { key: 'learn_number', header: 'learn_number' },
@@ -71,8 +69,6 @@ export const CALENDAR_UPDATE_FILE_COLUMNS = [
   { key: 'evg_banner', header: 'evg_banner' },
   { key: 'evg_stream', header: 'evg_stream' },
   { key: 'lesson_count', header: 'lesson_count' },
-  { key: 'system_type', header: 'system_type' },
-  { key: 'key', header: 'key' },
 ] as const;
 
 const normalizeHeader = (value: unknown) => String(value ?? '')
@@ -135,7 +131,6 @@ const mapImportHeader = (value: unknown) => {
 };
 
 const REQUIRED_HEADER_KEYS = new Set([
-  'code',
   'live_date',
   'time_range',
   'course_ids',
@@ -151,6 +146,8 @@ const DATA_MARKER_KEYS = new Set([
   'package_ids',
   'start_time',
   'end_time',
+  'learn_number',
+  'lesson_name',
 ]);
 
 const isRestRow = (row: Record<string, unknown>) => (
@@ -173,14 +170,14 @@ const normalizeMatrixRows = (matrix: unknown[][]) => {
         mappedHeaders,
         score: keys.size,
         requiredCount,
-        hasCode: keys.has('code'),
         keys,
       };
     })
     .filter((candidate) => (
-      candidate.hasCode
-      && (candidate.requiredCount >= 3
-        || (candidate.keys.has('start_time') && candidate.keys.has('end_time')))
+      candidate.requiredCount >= 3
+      || (candidate.keys.has('start_time')
+        && candidate.keys.has('end_time')
+        && candidate.keys.has('learn_number'))
     ))
     .sort((left, right) => (
       right.requiredCount - left.requiredCount
@@ -191,8 +188,8 @@ const normalizeMatrixRows = (matrix: unknown[][]) => {
   const header = candidates[0];
   if (!header) {
     throw new Error(
-      'Không tìm thấy hàng tiêu đề hợp lệ. File cần có code + start_time + end_time, '
-      + 'hoặc format vận hành gồm Mã buổi học, Ngày live, Khung giờ và HMO ID.'
+      'Không tìm thấy hàng tiêu đề hợp lệ. File cần có start_time, end_time và learn_number, '
+      + 'hoặc format vận hành gồm Ngày live, Khung giờ và HMO ID.'
     );
   }
 
@@ -580,7 +577,16 @@ const optionalNonNegativeInteger = (value: unknown, field: string) => {
   return parsed;
 };
 
-export const validateCalendarImportRows = (rows: Record<string, unknown>[]) => {
+type CalendarImportProgramContext = {
+  code: string;
+  subject: string;
+  systemType: 'topclass' | 'topuni';
+};
+
+export const validateCalendarImportRows = (
+  rows: Record<string, unknown>[],
+  programContext?: CalendarImportProgramContext
+) => {
   const errors: CalendarImportError[] = [];
   const importRows: CalendarImportRow[] = [];
   const learnNumbersByCode = new Map<string, number>();
@@ -618,7 +624,11 @@ export const validateCalendarImportRows = (rows: Record<string, unknown>[]) => {
       ? sourceRow
       : index + 2;
     try {
-      const code = requiredText(row.code, 'Mã buổi học');
+      const suppliedCode = String(row.code ?? '').trim();
+      if (programContext && suppliedCode && suppliedCode !== programContext.code) {
+        throw new Error(`Mã chương trình trong file (${suppliedCode}) không khớp chương trình đã chọn (${programContext.code})`);
+      }
+      const code = programContext?.code || requiredText(row.code, 'Mã buổi học');
       if (code.length > 30) throw new Error('Mã buổi học không được vượt quá 30 ký tự');
       const directFormat = Boolean(String(row.start_time ?? '').trim() || String(row.end_time ?? '').trim());
       const suppliedLearnNumber = optionalNonNegativeInteger(row.learn_number, 'Số thứ tự bài');
@@ -665,10 +675,16 @@ export const validateCalendarImportRows = (rows: Record<string, unknown>[]) => {
           ? row.assistant_name
           : row.assistant_email
       );
-      const subject = limitedText(row.subject, 'Môn', 100, true);
+      const subject = programContext?.subject || limitedText(row.subject, 'Môn', 100, true);
       const lessonName = limitedText(row.lesson_name, 'Tên bài giảng', 400, true);
       const lessonExercise = limitedText(row.lesson_baitap, 'Nhiệm vụ học tập', 500);
-      const systemType = String(row.system_type || (directFormat ? '' : 'topclass')).trim().toLowerCase();
+      const suppliedSystemType = String(row.system_type || '').trim().toLowerCase();
+      if (programContext && suppliedSystemType && suppliedSystemType !== programContext.systemType) {
+        throw new Error(`system_type trong file không khớp chương trình đã chọn (${programContext.systemType})`);
+      }
+      const systemType = String(
+        programContext?.systemType || suppliedSystemType || (directFormat ? '' : 'topclass')
+      ).trim().toLowerCase();
       if (systemType !== 'topclass' && systemType !== 'topuni') throw new Error('system_type chỉ nhận topclass hoặc topuni');
 
       importRows.push({
@@ -779,11 +795,11 @@ export const getCalendarFileContentType = (format: CalendarFileFormat) => (
 export const buildCalendarTemplate = (format: CalendarFileFormat) => {
   const headers = CALENDAR_UPDATE_FILE_COLUMNS.map((column) => column.header);
   const sample = [
-    'tongon2dinhluonghsav2027', 'Định lượng', '2026-08-17 21:00:00',
-    '2026-08-17 22:00:00', 1, 'Phạm Thái Sơn', 'Nguyễn Văn Trợ Giảng',
+    '2026-08-17 21:00:00', '2026-08-17 22:00:00', 1,
+    'Phạm Thái Sơn', 'Nguyễn Văn Trợ Giảng',
     'Nhập môn HSA - phần Tư duy định lượng',
     '[{"link":"https://example.com/tai-lieu.pdf","title":"Tài liệu","type":"pdf"}]',
-    '', '', '', 'topuni', 'tu_2627_tongon2dinhluonghsav2027_1',
+    '', '', '',
   ];
 
   if (format === 'csv') {
@@ -801,8 +817,6 @@ export const buildCalendarTemplate = (format: CalendarFileFormat) => {
     sample,
   ]);
   worksheet['!cols'] = [
-    { wch: 32 },
-    { wch: 20 },
     { wch: 22 },
     { wch: 22 },
     { wch: 14 },
@@ -813,8 +827,6 @@ export const buildCalendarTemplate = (format: CalendarFileFormat) => {
     { wch: 28 },
     { wch: 16 },
     { wch: 14 },
-    { wch: 14 },
-    { wch: 38 },
   ];
   worksheet['!autofilter'] = {
     ref: `A1:${XLSX.utils.encode_col(headers.length - 1)}2`,

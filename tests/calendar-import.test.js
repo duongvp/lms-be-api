@@ -4,6 +4,7 @@ const XLSX = require('xlsx');
 
 const {
   CALENDAR_IMPORT_FILE_COLUMNS,
+  CALENDAR_UPDATE_FILE_COLUMNS,
   buildCalendarUpdateFile,
   buildCalendarTemplate,
   parseCalendarImportFile,
@@ -66,6 +67,12 @@ const calendar = {
   lesson_status: 0,
 };
 
+const importProgramContext = {
+  code: 'TEST_PROGRAM',
+  subject: 'Ngữ văn',
+  systemType: 'topclass',
+};
+
 test('parse format Sheet thực tế thành các danh sách ID độc lập', () => {
   const parsed = parseCalendarImportFile(buildSheet([sampleRow()]), 'import.xlsx');
   const result = validateCalendarImportRows(parsed);
@@ -83,7 +90,7 @@ test('template trực tiếp có cột assistant_teacher và giữ nguyên tên 
     buildCalendarTemplate('xlsx'),
     'calendar-import-template.xlsx'
   );
-  const result = validateCalendarImportRows(parsed);
+  const result = validateCalendarImportRows(parsed, importProgramContext);
 
   assert.deepEqual(result.errors, []);
   assert.equal(
@@ -92,7 +99,7 @@ test('template trực tiếp có cột assistant_teacher và giữ nguyên tên 
   );
 });
 
-test('file Excel cập nhật export có key và có thể import lại tên trợ giảng', () => {
+test('file Excel cập nhật không còn metadata Chương trình và vẫn import tên trợ giảng', () => {
   const parsed = parseCalendarImportFile(buildCalendarUpdateFile([{
     code: 'TEST_PROGRAM',
     subject: 'Ngữ văn',
@@ -102,14 +109,24 @@ test('file Excel cập nhật export có key và có thể import lại tên tr�
     teacher: 'Cô An',
     assistant_name: 'Trợ Giảng Một; Trợ Giảng Hai',
     lesson_name: 'Bài 1',
+    lesson_count: 0,
     system_type: 'topclass',
     key: 'tc_46251_TEST_PROGRAM_1',
   }]), 'calendar-update.xlsx');
-  const result = validateCalendarImportRows(parsed);
+  const result = validateCalendarImportRows(parsed, importProgramContext);
 
   assert.deepEqual(result.errors, []);
-  assert.equal(result.importRows[0].sourceKey, 'tc_46251_TEST_PROGRAM_1');
+  assert.equal(result.importRows[0].sourceKey, undefined);
+  assert.equal(result.importRows[0].calendar.code, 'TEST_PROGRAM');
+  assert.equal(result.importRows[0].calendar.system_type, 'topclass');
+  assert.equal(result.importRows[0].calendar.lesson_count, 0);
   assert.equal(result.importRows[0].calendar.assistant_teacher, 'Trợ Giảng Một,Trợ Giảng Hai');
+  assert.deepEqual(
+    CALENDAR_UPDATE_FILE_COLUMNS.map((column) => column.key).filter(
+      (key) => ['code', 'subject', 'key', 'system_type'].includes(key)
+    ),
+    []
+  );
 });
 
 test('xử lý bỏ qua hoặc ghi đè cho mọi trường khi import cập nhật', () => {

@@ -24,6 +24,22 @@ type CalendarTeachingSnapshot = {
 
 const normalizeText = (value: unknown) => String(value ?? '').trim();
 
+export const buildTeachingUserName = (
+  studentHmid: unknown,
+  displayName: unknown,
+  username: unknown
+) => {
+  const normalizedHmid = normalizeText(studentHmid);
+  const normalizedDisplayName = normalizeText(displayName) || normalizeText(username);
+  if (!normalizedHmid) return normalizedDisplayName.slice(0, 150);
+
+  const prefix = `${normalizedHmid} - `;
+  if (normalizedDisplayName.startsWith(prefix)) {
+    return normalizedDisplayName.slice(0, 150);
+  }
+  return `${prefix}${normalizedDisplayName.slice(0, Math.max(0, 150 - prefix.length))}`;
+};
+
 const parseAssistantTeachers = (value: unknown) => Array.from(new Set(
   (Array.isArray(value) ? value : String(value ?? '').split(','))
     .map(normalizeText)
@@ -226,11 +242,11 @@ const upsertTeachingUser = async (
     username,
     calendar.code
   );
-  // Giáo viên chính hiển thị theo tên hồ sơ. Trợ giảng trong bảng users dùng
-  // đúng quy ước nghiệp vụ HMID - Giáo viên, giống luồng quét/bổ sung user.
-  const displayName = profile.role === 'assistant'
-    ? [normalizeText(studentHmid), 'Giáo viên'].filter(Boolean).join(' - ')
-    : normalizeText(profile.display_name) || username;
+  const displayName = buildTeachingUserName(
+    studentHmid,
+    profile.role === 'assistant' ? 'Giáo viên' : profile.display_name,
+    username
+  );
 
   const identityWhere = {
     username,
@@ -288,7 +304,7 @@ const upsertTeachingUser = async (
  * Bổ sung enrollment cho nhân sự đã gán trên calendar nhưng chưa có trong
  * users. Dùng ở cập nhật hàng loạt để khôi phục các lịch legacy đã tồn tại
  * trước khi cơ chế tự đồng bộ được bật. Với enrollment đã có, hàm chỉ vá
- * student_hmid còn thiếu và chuẩn hóa tên trợ giảng; không xóa user.
+ * student_hmid còn thiếu và chuẩn hóa tên nhân sự; không xóa user.
  */
 export const ensureCalendarTeachingUsers = async (
   client: any,
@@ -330,9 +346,11 @@ export const ensureCalendarTeachingUsers = async (
 
     const studentHmid = normalizeText(existing?.student_hmid)
       || await findTeachingStudentHmid(client, username, calendar.code);
-    const displayName = profile.role === 'assistant'
-      ? [normalizeText(studentHmid), 'Giáo viên'].filter(Boolean).join(' - ')
-      : normalizeText(profile.display_name) || username;
+    const displayName = buildTeachingUserName(
+      studentHmid,
+      profile.role === 'assistant' ? 'Giáo viên' : profile.display_name,
+      username
+    );
     const updateData = {
       name: displayName,
       islearn: 0,

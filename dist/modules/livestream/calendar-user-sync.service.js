@@ -1,10 +1,22 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.syncCalendarTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarRoomClassId = exports.buildCalendarClassId = exports.excelDateSerialFromCalendarDate = void 0;
+exports.syncCalendarTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarRoomClassId = exports.buildCalendarClassId = exports.excelDateSerialFromCalendarDate = exports.buildTeachingUserName = void 0;
 const client_1 = require("@prisma/client");
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const normalizeText = (value) => String(value ?? '').trim();
+const buildTeachingUserName = (studentHmid, displayName, username) => {
+    const normalizedHmid = normalizeText(studentHmid);
+    const normalizedDisplayName = normalizeText(displayName) || normalizeText(username);
+    if (!normalizedHmid)
+        return normalizedDisplayName.slice(0, 150);
+    const prefix = `${normalizedHmid} - `;
+    if (normalizedDisplayName.startsWith(prefix)) {
+        return normalizedDisplayName.slice(0, 150);
+    }
+    return `${prefix}${normalizedDisplayName.slice(0, Math.max(0, 150 - prefix.length))}`;
+};
+exports.buildTeachingUserName = buildTeachingUserName;
 const parseAssistantTeachers = (value) => Array.from(new Set((Array.isArray(value) ? value : String(value ?? '').split(','))
     .map(normalizeText)
     .filter(Boolean)));
@@ -159,11 +171,7 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
         throw new Error(`Username nhân sự "${username}" vượt quá 100 ký tự`);
     }
     const studentHmid = await findTeachingStudentHmid(client, username, calendar.code);
-    // Giáo viên chính hiển thị theo tên hồ sơ. Trợ giảng trong bảng users dùng
-    // đúng quy ước nghiệp vụ HMID - Giáo viên, giống luồng quét/bổ sung user.
-    const displayName = profile.role === 'assistant'
-        ? [normalizeText(studentHmid), 'Giáo viên'].filter(Boolean).join(' - ')
-        : normalizeText(profile.display_name) || username;
+    const displayName = (0, exports.buildTeachingUserName)(studentHmid, profile.role === 'assistant' ? 'Giáo viên' : profile.display_name, username);
     const identityWhere = {
         username,
         code: calendar.code,
@@ -220,7 +228,7 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
  * Bổ sung enrollment cho nhân sự đã gán trên calendar nhưng chưa có trong
  * users. Dùng ở cập nhật hàng loạt để khôi phục các lịch legacy đã tồn tại
  * trước khi cơ chế tự đồng bộ được bật. Với enrollment đã có, hàm chỉ vá
- * student_hmid còn thiếu và chuẩn hóa tên trợ giảng; không xóa user.
+ * student_hmid còn thiếu và chuẩn hóa tên nhân sự; không xóa user.
  */
 const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
     if (!isActiveSchedule(calendar))
@@ -252,9 +260,7 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
         });
         const studentHmid = normalizeText(existing?.student_hmid)
             || await findTeachingStudentHmid(client, username, calendar.code);
-        const displayName = profile.role === 'assistant'
-            ? [normalizeText(studentHmid), 'Giáo viên'].filter(Boolean).join(' - ')
-            : normalizeText(profile.display_name) || username;
+        const displayName = (0, exports.buildTeachingUserName)(studentHmid, profile.role === 'assistant' ? 'Giáo viên' : profile.display_name, username);
         const updateData = {
             name: displayName,
             islearn: 0,

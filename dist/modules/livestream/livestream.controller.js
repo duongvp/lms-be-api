@@ -241,6 +241,8 @@ const getCalendar = async (req, res, next) => {
                 id: source.id,
                 session_id: source.session_id == null ? null : String(source.session_id),
                 can_modify: livestreamService.isSessionModifiable(source, now),
+                classroom_assigned: source.classroom_assigned === true,
+                classroom_assigned_at: source.classroom_assigned_at || null,
                 package_lesson_mappings: source.package_lesson_mappings || [],
             };
         });

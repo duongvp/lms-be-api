@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getDashboardOverview = void 0;
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
+const dateTime_1 = require("../../utils/dateTime");
 const numberValue = (value) => Number(value ?? 0);
 const getDashboardOverview = async (filter = {}, allowedPrograms = null) => {
     const from = filter.from ?? new Date();
@@ -15,6 +16,12 @@ const getDashboardOverview = async (filter = {}, allowedPrograms = null) => {
     }
     const calendarRange = client_1.Prisma.sql `start_time >= ${from} AND start_time <= ${to}`;
     const lessonRange = client_1.Prisma.sql `updated_at >= ${from} AND updated_at <= ${to}`;
+    const vietnamTodayStart = (0, dateTime_1.getVietnamWallClockDate)();
+    vietnamTodayStart.setUTCHours(0, 0, 0, 0);
+    const vietnamTomorrowStart = new Date(vietnamTodayStart.getTime() + 24 * 60 * 60 * 1000);
+    const upcomingTodayRange = client_1.Prisma.sql `
+    start_time >= ${vietnamTodayStart} AND start_time < ${vietnamTomorrowStart}
+  `;
     const scoped = (column) => {
         if (allowedPrograms === null)
             return client_1.Prisma.empty;
@@ -96,7 +103,7 @@ const getDashboardOverview = async (filter = {}, allowedPrograms = null) => {
         DATE_FORMAT(end_time, '%Y-%m-%d %H:%i:%s') AS end_time,
         channel_name
       FROM calendar AS calendar_upcoming
-      WHERE ${calendarRange}${calendarScoped('calendar_upcoming')}
+      WHERE ${upcomingTodayRange}${calendarScoped('calendar_upcoming')}
         AND COALESCE(lesson_status, 0) <> 1
       ORDER BY start_time ASC, id ASC
       LIMIT 8

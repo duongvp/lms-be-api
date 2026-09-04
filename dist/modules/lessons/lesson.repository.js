@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteLessonIfUnscheduled = exports.importNewProgramLessons = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findPastScheduledLessonIds = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.updateLessonCourseMappings = exports.findLessonCourseMappings = exports.findLessonProgramByCode = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = void 0;
+exports.deleteLessonIfUnscheduled = exports.importNewProgramLessons = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findPastScheduledLessonIds = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.updateLessonCourseMappings = exports.findLessonCourseMappings = exports.findLessonProgramByCode = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = exports.syncCalendarsFromLessons = void 0;
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 // Các trường tài liệu/nội dung buổi học vẫn được giữ ở DB để không mất dữ liệu
 // cũ, nhưng không còn là dữ liệu của đề cương và không được trả về từ module này.
@@ -13,12 +13,22 @@ const syncCalendarsFromLessons = async (tx, lessonIds) => {
         return;
     const placeholders = lessonIds.map(() => '?').join(', ');
     await tx.$executeRawUnsafe(`UPDATE calendar AS calendar_row
-     INNER JOIN lessons AS lesson ON lesson.id = calendar_row.session_id
-     SET calendar_row.subject = lesson.subject_name,
+     INNER JOIN lessons AS lesson
+       ON lesson.id IN (${placeholders})
+      AND (
+        lesson.id = calendar_row.session_id
+        OR (
+          calendar_row.code = lesson.subject_code
+          AND calendar_row.learn_number = lesson.learn_number
+        )
+      )
+     SET calendar_row.session_id = lesson.id,
+         calendar_row.subject = lesson.subject_name,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
-     WHERE lesson.id IN (${placeholders})`, ...lessonIds);
+     WHERE lesson.status <> 0`, ...lessonIds);
 };
+exports.syncCalendarsFromLessons = syncCalendarsFromLessons;
 /**
  * Khi sắp xếp nội dung, learn_number của calendar đại diện cho slot lịch và
  * phải đứng yên. Nội dung bài mới được gắn vào slot cùng learn_number; tuyệt
@@ -43,7 +53,7 @@ const syncCalendarSlotsAfterLessonReorder = async (tx, grade, subjectCode, lesso
      WHERE calendar_row.code = ?
        AND calendar_row.learn_number IN (${learnNumberPlaceholders})`, grade, subjectCode, ...lessonIds, subjectCode, ...learnNumbers);
 };
-const syncCalendarFromLesson = async (tx, lessonId) => syncCalendarsFromLessons(tx, [lessonId]);
+const syncCalendarFromLesson = async (tx, lessonId) => (0, exports.syncCalendarsFromLessons)(tx, [lessonId]);
 const buildWhere = (query) => {
     const clauses = ['status = ?'];
     const values = [query.status ?? 1];

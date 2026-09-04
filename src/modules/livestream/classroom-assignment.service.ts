@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import {
@@ -8,6 +9,7 @@ import {
   ClassroomTarget,
   ClassroomSystemType,
   getTopUniInteractionTier,
+  TOPCLASS_MAX_STUDENTS_PER_CLASSROOM,
   TOPUNI_MAX_STUDENTS_PER_CLASSROOM,
 } from './classroom-assignment.algorithm';
 import { buildCalendarClassId, buildCalendarRoomClassId } from './calendar-user-sync.service';
@@ -89,6 +91,40 @@ type AssignmentContext = {
   interactionSourceLearnNumber: number | null;
   interactionSourceScores: number[];
   maxStudentsPerClassroom: number | null;
+};
+
+const CLASSROOM_ASSIGNMENT_HISTORY_CHUNK_SIZE = 500;
+
+export const buildClassroomAssignmentHistoryRows = (
+  context: AssignmentContext,
+  operationId: string,
+  actor: AssignmentActor = {}
+) => {
+  const rosterById = new Map(context.roster.map((student) => [student.id, student]));
+  const createdBy = String(actor.username || '').trim() || null;
+
+  return context.plan.assignments.map((assignment) => {
+    const rosterStudent = rosterById.get(assignment.id);
+    if (!rosterStudent) {
+      throw new Error(`Không tìm thấy users.id ${assignment.id} trong roster phân lớp`);
+    }
+
+    return {
+      operation_id: operationId,
+      calendar_id: context.calendar.id,
+      user_id: assignment.id,
+      username: rosterStudent.username,
+      code: context.calendar.code,
+      learn_number: context.calendar.learn_number,
+      system_type: context.calendar.system_type,
+      previous_room_id: assignment.currentRoomId,
+      new_room_id: assignment.targetRoomId,
+      previous_class_id: assignment.currentClassId,
+      new_class_id: assignment.targetClassId,
+      interaction_score: Math.max(0, Math.trunc(assignment.interactionScore || 0)),
+      created_by: createdBy,
+    };
+  });
 };
 
 const normalizeMaxStudentsPerClassroom = (value: unknown) => {
@@ -338,7 +374,10 @@ const loadAssignmentContext = async (
   }
 
   const systemType = normalizeSystemType(calendar.system_type || 'topclass');
-  const maxStudentsPerClassroom = systemType === 'topuni'
+  const hasRequestedMaxStudentsPerClassroom = options.maxStudentsPerClassroom !== undefined
+    && options.maxStudentsPerClassroom !== null
+    && options.maxStudentsPerClassroom !== '';
+  let maxStudentsPerClassroom = systemType === 'topuni' && hasRequestedMaxStudentsPerClassroom
     ? normalizeMaxStudentsPerClassroom(options.maxStudentsPerClassroom)
     : null;
   const overlappingSystems = await client.calendar.findMany({
@@ -352,31 +391,6 @@ const loadAssignmentContext = async (
     );
   }
 
-  const streamRows = await client.stream.findMany({
-    where: {
-      code: calendar.code,
-      learn_number: calendar.learn_number,
-      class_id: { not: null },
-    },
-    select: { room_id: true, class_id: true },
-    orderBy: [{ room_id: 'asc' }, { class_id: 'asc' }],
-  });
-  const availableTargets: ClassroomTarget[] = streamRows
-    .filter((item: any) => Number.isInteger(Number(item.room_id)) && Number(item.room_id) > 0)
-    .map((item: any) => ({
-      roomId: Number(item.room_id),
-      // stream xác định những room nào đang được cấu hình. class_id phải thuộc
-      // chính calendar đang thao tác, không tái sử dụng ngày của buổi khác.
-      classId: buildCalendarRoomClassId(
-        calendar.code,
-        calendar.start_time,
-        calendar.learn_number,
-        Number(item.room_id)
-      ),
-    }))
-    .filter((item: ClassroomTarget, index: number, items: ClassroomTarget[]) => (
-      items.findIndex((candidate) => candidate.roomId === item.roomId) === index
-    ));
   const roomOneClassId = buildCalendarClassId(
     calendar.code,
     calendar.start_time,
@@ -415,6 +429,7 @@ const loadAssignmentContext = async (
   }));
 
   const previousRoomByIdentity = new Map<string, number>();
+  const previousClassroomRoomIds = new Set<number>();
   const previousStudentIdentities: string[] = [];
   const previousTopClassRoster: AssignmentRosterRow[] = [];
   let previousTopUniLearnNumber: number | null = null;
@@ -465,6 +480,7 @@ const loadAssignmentContext = async (
           room_id: roomId,
         });
         previousStudentIdentities.push(identity);
+        if (roomId !== null) previousClassroomRoomIds.add(roomId);
         if (systemType === 'topclass') {
           previousTopClassRoster.push({
             ...student,
@@ -485,6 +501,50 @@ const loadAssignmentContext = async (
       });
     }
   }
+
+  const previousClassroomRooms = [...previousClassroomRoomIds]
+    .sort((left, right) => left - right);
+  const usePreviousClassrooms = (systemType === 'topclass'
+    || !hasRequestedMaxStudentsPerClassroom)
+    && roster.length > 0
+    && previousClassroomRooms.length > 0;
+  const classroomCount = roster.length
+    ? usePreviousClassrooms
+      ? systemType === 'topclass'
+        ? Math.max(
+            Math.min(roster.length, previousClassroomRooms.length),
+            Math.ceil(roster.length / TOPCLASS_MAX_STUDENTS_PER_CLASSROOM)
+          )
+        : Math.min(roster.length, previousClassroomRooms.length)
+      : Math.ceil(
+          roster.length
+          / (systemType === 'topuni'
+            ? maxStudentsPerClassroom ?? TOPUNI_MAX_STUDENTS_PER_CLASSROOM
+            : TOPCLASS_MAX_STUDENTS_PER_CLASSROOM)
+        )
+    : 0;
+  if (systemType === 'topuni' && maxStudentsPerClassroom === null) {
+    maxStudentsPerClassroom = usePreviousClassrooms
+      ? Math.ceil(roster.length / classroomCount)
+      : TOPUNI_MAX_STUDENTS_PER_CLASSROOM;
+  }
+  // Không phụ thuộc bảng stream. TopClass và chế độ gợi ý TopUni kế thừa số
+  // room buổi trước; nếu chưa có lịch sử mới dùng giới hạn mặc định.
+  const targetRoomIds = usePreviousClassrooms
+    ? previousClassroomRooms.slice(0, classroomCount)
+    : [];
+  for (let roomId = 1; targetRoomIds.length < classroomCount; roomId += 1) {
+    if (!targetRoomIds.includes(roomId)) targetRoomIds.push(roomId);
+  }
+  const availableTargets: ClassroomTarget[] = targetRoomIds.map((roomId) => ({
+    roomId,
+    classId: buildCalendarRoomClassId(
+      calendar.code,
+      calendar.start_time,
+      calendar.learn_number,
+      roomId
+    ),
+  }));
 
   const recentAttendance = systemType === 'topclass'
     ? await loadRecentAttendanceByUsername(
@@ -530,8 +590,17 @@ const loadAssignmentContext = async (
   });
 
   const plan = systemType === 'topuni'
-    ? assignTopUniStudents(students, availableTargets, maxStudentsPerClassroom!)
-    : assignTopClassStudents(students, availableTargets);
+    ? assignTopUniStudents(
+        students,
+        availableTargets,
+        maxStudentsPerClassroom!,
+        usePreviousClassrooms ? classroomCount : undefined
+      )
+    : assignTopClassStudents(
+        students,
+        availableTargets,
+        usePreviousClassrooms ? classroomCount : undefined
+      );
 
   return {
     calendar: {
@@ -661,7 +730,7 @@ export const previewClassroomAssignment = async (
 
 export const applyClassroomAssignment = async (
   calendarId: number,
-  _actor: AssignmentActor = {},
+  actor: AssignmentActor = {},
   options: ClassroomAssignmentOptions = {}
 ) => prisma.$transaction(async (tx) => {
   // Rebuild inside the transaction so apply never commits a stale preview.
@@ -670,11 +739,6 @@ export const applyClassroomAssignment = async (
     (assignment) => assignment.currentRoomId !== assignment.targetRoomId
       || assignment.currentClassId !== assignment.targetClassId
   );
-  if (!changes.length) return toResponse(context);
-
-  // Tạm thời không ghi audit vào classroom_assignment_history vì database
-  // hiện tại chưa có bảng này. Phân lớp vẫn dùng users.room_id/class_id.
-
   const changesByClass = new Map<string, { roomId: number; classId: string; ids: number[] }>();
   changes.forEach((assignment) => {
     const key = `${assignment.targetRoomId}:${assignment.targetClassId}`;
@@ -705,8 +769,18 @@ export const applyClassroomAssignment = async (
     );
   }
 
-  return toResponse(context);
+  if (!context.plan.assignments.length) return toResponse(context);
+
+  const operationId = crypto.randomUUID();
+  const historyRows = buildClassroomAssignmentHistoryRows(context, operationId, actor);
+  for (let offset = 0; offset < historyRows.length; offset += CLASSROOM_ASSIGNMENT_HISTORY_CHUNK_SIZE) {
+    await tx.classroom_assignment_history.createMany({
+      data: historyRows.slice(offset, offset + CLASSROOM_ASSIGNMENT_HISTORY_CHUNK_SIZE),
+    });
+  }
+
+  return toResponse(context, operationId);
 }, {
   isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-  timeout: 30_000,
+  timeout: 120_000,
 });

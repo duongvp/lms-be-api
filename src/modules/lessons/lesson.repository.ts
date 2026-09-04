@@ -5,16 +5,25 @@ import { LessonExportQuery, LessonImportMode, LessonImportResult, LessonImportRo
 // cũ, nhưng không còn là dữ liệu của đề cương và không được trả về từ module này.
 const LESSON_COLUMNS = 'id, grade, system_type, subject_code, subject_name, learn_number, lesson_name, status, created_at, updated_at';
 
-const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => {
+export const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => {
   if (lessonIds.length === 0) return;
   const placeholders = lessonIds.map(() => '?').join(', ');
   await tx.$executeRawUnsafe(
     `UPDATE calendar AS calendar_row
-     INNER JOIN lessons AS lesson ON lesson.id = calendar_row.session_id
-     SET calendar_row.subject = lesson.subject_name,
+     INNER JOIN lessons AS lesson
+       ON lesson.id IN (${placeholders})
+      AND (
+        lesson.id = calendar_row.session_id
+        OR (
+          calendar_row.code = lesson.subject_code
+          AND calendar_row.learn_number = lesson.learn_number
+        )
+      )
+     SET calendar_row.session_id = lesson.id,
+         calendar_row.subject = lesson.subject_name,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
-     WHERE lesson.id IN (${placeholders})`,
+     WHERE lesson.status <> 0`,
     ...lessonIds
   );
 };

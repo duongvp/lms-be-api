@@ -2036,6 +2036,14 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
         }),
     ]);
     await hydrateAssistantTeachers(prisma_1.default, data);
+    const assignmentStatuses = data.length
+        ? await prisma_1.default.classroom_assignment_history.groupBy({
+            by: ['calendar_id'],
+            where: { calendar_id: { in: data.map((record) => record.id) } },
+            _max: { created_at: true },
+        })
+        : [];
+    const assignmentStatusByCalendarId = new Map(assignmentStatuses.map((status) => [status.calendar_id, status._max.created_at]));
     const mappingKeys = data
         .map((record) => record.key)
         .filter((key) => Boolean(key));
@@ -2046,6 +2054,8 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
         limit,
         data: data.map((record) => ({
             ...record,
+            classroom_assigned: assignmentStatusByCalendarId.has(record.id),
+            classroom_assigned_at: assignmentStatusByCalendarId.get(record.id) ?? null,
             package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
         })),
     };
@@ -2590,8 +2600,10 @@ const updateBulk = async (config, changeActor) => {
 exports.updateBulk = updateBulk;
 /**
  * Quét lịch legacy để bổ sung enrollment giáo viên/trợ giảng còn thiếu trong
- * users. Không sửa calendar; với user đã tồn tại chỉ vá student_hmid còn thiếu
- * và tên vai trò trợ giảng. Xử lý theo lô để không giữ transaction quá lâu.
+ * users. Không sửa calendar; với user đã tồn tại sẽ vá student_hmid còn thiếu
+ * và chuẩn hóa name theo vai trò: giáo viên dùng "student_hmid - tên hiển thị",
+ * trợ giảng dùng "student_hmid - Giáo viên". Xử lý theo lô để không giữ
+ * transaction quá lâu.
  */
 const backfillMissingCalendarTeachingUsers = async (ids) => {
     const batchSize = 100;

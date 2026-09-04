@@ -8,6 +8,7 @@ import {
   getBalancedCapacities,
 } from '../src/modules/livestream/classroom-assignment.algorithm';
 import {
+  buildClassroomAssignmentHistoryRows,
   normalizeClassroomAssignmentId,
   summarizeTopClassLessonAttendance,
 } from '../src/modules/livestream/classroom-assignment.service';
@@ -16,6 +17,54 @@ test('chuẩn hóa users.id BigInt từ raw query trước khi gọi Prisma upda
   assert.equal(normalizeClassroomAssignmentId(1206044n), 1206044);
   assert.equal(normalizeClassroomAssignmentId(3), 3);
   assert.throws(() => normalizeClassroomAssignmentId(0n), /users\.id không hợp lệ/);
+});
+
+test('audit lưu snapshot đầy đủ cho cả học sinh giữ nguyên và học sinh chuyển phòng', () => {
+  const rows = buildClassroomAssignmentHistoryRows({
+    calendar: {
+      id: 1415,
+      code: 'toan-6-2027',
+      learn_number: 20,
+      system_type: 'topclass',
+      start_time: new Date('2026-09-03T10:00:00.000Z'),
+    },
+    roster: [
+      { id: 1, username: 'student-1', student_hmid: null, name: 'Học sinh 1', room_id: 1, class_id: 'OLD-1' },
+      { id: 2, username: 'student-2', student_hmid: null, name: 'Học sinh 2', room_id: 2, class_id: 'NEW-2' },
+    ],
+    plan: {
+      classroomCount: 2,
+      movedCount: 1,
+      summaries: [],
+      assignments: [
+        { id: 1, identity: 'student-1', currentRoomId: 1, currentClassId: 'OLD-1', targetRoomId: 2, targetClassId: 'NEW-2', interactionScore: 3 },
+        { id: 2, identity: 'student-2', currentRoomId: 2, currentClassId: 'NEW-2', targetRoomId: 2, targetClassId: 'NEW-2', interactionScore: 0 },
+      ],
+    },
+    topClassAttendance: null,
+    interactionSourceLearnNumber: null,
+    interactionSourceScores: [],
+    maxStudentsPerClassroom: null,
+  }, '11111111-1111-4111-8111-111111111111', { username: 'admin' });
+
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0], {
+    operation_id: '11111111-1111-4111-8111-111111111111',
+    calendar_id: 1415,
+    user_id: 1,
+    username: 'student-1',
+    code: 'toan-6-2027',
+    learn_number: 20,
+    system_type: 'topclass',
+    previous_room_id: 1,
+    new_room_id: 2,
+    previous_class_id: 'OLD-1',
+    new_class_id: 'NEW-2',
+    interaction_score: 3,
+    created_by: 'admin',
+  });
+  assert.equal(rows[1].previous_room_id, rows[1].new_room_id);
+  assert.equal(rows[1].previous_class_id, rows[1].new_class_id);
 });
 
 const classroomTargets = Array.from({ length: 80 }, (_, index) => ({
@@ -47,13 +96,13 @@ test('capacity luôn chia đều phần dư vào các lớp đầu', () => {
   assert.deepEqual(getBalancedCapacities(81, 6), [14, 14, 14, 13, 13, 13]);
 });
 
-for (const count of [1, 14, 15, 16, 29, 30, 31, 78, 79, 80, 81, 89, 90, 150]) {
-  test(`TopClass chia đều ${count} học sinh và không lớp nào quá 15`, () => {
+for (const count of [1, 19, 20, 21, 39, 40, 41, 78, 79, 80, 81, 99, 100, 150]) {
+  test(`TopClass chia đều ${count} học sinh và không lớp nào quá 20`, () => {
     const result = assignTopClassStudents(buildStudents(count), classroomTargets);
     const sizes = result.summaries.map((summary) => summary.studentCount);
-    assert.equal(result.classroomCount, Math.ceil(count / 15));
+    assert.equal(result.classroomCount, Math.ceil(count / 20));
     assert.equal(sizes.reduce((total, size) => total + size, 0), count);
-    assert.ok(sizes.every((size) => size <= 15));
+    assert.ok(sizes.every((size) => size <= 20));
     assertBalancedSizes(sizes);
   });
 }
@@ -64,7 +113,7 @@ test('TopClass giữ nguyên tối đa học sinh đang ở classroom hợp lệ
     () => 0,
     (index) => index < 11 ? 1 : index < 21 ? 2 : 3
   );
-  const result = assignTopClassStudents(students, classroomTargets);
+  const result = assignTopClassStudents(students, classroomTargets, 3);
   assert.equal(result.movedCount, 0);
   assert.deepEqual(result.summaries.map((item) => item.studentCount), [11, 10, 10]);
 });
@@ -85,7 +134,7 @@ test('TopClass ưu tiên giữ nhóm học sinh theo phòng của buổi trướ
     classId: `NEXT-${roomId}`,
   }));
 
-  const result = assignTopClassStudents(students, targets);
+  const result = assignTopClassStudents(students, targets, 3);
 
   assert.deepEqual(result.summaries.map((item) => item.studentCount), [12, 12, 12]);
   assert.ok(result.assignments.every(
@@ -93,6 +142,21 @@ test('TopClass ưu tiên giữ nhóm học sinh theo phòng của buổi trướ
   ));
   // currentRoomId vẫn là trạng thái thật để apply biết 24 row cần cập nhật.
   assert.equal(result.movedCount, 24);
+});
+
+test('TopClass giữ số phòng buổi trước khi mỗi phòng vẫn không quá 20 học sinh', () => {
+  const students = buildStudents(31, () => 0, (index) => index < 16 ? 1 : 2);
+  const result = assignTopClassStudents(students, classroomTargets, 2);
+
+  assert.equal(result.classroomCount, 2);
+  assert.deepEqual(result.summaries.map((item) => item.studentCount), [16, 15]);
+});
+
+test('TopClass tự tăng phòng khi số phòng buổi trước không đủ giới hạn 20 học sinh', () => {
+  const result = assignTopClassStudents(buildStudents(304), classroomTargets, 14);
+
+  assert.equal(result.classroomCount, 16);
+  assert.deepEqual(result.summaries.map((item) => item.studentCount), Array(16).fill(19));
 });
 
 test('TopClass dàn đều học sinh có chuyên cần và vẫn giữ sĩ số cân bằng', () => {
@@ -108,7 +172,7 @@ test('TopClass dàn đều học sinh có chuyên cần và vẫn giữ sĩ số
   }));
   const targets = [1, 2, 3].map((roomId) => ({ roomId, classId: `CLASS-${roomId}` }));
 
-  const result = assignTopClassStudents(students, targets);
+  const result = assignTopClassStudents(students, targets, 3);
   const attendanceScores = result.summaries.map((summary) => (
     result.assignments
       .filter((student) => student.targetRoomId === summary.roomId)
@@ -136,7 +200,7 @@ test('TopClass chỉ hoán đổi tối thiểu khi một phòng có 6 học sin
   });
   const targets = [1, 2, 3].map((roomId) => ({ roomId, classId: `CLASS-${roomId}` }));
 
-  const result = assignTopClassStudents(students, targets);
+  const result = assignTopClassStudents(students, targets, 3);
 
   assert.deepEqual(result.summaries.map((item) => item.studentCount), [12, 12, 12]);
   assert.deepEqual(result.summaries.map((item) => item.expectedAttendeeCount), [10, 10, 10]);
@@ -162,7 +226,7 @@ test('TopClass lần học bổ sung cân bằng học sinh chưa học nội du
   });
   const targets = [1, 2, 3].map((roomId) => ({ roomId, classId: `CLASS-${roomId}` }));
 
-  const result = assignTopClassStudents(students, targets);
+  const result = assignTopClassStudents(students, targets, 3);
 
   assert.deepEqual(result.summaries.map((item) => item.studentCount), [12, 12, 12]);
   assert.deepEqual(result.summaries.map((item) => item.needsMakeupCount), [4, 4, 4]);
@@ -188,14 +252,14 @@ test('TopClass không dùng chuyên cần nếu roster còn dữ liệu null', (
     student.recentAttendanceCount = index === 0 ? null : index % 4;
   });
 
-  const result = assignTopClassStudents(students, classroomTargets);
+  const result = assignTopClassStudents(students, classroomTargets, 2);
   assert.equal(result.movedCount, 0);
 });
 
 test('room_id và hậu tố class_id luôn đồng bộ, room hợp lệ được giữ nguyên', () => {
   const students = buildStudents(16, () => 0, (index) => index < 8 ? 1 : 2);
   students[8].currentClassId = 'CLASS-1';
-  const result = assignTopClassStudents(students, classroomTargets);
+  const result = assignTopClassStudents(students, classroomTargets, 2);
   const corrected = result.assignments.find((item) => item.id === students[8].id);
 
   assert.equal(corrected?.targetRoomId, 2);
@@ -208,9 +272,9 @@ test('room_id và hậu tố class_id luôn đồng bộ, room hợp lệ đư�
 test('TopClass khi giảm số lớp chỉ chuyển học sinh của lớp bị thu hồi hoặc bị vượt capacity', () => {
   const students = buildStudents(78, () => 0, (index) => Math.floor(index / 15) + 1);
   const result = assignTopClassStudents(students, classroomTargets);
-  assert.equal(result.classroomCount, 6);
+  assert.equal(result.classroomCount, 4);
   assertBalancedSizes(result.summaries.map((item) => item.studentCount));
-  assert.ok(result.assignments.every((item) => Number(item.targetClassId.split('-')[1]) <= 6));
+  assert.ok(result.assignments.every((item) => Number(item.targetClassId.split('-')[1]) <= 4));
 });
 
 test('TopUni 900 học sinh cân bằng cả số lượng và tổng interaction score', () => {
@@ -235,6 +299,18 @@ test('TopUni phân nhóm theo ngưỡng tương tác cố định', () => {
   assert.equal(getTopUniInteractionTier(2), 'low');
   assert.equal(getTopUniInteractionTier(1), 'low');
   assert.equal(getTopUniInteractionTier(0), 'none');
+});
+
+test('TopUni giữ số phòng buổi trước khi giới hạn mỗi phòng được tính ngược', () => {
+  const result = assignTopUniStudents(
+    buildStudents(10, () => 0, () => null),
+    classroomTargets,
+    2,
+    6
+  );
+
+  assert.equal(result.classroomCount, 6);
+  assert.deepEqual(result.summaries.map((item) => item.studentCount), [2, 2, 2, 2, 1, 1]);
 });
 
 test('TopUni xử lý roster lớn 8.559 học sinh mà vẫn giữ sĩ số cân bằng', { timeout: 5_000 }, () => {
@@ -357,13 +433,13 @@ test('TopUni chỉ chuyển học sinh cũ khi room trước vượt quota nhóm
   assert.equal(result.movedCount, 18);
 });
 
-test('không âm thầm tạo classroom nếu stream chưa cấu hình đủ', () => {
+test('thuật toán báo lỗi nếu caller truyền thiếu classroom mục tiêu', () => {
   assert.throws(
     () => assignTopUniStudents(buildStudents(10), [classroomTargets[0]], 5),
     /cần 2 classroom/
   );
   assert.throws(
-    () => assignTopClassStudents(buildStudents(31), classroomTargets.slice(0, 2)),
+    () => assignTopClassStudents(buildStudents(41), classroomTargets.slice(0, 2)),
     /cần 3 classroom/
   );
 });

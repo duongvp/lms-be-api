@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
+import { getVietnamWallClockDate } from '../../utils/dateTime';
 
 type CountRow = { total: bigint | number };
 
@@ -47,6 +48,12 @@ export const getDashboardOverview = async (
   }
   const calendarRange = Prisma.sql`start_time >= ${from} AND start_time <= ${to}`;
   const lessonRange = Prisma.sql`updated_at >= ${from} AND updated_at <= ${to}`;
+  const vietnamTodayStart = getVietnamWallClockDate();
+  vietnamTodayStart.setUTCHours(0, 0, 0, 0);
+  const vietnamTomorrowStart = new Date(vietnamTodayStart.getTime() + 24 * 60 * 60 * 1000);
+  const upcomingTodayRange = Prisma.sql`
+    start_time >= ${vietnamTodayStart} AND start_time < ${vietnamTomorrowStart}
+  `;
   const scoped = (column: string) => {
     if (allowedPrograms === null) return Prisma.empty;
     if (!allowedPrograms.length) return Prisma.sql` AND 1 = 0`;
@@ -136,7 +143,7 @@ export const getDashboardOverview = async (
         DATE_FORMAT(end_time, '%Y-%m-%d %H:%i:%s') AS end_time,
         channel_name
       FROM calendar AS calendar_upcoming
-      WHERE ${calendarRange}${calendarScoped('calendar_upcoming')}
+      WHERE ${upcomingTodayRange}${calendarScoped('calendar_upcoming')}
         AND COALESCE(lesson_status, 0) <> 1
       ORDER BY start_time ASC, id ASC
       LIMIT 8

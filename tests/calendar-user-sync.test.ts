@@ -3,11 +3,24 @@ import test from 'node:test';
 import {
   buildCalendarClassId,
   buildCalendarRoomClassId,
+  buildTeachingUserName,
   ensureCalendarTeachingUsers,
   excelDateSerialFromCalendarDate,
   resolveCalendarTeacherProfile,
   syncCalendarTeachingUsers,
 } from '../src/modules/livestream/calendar-user-sync.service';
+
+test('chuẩn hóa name nhân sự theo student_hmid - tên hiển thị và không lặp tiền tố', () => {
+  assert.equal(
+    buildTeachingUserName('8741468', 'Lê Văn Minh', 'levanminh'),
+    '8741468 - Lê Văn Minh'
+  );
+  assert.equal(
+    buildTeachingUserName('8741468', '8741468 - Lê Văn Minh', 'levanminh'),
+    '8741468 - Lê Văn Minh'
+  );
+  assert.equal(buildTeachingUserName(null, 'Lê Văn Minh', 'levanminh'), 'Lê Văn Minh');
+});
 
 test('tính Excel Date Serial giống VALUE(D) cho ngày 13/08/2026', () => {
   assert.equal(
@@ -101,7 +114,7 @@ test('tạo lịch thêm giáo viên và toàn bộ trợ giảng theo cùng cla
   );
   assert.deepEqual(
     creates.map((item) => item.data.name),
-    ['Giáo viên 01', 'HM-TG01 - Giáo viên', 'HM-TG02 - Giáo viên']
+    ['HM-GV01 - Giáo viên 01', 'HM-TG01 - Giáo viên', 'HM-TG02 - Giáo viên']
   );
   assert.ok(creates.every(
     (item) => item.data.class_id === 'tongondinhluonghsav20274624791'
@@ -233,7 +246,7 @@ test('P2002 do tạo đồng thời sẽ đọc lại và cập nhật enrollmen
   assert.equal(updates[0].data.class_id, 'sinhhoc-7-20274626411');
 });
 
-test('quét user lưu name của trợ giảng theo quy ước student_hmid - Giáo viên', async () => {
+test('quét user lưu tên thật cho giáo viên và nhãn Giáo viên cho trợ giảng', async () => {
   const creates: any[] = [];
   const client = {
     teacher_profiles: {
@@ -263,13 +276,13 @@ test('quét user lưu name của trợ giảng theo quy ước student_hmid - Gi
 
   assert.equal(result.created, 2);
   assert.equal(creates[0].data.username, 'gv01');
-  assert.equal(creates[0].data.name, 'Giáo viên 01');
+  assert.equal(creates[0].data.name, 'HM-GV01 - Giáo viên 01');
   assert.equal(creates[1].data.username, 'tg01');
   assert.equal(creates[1].data.name, 'HM12345 - Giáo viên');
   assert.equal(creates[1].data.student_hmid, 'HM12345');
 });
 
-test('quét lại vá student_hmid null và chuẩn hóa name của trợ giảng', async () => {
+test('quét lại vá student_hmid null và chuẩn hóa name của toàn bộ nhân sự', async () => {
   const updates: any[] = [];
   const client = {
     teacher_profiles: {
@@ -304,6 +317,8 @@ test('quét lại vá student_hmid null và chuẩn hóa name của trợ giản
   assert.equal(result.created, 0);
   assert.equal(result.updated, 2);
   assert.equal(updates.length, 2);
+  const teacherUpdate = updates.find((item) => item.where.id === 1);
+  assert.equal(teacherUpdate.data.name, 'HM-GV01 - Giáo viên 01');
   const assistantUpdate = updates.find((item) => item.where.id === 2);
   assert.equal(assistantUpdate.data.student_hmid, 'HM12345');
   assert.equal(assistantUpdate.data.name, 'HM12345 - Giáo viên');
@@ -341,6 +356,7 @@ test('vá HMID ưu tiên giá trị cùng chương trình khi username có HMID 
 
   assert.equal(result.updated, 1);
   assert.equal(updates[0].data.student_hmid, '3589517');
+  assert.equal(updates[0].data.name, '3589517 - Giáo viên 01');
   assert.equal(globalFallbackCalled, false);
 });
 

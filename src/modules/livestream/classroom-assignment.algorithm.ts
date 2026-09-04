@@ -1,6 +1,7 @@
 export type ClassroomSystemType = 'topclass' | 'topuni';
 export type InteractionTier = 'high' | 'medium' | 'low' | 'none';
 
+export const TOPCLASS_MAX_STUDENTS_PER_CLASSROOM = 20;
 export const TOPUNI_MAX_STUDENTS_PER_CLASSROOM = 500;
 
 export type ClassroomAssignmentStudent = {
@@ -154,16 +155,25 @@ export const getBalancedCapacities = (studentCount: number, classroomCount: numb
 
 /**
  * TopClass cân bằng theo tối đa 3 nội dung gần nhất, mỗi nội dung chỉ tính một
- * lần dù có nhiều lịch học. Với lịch học lại, nhóm chưa học nội dung hiện tại
- * là ưu tiên chính. Khi thiếu log, thuật toán giữ phòng cũ và chỉ cân bằng sĩ số.
+ * lần dù có nhiều lịch học. Số phòng ưu tiên được kế thừa từ buổi trước; giới
+ * hạn 20 em/phòng luôn được bảo đảm bằng cách tăng phòng khi cần. Với lịch học
+ * lại, nhóm chưa học nội dung hiện tại là ưu tiên chính.
  */
 export const assignTopClassStudents = (
   students: ClassroomAssignmentStudent[],
-  availableTargets: ClassroomTarget[]
+  availableTargets: ClassroomTarget[],
+  preferredClassroomCount?: number
 ): ClassroomAssignmentPlan => {
   if (!students.length) return buildResult('topclass', [], []);
+  if (preferredClassroomCount !== undefined
+    && (!Number.isInteger(preferredClassroomCount) || preferredClassroomCount <= 0)) {
+    throw new Error('Số classroom TopClass ưu tiên phải là số nguyên dương');
+  }
 
-  const classroomCount = Math.ceil(students.length / 15);
+  const minimumClassroomCount = Math.ceil(
+    students.length / TOPCLASS_MAX_STUDENTS_PER_CLASSROOM
+  );
+  const classroomCount = Math.max(preferredClassroomCount ?? 0, minimumClassroomCount);
   if (availableTargets.length < classroomCount) {
     throw new Error(
       `TopClass cần ${classroomCount} classroom nhưng hiện chỉ cấu hình ${availableTargets.length}`
@@ -426,14 +436,20 @@ export const getTopUniInteractionTier = (interactionScore: number): InteractionT
 export const assignTopUniStudents = (
   students: ClassroomAssignmentStudent[],
   availableTargets: ClassroomTarget[],
-  maxStudentsPerClassroom = TOPUNI_MAX_STUDENTS_PER_CLASSROOM
+  maxStudentsPerClassroom = TOPUNI_MAX_STUDENTS_PER_CLASSROOM,
+  preferredClassroomCount?: number
 ): ClassroomAssignmentPlan => {
   if (!students.length) return buildResult('topuni', [], []);
   if (!Number.isInteger(maxStudentsPerClassroom) || maxStudentsPerClassroom <= 0) {
     throw new Error('Số học sinh tối đa mỗi phòng TopUni phải là số nguyên dương');
   }
+  if (preferredClassroomCount !== undefined
+    && (!Number.isInteger(preferredClassroomCount) || preferredClassroomCount <= 0)) {
+    throw new Error('Số classroom TopUni ưu tiên phải là số nguyên dương');
+  }
 
-  const classroomCount = Math.ceil(students.length / maxStudentsPerClassroom);
+  const classroomCount = preferredClassroomCount
+    ?? Math.ceil(students.length / maxStudentsPerClassroom);
   if (availableTargets.length < classroomCount) {
     const capacityHint = availableTargets.length
       ? ` Để sử dụng ${availableTargets.length} phòng hiện có, hãy đặt tối đa ít nhất `

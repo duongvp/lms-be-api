@@ -3,11 +3,39 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.applyClassroomAssignment = exports.previewClassroomAssignment = exports.summarizeTopClassLessonAttendance = exports.normalizeClassroomAssignmentId = void 0;
+exports.applyClassroomAssignment = exports.previewClassroomAssignment = exports.summarizeTopClassLessonAttendance = exports.normalizeClassroomAssignmentId = exports.buildClassroomAssignmentHistoryRows = void 0;
+const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const classroom_assignment_algorithm_1 = require("./classroom-assignment.algorithm");
 const calendar_user_sync_service_1 = require("./calendar-user-sync.service");
+const CLASSROOM_ASSIGNMENT_HISTORY_CHUNK_SIZE = 500;
+const buildClassroomAssignmentHistoryRows = (context, operationId, actor = {}) => {
+    const rosterById = new Map(context.roster.map((student) => [student.id, student]));
+    const createdBy = String(actor.username || '').trim() || null;
+    return context.plan.assignments.map((assignment) => {
+        const rosterStudent = rosterById.get(assignment.id);
+        if (!rosterStudent) {
+            throw new Error(`Không tìm thấy users.id ${assignment.id} trong roster phân lớp`);
+        }
+        return {
+            operation_id: operationId,
+            calendar_id: context.calendar.id,
+            user_id: assignment.id,
+            username: rosterStudent.username,
+            code: context.calendar.code,
+            learn_number: context.calendar.learn_number,
+            system_type: context.calendar.system_type,
+            previous_room_id: assignment.currentRoomId,
+            new_room_id: assignment.targetRoomId,
+            previous_class_id: assignment.currentClassId,
+            new_class_id: assignment.targetClassId,
+            interaction_score: Math.max(0, Math.trunc(assignment.interactionScore || 0)),
+            created_by: createdBy,
+        };
+    });
+};
+exports.buildClassroomAssignmentHistoryRows = buildClassroomAssignmentHistoryRows;
 const normalizeMaxStudentsPerClassroom = (value) => {
     if (value === undefined || value === null || value === '') {
         return classroom_assignment_algorithm_1.TOPUNI_MAX_STUDENTS_PER_CLASSROOM;
@@ -220,7 +248,10 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
         throw new Error('Lịch học không liên kết với đề cương hợp lệ nên không thể phân lớp');
     }
     const systemType = normalizeSystemType(calendar.system_type || 'topclass');
-    const maxStudentsPerClassroom = systemType === 'topuni'
+    const hasRequestedMaxStudentsPerClassroom = options.maxStudentsPerClassroom !== undefined
+        && options.maxStudentsPerClassroom !== null
+        && options.maxStudentsPerClassroom !== '';
+    let maxStudentsPerClassroom = systemType === 'topuni' && hasRequestedMaxStudentsPerClassroom
         ? normalizeMaxStudentsPerClassroom(options.maxStudentsPerClassroom)
         : null;
     const overlappingSystems = await client.calendar.findMany({
@@ -231,24 +262,6 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
     if (new Set(overlappingSystems.map((item) => item.system_type)).size > 1) {
         throw new Error('Không thể phân lớp vì code + learn_number đang được dùng cho cả TopClass và TopUni');
     }
-    const streamRows = await client.stream.findMany({
-        where: {
-            code: calendar.code,
-            learn_number: calendar.learn_number,
-            class_id: { not: null },
-        },
-        select: { room_id: true, class_id: true },
-        orderBy: [{ room_id: 'asc' }, { class_id: 'asc' }],
-    });
-    const availableTargets = streamRows
-        .filter((item) => Number.isInteger(Number(item.room_id)) && Number(item.room_id) > 0)
-        .map((item) => ({
-        roomId: Number(item.room_id),
-        // stream xác định những room nào đang được cấu hình. class_id phải thuộc
-        // chính calendar đang thao tác, không tái sử dụng ngày của buổi khác.
-        classId: (0, calendar_user_sync_service_1.buildCalendarRoomClassId)(calendar.code, calendar.start_time, calendar.learn_number, Number(item.room_id)),
-    }))
-        .filter((item, index, items) => (items.findIndex((candidate) => candidate.roomId === item.roomId) === index));
     const roomOneClassId = (0, calendar_user_sync_service_1.buildCalendarClassId)(calendar.code, calendar.start_time, calendar.learn_number);
     const classIdPrefix = roomOneClassId.slice(0, -1);
     const rawRoster = await client.$queryRaw(client_1.Prisma.sql `
@@ -282,6 +295,7 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
             : (0, exports.normalizeClassroomAssignmentId)(student.room_id),
     }));
     const previousRoomByIdentity = new Map();
+    const previousClassroomRoomIds = new Set();
     const previousStudentIdentities = [];
     const previousTopClassRoster = [];
     let previousTopUniLearnNumber = null;
@@ -328,6 +342,8 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
                     room_id: roomId,
                 });
                 previousStudentIdentities.push(identity);
+                if (roomId !== null)
+                    previousClassroomRoomIds.add(roomId);
                 if (systemType === 'topclass') {
                     previousTopClassRoster.push({
                         ...student,
@@ -345,6 +361,40 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
             });
         }
     }
+    const previousClassroomRooms = [...previousClassroomRoomIds]
+        .sort((left, right) => left - right);
+    const usePreviousClassrooms = (systemType === 'topclass'
+        || !hasRequestedMaxStudentsPerClassroom)
+        && roster.length > 0
+        && previousClassroomRooms.length > 0;
+    const classroomCount = roster.length
+        ? usePreviousClassrooms
+            ? systemType === 'topclass'
+                ? Math.max(Math.min(roster.length, previousClassroomRooms.length), Math.ceil(roster.length / classroom_assignment_algorithm_1.TOPCLASS_MAX_STUDENTS_PER_CLASSROOM))
+                : Math.min(roster.length, previousClassroomRooms.length)
+            : Math.ceil(roster.length
+                / (systemType === 'topuni'
+                    ? maxStudentsPerClassroom ?? classroom_assignment_algorithm_1.TOPUNI_MAX_STUDENTS_PER_CLASSROOM
+                    : classroom_assignment_algorithm_1.TOPCLASS_MAX_STUDENTS_PER_CLASSROOM))
+        : 0;
+    if (systemType === 'topuni' && maxStudentsPerClassroom === null) {
+        maxStudentsPerClassroom = usePreviousClassrooms
+            ? Math.ceil(roster.length / classroomCount)
+            : classroom_assignment_algorithm_1.TOPUNI_MAX_STUDENTS_PER_CLASSROOM;
+    }
+    // Không phụ thuộc bảng stream. TopClass và chế độ gợi ý TopUni kế thừa số
+    // room buổi trước; nếu chưa có lịch sử mới dùng giới hạn mặc định.
+    const targetRoomIds = usePreviousClassrooms
+        ? previousClassroomRooms.slice(0, classroomCount)
+        : [];
+    for (let roomId = 1; targetRoomIds.length < classroomCount; roomId += 1) {
+        if (!targetRoomIds.includes(roomId))
+            targetRoomIds.push(roomId);
+    }
+    const availableTargets = targetRoomIds.map((roomId) => ({
+        roomId,
+        classId: (0, calendar_user_sync_service_1.buildCalendarRoomClassId)(calendar.code, calendar.start_time, calendar.learn_number, roomId),
+    }));
     const recentAttendance = systemType === 'topclass'
         ? await loadRecentAttendanceByUsername(client, calendar, roster.length ? roster : previousTopClassRoster)
         : null;
@@ -378,8 +428,8 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
         };
     });
     const plan = systemType === 'topuni'
-        ? (0, classroom_assignment_algorithm_1.assignTopUniStudents)(students, availableTargets, maxStudentsPerClassroom)
-        : (0, classroom_assignment_algorithm_1.assignTopClassStudents)(students, availableTargets);
+        ? (0, classroom_assignment_algorithm_1.assignTopUniStudents)(students, availableTargets, maxStudentsPerClassroom, usePreviousClassrooms ? classroomCount : undefined)
+        : (0, classroom_assignment_algorithm_1.assignTopClassStudents)(students, availableTargets, usePreviousClassrooms ? classroomCount : undefined);
     return {
         calendar: {
             id: calendar.id,
@@ -486,15 +536,11 @@ const toResponse = (context, operationId) => ({
 });
 const previewClassroomAssignment = async (calendarId, options = {}) => (toResponse(await loadAssignmentContext(prisma_1.default, calendarId, options)));
 exports.previewClassroomAssignment = previewClassroomAssignment;
-const applyClassroomAssignment = async (calendarId, _actor = {}, options = {}) => prisma_1.default.$transaction(async (tx) => {
+const applyClassroomAssignment = async (calendarId, actor = {}, options = {}) => prisma_1.default.$transaction(async (tx) => {
     // Rebuild inside the transaction so apply never commits a stale preview.
     const context = await loadAssignmentContext(tx, calendarId, options);
     const changes = context.plan.assignments.filter((assignment) => assignment.currentRoomId !== assignment.targetRoomId
         || assignment.currentClassId !== assignment.targetClassId);
-    if (!changes.length)
-        return toResponse(context);
-    // Tạm thời không ghi audit vào classroom_assignment_history vì database
-    // hiện tại chưa có bảng này. Phân lớp vẫn dùng users.room_id/class_id.
     const changesByClass = new Map();
     changes.forEach((assignment) => {
         const key = `${assignment.targetRoomId}:${assignment.targetClassId}`;
@@ -521,9 +567,18 @@ const applyClassroomAssignment = async (calendarId, _actor = {}, options = {}) =
     if (updatedCount !== changes.length) {
         throw new Error(`Roster đã thay đổi trong lúc phân lớp: dự kiến ${changes.length}, cập nhật ${updatedCount}`);
     }
-    return toResponse(context);
+    if (!context.plan.assignments.length)
+        return toResponse(context);
+    const operationId = crypto_1.default.randomUUID();
+    const historyRows = (0, exports.buildClassroomAssignmentHistoryRows)(context, operationId, actor);
+    for (let offset = 0; offset < historyRows.length; offset += CLASSROOM_ASSIGNMENT_HISTORY_CHUNK_SIZE) {
+        await tx.classroom_assignment_history.createMany({
+            data: historyRows.slice(offset, offset + CLASSROOM_ASSIGNMENT_HISTORY_CHUNK_SIZE),
+        });
+    }
+    return toResponse(context, operationId);
 }, {
     isolationLevel: client_1.Prisma.TransactionIsolationLevel.Serializable,
-    timeout: 30_000,
+    timeout: 120_000,
 });
 exports.applyClassroomAssignment = applyClassroomAssignment;

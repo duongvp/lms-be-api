@@ -14,6 +14,7 @@
     "test:lesson-calendar-sync": "tsx --test tests/lesson-calendar-sync.test.ts",
     "test:google-sheet": "tsx --test tests/google-sheet-csv.test.ts",
     "test:classroom-assignment": "tsx --test tests/classroom-assignment.test.ts",
+    "test:livestream-bulk-conflict": "tsx --test tests/livestream-bulk-conflict.test.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed": "tsx prisma/seed.ts",
     "db:quiz-rbac": "tsx prisma/scripts/syncQuizRbac.ts",

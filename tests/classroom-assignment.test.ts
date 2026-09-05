@@ -269,6 +269,17 @@ test('room_id và hậu tố class_id luôn đồng bộ, room hợp lệ đư�
   ));
 });
 
+test('TopClass cấp room_id và class_id mới cho học sinh chưa được phân lớp', () => {
+  const students = buildStudents(21, () => 0, () => null);
+  const result = assignTopClassStudents(students, classroomTargets);
+
+  assert.equal(result.classroomCount, 2);
+  assert.ok(result.assignments.every((item) => item.targetRoomId > 0));
+  assert.ok(result.assignments.every(
+    (item) => item.targetClassId === `CLASS-${item.targetRoomId}`
+  ));
+});
+
 test('TopClass khi giảm số lớp chỉ chuyển học sinh của lớp bị thu hồi hoặc bị vượt capacity', () => {
   const students = buildStudents(78, () => 0, (index) => Math.floor(index / 15) + 1);
   const result = assignTopClassStudents(students, classroomTargets);

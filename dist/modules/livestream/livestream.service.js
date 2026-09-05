@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.getCalendarImportProgramContext = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getHocmaiSectionsForProgramLessons = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.isSessionModifiable = void 0;
+exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.getCalendarImportProgramContext = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getHocmaiSectionsForProgramLessons = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.validateBulkFinalStateConflicts = exports.isSessionModifiable = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
@@ -756,8 +756,8 @@ const generateUniqueCanceledKey = async (tx, sourceKey) => {
     }
     return key;
 };
-const DEFAULT_CANCELED_LESSON_NAME_PREFIX = '[Nghỉ] ';
-const DEFAULT_MAKEUP_LESSON_NAME_PREFIX = '[Học Bù] ';
+const DEFAULT_CANCELED_LESSON_NAME_PREFIX = '[NGHỈ HỌC] ';
+const DEFAULT_MAKEUP_LESSON_NAME_PREFIX = '[HỌC BÙ] ';
 const normalizeLessonNameAffix = (value, fallback, fieldLabel) => {
     if (value == null || value === '')
         return fallback;
@@ -765,7 +765,7 @@ const normalizeLessonNameAffix = (value, fallback, fieldLabel) => {
         throw new Error(`${fieldLabel} phải là chuỗi ký tự`);
     }
     // Giữ nguyên khoảng trắng mà người dùng chủ động nhập ở cuối tiền tố hoặc
-    // đầu hậu tố, ví dụ "[Nghỉ] " phải tạo thành "[Nghỉ] Tên bài".
+    // đầu hậu tố, ví dụ "[NGHỈ HỌC] " phải tạo thành "[NGHỈ HỌC] Tên bài".
     return value;
 };
 const formatRescheduledLessonName = (lessonName, prefix, suffix) => {
@@ -781,15 +781,19 @@ const getRescheduleLessonNameOptions = (payload) => ({
     makeupLessonName: (lessonName) => formatRescheduledLessonName(lessonName, normalizeLessonNameAffix(payload?.new_lesson_name_prefix, DEFAULT_MAKEUP_LESSON_NAME_PREFIX, 'Tiền tố tên bài mới'), normalizeLessonNameAffix(payload?.new_lesson_name_suffix, '', 'Hậu tố tên bài mới')),
 });
 // 1.3 & 5 Kiểm tra trùng lặp
-const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, start_time, end_time, id, client = prisma_1.default, }) => {
+const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, start_time, end_time, id, ignoredIds = [], client = prisma_1.default, }) => {
     ensureValidTimeRange(start_time, end_time);
+    const excludedIds = Array.from(new Set([
+        ...ignoredIds,
+        ...(id ? [id] : []),
+    ].filter((value) => Number.isInteger(value) && value > 0)));
     if (teacher) {
         const conflictTeacher = await client.calendar.findFirst({
             where: {
                 teacher,
                 start_time: { lt: end_time },
                 end_time: { gt: start_time },
-                id: id ? { not: id } : undefined
+                id: excludedIds.length ? { notIn: excludedIds } : undefined
             }
         });
         if (conflictTeacher)
@@ -803,7 +807,9 @@ const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, s
       WHERE start_time < ${end_time}
         AND end_time > ${start_time}
         AND assistant_teacher IS NOT NULL
-        ${id ? client_1.Prisma.sql `AND id <> ${id}` : client_1.Prisma.empty}
+        ${excludedIds.length
+            ? client_1.Prisma.sql `AND id NOT IN (${client_1.Prisma.join(excludedIds)})`
+            : client_1.Prisma.empty}
     `);
         const conflictAssistant = overlappingSessions.some((session) => {
             const assigned = new Set(parseAssistantTeachers(session.assistant_teacher));
@@ -829,13 +835,51 @@ const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, s
                 code,
                 start_time: { lt: end_time },
                 end_time: { gt: start_time },
-                id: id ? { not: id } : undefined
+                id: excludedIds.length ? { notIn: excludedIds } : undefined
             }
         });
         if (conflictCourse)
             throw new Error("Hai buổi cùng khóa không được trùng thời gian");
     }
 };
+const schedulesOverlap = (left, right) => (left.start_time < right.end_time && left.end_time > right.start_time);
+/** Kiểm tra xung đột trên trạng thái cuối của cả lô, không dựa vào trạng thái tạm khi UPDATE tuần tự. */
+const validateBulkFinalStateConflicts = (candidates) => {
+    candidates.forEach((candidate) => ensureValidTimeRange(candidate.start_time, candidate.end_time));
+    for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+            const left = candidates[leftIndex];
+            const right = candidates[rightIndex];
+            if (!schedulesOverlap(left, right))
+                continue;
+            if (left.teacher && right.teacher && left.teacher === right.teacher) {
+                throw new Error('Trùng lịch giáo viên');
+            }
+        }
+    }
+    for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+            const left = candidates[leftIndex];
+            const right = candidates[rightIndex];
+            if (!schedulesOverlap(left, right))
+                continue;
+            const rightAssistants = new Set(parseAssistantTeachers(right.assistant_teacher));
+            if (parseAssistantTeachers(left.assistant_teacher).some((username) => rightAssistants.has(username))) {
+                throw new Error('Trùng lịch trợ giảng');
+            }
+        }
+    }
+    for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+            const left = candidates[leftIndex];
+            const right = candidates[rightIndex];
+            if (schedulesOverlap(left, right) && left.code && right.code && left.code === right.code) {
+                throw new Error('Hai buổi cùng khóa không được trùng thời gian');
+            }
+        }
+    }
+};
+exports.validateBulkFinalStateConflicts = validateBulkFinalStateConflicts;
 // 1.1. Thêm từng lịch
 const createSingle = async (data, changeActor) => {
     const resolvedMappings = await resolvePackageLessonMappings(data?.package_lesson_mappings);
@@ -2415,6 +2459,29 @@ const updateBulk = async (config, changeActor) => {
                 await hydrateAssistantTeachers(tx, sessions);
                 sessions.forEach(assertCanUpdateSession);
                 const sessionsById = new Map(sessions.map((session) => [Number(session.id), session]));
+                const finalCandidates = sessions.map((current) => {
+                    let startTime = current.start_time;
+                    let endTime = current.end_time;
+                    if (update_data.start_time) {
+                        const [hours, minutes] = update_data.start_time.split(':');
+                        startTime = new Date(current.start_time);
+                        startTime.setUTCHours(Number(hours), Number(minutes), 0, 0);
+                    }
+                    if (update_data.end_time) {
+                        const [hours, minutes] = update_data.end_time.split(':');
+                        endTime = new Date(current.end_time);
+                        endTime.setUTCHours(Number(hours), Number(minutes), 0, 0);
+                    }
+                    return {
+                        id: Number(current.id),
+                        teacher: dataToUpdate.teacher || current.teacher,
+                        assistant_teacher: dataToUpdate.assistant_teacher ?? current.assistant_teacher,
+                        code: current.code,
+                        start_time: startTime,
+                        end_time: endTime,
+                    };
+                });
+                (0, exports.validateBulkFinalStateConflicts)(finalCandidates);
                 const teamsEvents = [];
                 const applyUpdates = async () => {
                     for (const idStr of ids) {
@@ -2444,6 +2511,7 @@ const updateBulk = async (config, changeActor) => {
                             start_time: newStart,
                             end_time: newEnd,
                             id,
+                            ignoredIds: normalizedIds,
                             client: tx,
                         });
                         const updated = await updateCalendarRecord(tx, id, {
@@ -2538,6 +2606,43 @@ const updateBulk = async (config, changeActor) => {
             await hydrateAssistantTeachers(tx, sessions);
             sessions.forEach(assertCanUpdateSession);
             const sessionsById = new Map(sessions.map((session) => [Number(session.id), session]));
+            const finalCandidates = [];
+            for (const item of update_data) {
+                const current = sessionsById.get(Number(item.id));
+                if (!current)
+                    continue;
+                const assignments = {};
+                if (item.teacher)
+                    assignments.teacher = item.teacher;
+                if (item.assistant_teacher !== undefined)
+                    assignments.assistant_teacher = item.assistant_teacher;
+                normalizeTeachingAssignmentsForScheduleUpdate(assignments);
+                let startTime = current.start_time;
+                let endTime = current.end_time;
+                if (item.start_date) {
+                    startTime = applyScheduleDate(item.start_date, current.start_time);
+                    endTime = applyScheduleDate(item.start_date, current.end_time);
+                }
+                if (item.start_time) {
+                    const [hours, minutes] = item.start_time.split(':');
+                    startTime = new Date(startTime);
+                    startTime.setUTCHours(Number(hours), Number(minutes), 0, 0);
+                }
+                if (item.end_time) {
+                    const [hours, minutes] = item.end_time.split(':');
+                    endTime = new Date(endTime);
+                    endTime.setUTCHours(Number(hours), Number(minutes), 0, 0);
+                }
+                finalCandidates.push({
+                    id: Number(current.id),
+                    teacher: assignments.teacher || current.teacher,
+                    assistant_teacher: assignments.assistant_teacher ?? current.assistant_teacher,
+                    code: current.code,
+                    start_time: startTime,
+                    end_time: endTime,
+                });
+            }
+            (0, exports.validateBulkFinalStateConflicts)(finalCandidates);
             const results = [];
             const teachingProfileCache = new Map();
             const teamsEvents = [];
@@ -2595,6 +2700,7 @@ const updateBulk = async (config, changeActor) => {
                             start_time: newStart,
                             end_time: newEnd,
                             id,
+                            ignoredIds: normalizedIds,
                             client: tx,
                         });
                         updated = await updateCalendarRecord(tx, id, dataToUpdate, current);

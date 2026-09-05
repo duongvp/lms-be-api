@@ -999,8 +999,8 @@ const generateUniqueCanceledKey = async (
   return key;
 };
 
-const DEFAULT_CANCELED_LESSON_NAME_PREFIX = '[Nghỉ] ';
-const DEFAULT_MAKEUP_LESSON_NAME_PREFIX = '[Học Bù] ';
+const DEFAULT_CANCELED_LESSON_NAME_PREFIX = '[NGHỈ HỌC] ';
+const DEFAULT_MAKEUP_LESSON_NAME_PREFIX = '[HỌC BÙ] ';
 
 const normalizeLessonNameAffix = (
   value: unknown,
@@ -1012,7 +1012,7 @@ const normalizeLessonNameAffix = (
     throw new Error(`${fieldLabel} phải là chuỗi ký tự`);
   }
   // Giữ nguyên khoảng trắng mà người dùng chủ động nhập ở cuối tiền tố hoặc
-  // đầu hậu tố, ví dụ "[Nghỉ] " phải tạo thành "[Nghỉ] Tên bài".
+  // đầu hậu tố, ví dụ "[NGHỈ HỌC] " phải tạo thành "[NGHỈ HỌC] Tên bài".
   return value;
 };
 
@@ -1067,6 +1067,7 @@ const checkConflict = async ({
   start_time,
   end_time,
   id,
+  ignoredIds = [],
   client = prisma,
 }: {
   teacher?: string | null,
@@ -1076,9 +1077,14 @@ const checkConflict = async ({
   start_time: Date,
   end_time: Date,
   id?: number,
+  ignoredIds?: number[],
   client?: any,
 }) => {
   ensureValidTimeRange(start_time, end_time);
+  const excludedIds = Array.from(new Set([
+    ...ignoredIds,
+    ...(id ? [id] : []),
+  ].filter((value) => Number.isInteger(value) && value > 0)));
 
   if (teacher) {
     const conflictTeacher = await client.calendar.findFirst({
@@ -1086,7 +1092,7 @@ const checkConflict = async ({
         teacher,
         start_time: { lt: end_time },
         end_time: { gt: start_time },
-        id: id ? { not: id } : undefined
+        id: excludedIds.length ? { notIn: excludedIds } : undefined
       }
     });
     if (conflictTeacher) throw new Error("Trùng lịch giáo viên");
@@ -1100,7 +1106,9 @@ const checkConflict = async ({
       WHERE start_time < ${end_time}
         AND end_time > ${start_time}
         AND assistant_teacher IS NOT NULL
-        ${id ? Prisma.sql`AND id <> ${id}` : Prisma.empty}
+        ${excludedIds.length
+          ? Prisma.sql`AND id NOT IN (${Prisma.join(excludedIds)})`
+          : Prisma.empty}
     `) as Array<{
       assistant_teacher: string | null;
     }>;
@@ -1129,10 +1137,61 @@ const checkConflict = async ({
         code,
         start_time: { lt: end_time },
         end_time: { gt: start_time },
-        id: id ? { not: id } : undefined
+        id: excludedIds.length ? { notIn: excludedIds } : undefined
       }
     });
     if (conflictCourse) throw new Error("Hai buổi cùng khóa không được trùng thời gian");
+  }
+};
+
+type BulkConflictCandidate = {
+  id: number;
+  teacher?: string | null;
+  assistant_teacher?: string | null;
+  code?: string | null;
+  start_time: Date;
+  end_time: Date;
+};
+
+const schedulesOverlap = (left: BulkConflictCandidate, right: BulkConflictCandidate) => (
+  left.start_time < right.end_time && left.end_time > right.start_time
+);
+
+/** Kiểm tra xung đột trên trạng thái cuối của cả lô, không dựa vào trạng thái tạm khi UPDATE tuần tự. */
+export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidate[]) => {
+  candidates.forEach((candidate) => ensureValidTimeRange(candidate.start_time, candidate.end_time));
+
+  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+      const left = candidates[leftIndex];
+      const right = candidates[rightIndex];
+      if (!schedulesOverlap(left, right)) continue;
+      if (left.teacher && right.teacher && left.teacher === right.teacher) {
+        throw new Error('Trùng lịch giáo viên');
+      }
+    }
+  }
+
+  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+      const left = candidates[leftIndex];
+      const right = candidates[rightIndex];
+      if (!schedulesOverlap(left, right)) continue;
+      const rightAssistants = new Set(parseAssistantTeachers(right.assistant_teacher));
+      if (parseAssistantTeachers(left.assistant_teacher).some((username) => rightAssistants.has(username))) {
+        throw new Error('Trùng lịch trợ giảng');
+      }
+    }
+  }
+
+  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+      const left = candidates[leftIndex];
+      const right = candidates[rightIndex];
+      if (schedulesOverlap(left, right) && left.code && right.code && left.code === right.code) {
+        throw new Error('Hai buổi cùng khóa không được trùng thời gian');
+      }
+    }
   }
 };
 
@@ -2973,6 +3032,29 @@ export const updateBulk = async (
         await hydrateAssistantTeachers(tx, sessions);
         sessions.forEach(assertCanUpdateSession);
         const sessionsById = new Map(sessions.map((session) => [Number(session.id), session]));
+        const finalCandidates: BulkConflictCandidate[] = sessions.map((current) => {
+          let startTime = current.start_time;
+          let endTime = current.end_time;
+          if (update_data.start_time) {
+            const [hours, minutes] = update_data.start_time.split(':');
+            startTime = new Date(current.start_time);
+            startTime.setUTCHours(Number(hours), Number(minutes), 0, 0);
+          }
+          if (update_data.end_time) {
+            const [hours, minutes] = update_data.end_time.split(':');
+            endTime = new Date(current.end_time);
+            endTime.setUTCHours(Number(hours), Number(minutes), 0, 0);
+          }
+          return {
+            id: Number(current.id),
+            teacher: dataToUpdate.teacher || current.teacher,
+            assistant_teacher: dataToUpdate.assistant_teacher ?? current.assistant_teacher,
+            code: current.code,
+            start_time: startTime,
+            end_time: endTime,
+          };
+        });
+        validateBulkFinalStateConflicts(finalCandidates);
         const teamsEvents: Array<Parameters<typeof enqueueCalendarTeamsNotification>[1]> = [];
         const applyUpdates = async () => {
           for (const idStr of ids) {
@@ -3005,6 +3087,7 @@ export const updateBulk = async (
               start_time: newStart,
               end_time: newEnd,
               id,
+              ignoredIds: normalizedIds,
               client: tx,
             });
 
@@ -3107,6 +3190,40 @@ export const updateBulk = async (
       await hydrateAssistantTeachers(tx, sessions);
       sessions.forEach(assertCanUpdateSession);
       const sessionsById = new Map(sessions.map((session) => [Number(session.id), session]));
+      const finalCandidates: BulkConflictCandidate[] = [];
+      for (const item of update_data) {
+        const current = sessionsById.get(Number(item.id));
+        if (!current) continue;
+        const assignments: any = {};
+        if (item.teacher) assignments.teacher = item.teacher;
+        if (item.assistant_teacher !== undefined) assignments.assistant_teacher = item.assistant_teacher;
+        normalizeTeachingAssignmentsForScheduleUpdate(assignments);
+        let startTime = current.start_time;
+        let endTime = current.end_time;
+        if (item.start_date) {
+          startTime = applyScheduleDate(item.start_date, current.start_time);
+          endTime = applyScheduleDate(item.start_date, current.end_time);
+        }
+        if (item.start_time) {
+          const [hours, minutes] = item.start_time.split(':');
+          startTime = new Date(startTime);
+          startTime.setUTCHours(Number(hours), Number(minutes), 0, 0);
+        }
+        if (item.end_time) {
+          const [hours, minutes] = item.end_time.split(':');
+          endTime = new Date(endTime);
+          endTime.setUTCHours(Number(hours), Number(minutes), 0, 0);
+        }
+        finalCandidates.push({
+          id: Number(current.id),
+          teacher: assignments.teacher || current.teacher,
+          assistant_teacher: assignments.assistant_teacher ?? current.assistant_teacher,
+          code: current.code,
+          start_time: startTime,
+          end_time: endTime,
+        });
+      }
+      validateBulkFinalStateConflicts(finalCandidates);
       const results: any[] = [];
       const teachingProfileCache = new Map<string, any[]>();
       const teamsEvents: Array<Parameters<typeof enqueueCalendarTeamsNotification>[1]> = [];
@@ -3169,6 +3286,7 @@ export const updateBulk = async (
               start_time: newStart,
               end_time: newEnd,
               id,
+              ignoredIds: normalizedIds,
               client: tx,
             });
             updated = await updateCalendarRecord(tx, id, dataToUpdate, current);

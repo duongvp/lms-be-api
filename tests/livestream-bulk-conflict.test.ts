@@ -28,16 +28,29 @@ test('từ chối khi trạng thái cuối của hai lịch vẫn trùng giáo v
     {
       id: 1,
       teacher: 'Giáo viên A',
+      code: 'COURSE-1',
+      learn_number: 10,
+      lesson_name: 'Bài thứ nhất',
       start_time: at('2026-08-28', '08:00'),
       end_time: at('2026-08-28', '10:00'),
     },
     {
       id: 2,
       teacher: 'Giáo viên A',
+      code: 'COURSE-2',
+      learn_number: 20,
+      lesson_name: 'Bài thứ hai',
       start_time: at('2026-08-28', '09:00'),
       end_time: at('2026-08-28', '11:00'),
     },
-  ]), /Trùng lịch giáo viên/);
+  ]), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /Trùng lịch giáo viên “Giáo viên A”/);
+    assert.match(error.message, /khóa COURSE-1, Bài 10, “Bài thứ nhất”, ID lịch 1/);
+    assert.match(error.message, /28\/08\/2026 08:00–28\/08\/2026 10:00/);
+    assert.match(error.message, /khóa COURSE-2, Bài 20, “Bài thứ hai”, ID lịch 2/);
+    return true;
+  });
 });
 
 test('hai lịch nối tiếp sát giờ không bị xem là trùng', () => {

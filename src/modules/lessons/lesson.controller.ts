@@ -38,6 +38,31 @@ import FieldPermissionService from '../roles/field-permission.service';
 import { issueLessonSecondaryToken } from './lesson-secondary-auth';
 import { findLessonProgramByCode } from './lesson.repository';
 import { assertProgramAccess, getProgramScopeFilter } from '../../services/authorization.service';
+import { getScormNameSyncJob, getScormNameSyncSheets, previewScormNameSync as createScormNameSyncPreview, startScormNameSync } from './scorm-name-sync.service';
+
+const selectedSyncSheets = (value: unknown) => {
+  if (!Array.isArray(value) || value.some((name) => !String(name).trim())) {
+    throw new Error('Danh sách trang tính không hợp lệ');
+  }
+  return Array.from(new Set(value.map((name) => String(name).trim())));
+};
+
+const scormNameSyncSheets = async (_req: Request, res: Response) => {
+  try { return SuccessResponse(res, 'Success', await getScormNameSyncSheets()); }
+  catch (error: any) { return ErrorResponse(res, error.message, error.statusCode || 400); }
+};
+const previewScormNameSync = async (req: Request, res: Response) => {
+  try { return SuccessResponse(res, 'Preview created', await createScormNameSyncPreview(selectedSyncSheets(req.body?.sheet_names))); }
+  catch (error: any) { return ErrorResponse(res, error.message, error.statusCode || 400); }
+};
+const applyScormNameSync = async (req: Request, res: Response) => {
+  try { return res.status(202).json({ success: true, message: 'Đã bắt đầu đồng bộ', data: startScormNameSync(selectedSyncSheets(req.body?.sheet_names)) }); }
+  catch (error: any) { return ErrorResponse(res, error.message, error.statusCode || 400); }
+};
+const scormNameSyncStatus = async (req: Request, res: Response) => {
+  try { return SuccessResponse(res, 'Success', getScormNameSyncJob(String(req.params.jobId || ''))); }
+  catch (error: any) { return ErrorResponse(res, error.message, error.statusCode || 404); }
+};
 
 const reauthenticate = async (req: Request, res: Response) => {
   try {
@@ -322,6 +347,10 @@ const remove = async (req: Request, res: Response) => {
 };
 
 export default {
+  scormNameSyncSheets,
+  previewScormNameSync,
+  applyScormNameSync,
+  scormNameSyncStatus,
   reauthenticate,
   reauthStatus,
   list,

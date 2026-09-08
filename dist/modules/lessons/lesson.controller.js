@@ -11,6 +11,45 @@ const field_permission_service_1 = __importDefault(require("../roles/field-permi
 const lesson_secondary_auth_1 = require("./lesson-secondary-auth");
 const lesson_repository_1 = require("./lesson.repository");
 const authorization_service_1 = require("../../services/authorization.service");
+const scorm_name_sync_service_1 = require("./scorm-name-sync.service");
+const selectedSyncSheets = (value) => {
+    if (!Array.isArray(value) || value.some((name) => !String(name).trim())) {
+        throw new Error('Danh sách trang tính không hợp lệ');
+    }
+    return Array.from(new Set(value.map((name) => String(name).trim())));
+};
+const scormNameSyncSheets = async (_req, res) => {
+    try {
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', await (0, scorm_name_sync_service_1.getScormNameSyncSheets)());
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
+    }
+};
+const previewScormNameSync = async (req, res) => {
+    try {
+        return (0, apiResponse_1.SuccessResponse)(res, 'Preview created', await (0, scorm_name_sync_service_1.previewScormNameSync)(selectedSyncSheets(req.body?.sheet_names)));
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
+    }
+};
+const applyScormNameSync = async (req, res) => {
+    try {
+        return res.status(202).json({ success: true, message: 'Đã bắt đầu đồng bộ', data: (0, scorm_name_sync_service_1.startScormNameSync)(selectedSyncSheets(req.body?.sheet_names)) });
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
+    }
+};
+const scormNameSyncStatus = async (req, res) => {
+    try {
+        return (0, apiResponse_1.SuccessResponse)(res, 'Success', (0, scorm_name_sync_service_1.getScormNameSyncJob)(String(req.params.jobId || '')));
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 404);
+    }
+};
 const reauthenticate = async (req, res) => {
     try {
         return (0, apiResponse_1.SuccessResponse)(res, 'Xác thực cấp 2 thành công', (0, lesson_secondary_auth_1.issueLessonSecondaryToken)(req, req.body?.password));
@@ -281,6 +320,10 @@ const remove = async (req, res) => {
     }
 };
 exports.default = {
+    scormNameSyncSheets,
+    previewScormNameSync,
+    applyScormNameSync,
+    scormNameSyncStatus,
     reauthenticate,
     reauthStatus,
     list,

@@ -1058,6 +1058,37 @@ const getRescheduleLessonNameOptions = (payload: any) => ({
   ),
 });
 
+const padSchedulePart = (value: number) => String(value).padStart(2, '0');
+
+// Calendar timestamps are handled as Vietnam wall-clock values throughout this
+// service (via UTC date parts), so conflict messages must follow the same rule.
+const formatScheduleDateTime = (value: Date) => (
+  `${padSchedulePart(value.getUTCDate())}/${padSchedulePart(value.getUTCMonth() + 1)}/${value.getUTCFullYear()} `
+  + `${padSchedulePart(value.getUTCHours())}:${padSchedulePart(value.getUTCMinutes())}`
+);
+
+const formatScheduleRange = (startTime: Date, endTime: Date) => (
+  `${formatScheduleDateTime(startTime)}–${formatScheduleDateTime(endTime)}`
+);
+
+const describeConflictSchedule = (schedule: {
+  id?: number | null;
+  code?: string | null;
+  learn_number?: number | null;
+  lesson_name?: string | null;
+  start_time: Date;
+  end_time: Date;
+}) => {
+  const identity = [
+    schedule.code ? `khóa ${schedule.code}` : null,
+    schedule.learn_number ? `Bài ${schedule.learn_number}` : null,
+    schedule.lesson_name ? `“${schedule.lesson_name}”` : null,
+    schedule.id ? `ID lịch ${schedule.id}` : null,
+  ].filter(Boolean).join(', ');
+  const time = formatScheduleRange(schedule.start_time, schedule.end_time);
+  return identity ? `${identity} (${time})` : `lịch ${schedule.id || '-'} (${time})`;
+};
+
 // 1.3 & 5 Kiểm tra trùng lặp
 const checkConflict = async ({
   teacher,
@@ -1095,7 +1126,12 @@ const checkConflict = async ({
         id: excludedIds.length ? { notIn: excludedIds } : undefined
       }
     });
-    if (conflictTeacher) throw new Error("Trùng lịch giáo viên");
+    if (conflictTeacher) {
+      throw new Error(
+        `Trùng lịch giáo viên “${teacher}”: khung giờ đang lưu ${formatScheduleRange(start_time, end_time)} `
+        + `trùng với ${describeConflictSchedule(conflictTeacher)}.`
+      );
+    }
   }
 
   const assistantTeachers = parseAssistantTeachers(assistant_teacher);
@@ -1149,6 +1185,8 @@ type BulkConflictCandidate = {
   teacher?: string | null;
   assistant_teacher?: string | null;
   code?: string | null;
+  learn_number?: number | null;
+  lesson_name?: string | null;
   start_time: Date;
   end_time: Date;
 };
@@ -1167,7 +1205,10 @@ export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidat
       const right = candidates[rightIndex];
       if (!schedulesOverlap(left, right)) continue;
       if (left.teacher && right.teacher && left.teacher === right.teacher) {
-        throw new Error('Trùng lịch giáo viên');
+        throw new Error(
+          `Trùng lịch giáo viên “${left.teacher}” giữa ${describeConflictSchedule(left)} `
+          + `và ${describeConflictSchedule(right)}.`
+        );
       }
     }
   }
@@ -3050,6 +3091,8 @@ export const updateBulk = async (
             teacher: dataToUpdate.teacher || current.teacher,
             assistant_teacher: dataToUpdate.assistant_teacher ?? current.assistant_teacher,
             code: current.code,
+            learn_number: current.learn_number,
+            lesson_name: current.lesson_name,
             start_time: startTime,
             end_time: endTime,
           };
@@ -3219,6 +3262,10 @@ export const updateBulk = async (
           teacher: assignments.teacher || current.teacher,
           assistant_teacher: assignments.assistant_teacher ?? current.assistant_teacher,
           code: current.code,
+          learn_number: current.learn_number,
+          lesson_name: typeof item.lesson_name === 'string'
+            ? item.lesson_name.trim()
+            : current.lesson_name,
           start_time: startTime,
           end_time: endTime,
         });

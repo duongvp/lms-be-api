@@ -70,6 +70,40 @@ test('hai lịch nối tiếp sát giờ không bị xem là trùng', () => {
   ]));
 });
 
+test('bỏ qua phần giây ẩn khi hai lịch giáo viên nối tiếp cùng phút', () => {
+  assert.doesNotThrow(() => validateBulkFinalStateConflicts([
+    {
+      id: 1,
+      teacher: 'Giáo viên A',
+      start_time: at('2026-08-28', '08:00'),
+      end_time: new Date('2026-08-28T09:30:45.000Z'),
+    },
+    {
+      id: 2,
+      teacher: 'Giáo viên A',
+      start_time: at('2026-08-28', '09:30'),
+      end_time: at('2026-08-28', '11:00'),
+    },
+  ]));
+});
+
+test('hai lịch trợ giảng nối tiếp cùng phút không bị xem là trùng', () => {
+  assert.doesNotThrow(() => validateBulkFinalStateConflicts([
+    {
+      id: 1,
+      assistant_teacher: 'trogiang-a',
+      start_time: at('2026-08-28', '08:00'),
+      end_time: new Date('2026-08-28T09:30:45.000Z'),
+    },
+    {
+      id: 2,
+      assistant_teacher: 'trogiang-a',
+      start_time: at('2026-08-28', '09:30'),
+      end_time: at('2026-08-28', '11:00'),
+    },
+  ]));
+});
+
 test('thông báo rõ trợ giảng và hai lịch bị trùng trong cập nhật hàng loạt', () => {
   assert.throws(() => validateBulkFinalStateConflicts([
     {

@@ -1101,6 +1101,22 @@ const describeConflictSchedule = (schedule: {
   return identity ? `${identity} (${time})` : `lịch ${schedule.id || '-'} (${time})`;
 };
 
+// UI và dữ liệu nghiệp vụ chỉ thao tác tới phút. Một số bản ghi cũ còn giây
+// nên 09:30:30 từng bị xem là chồng với buổi bắt đầu 09:30 dù cùng hiển thị
+// 09:30. Kiểm tra conflict theo đúng độ chính xác mà người dùng nhìn thấy.
+const scheduleMinute = (value: Date) => {
+  const minute = new Date(value);
+  minute.setUTCSeconds(0, 0);
+  return minute.getTime();
+};
+const timeRangesOverlap = (
+  leftStart: Date,
+  leftEnd: Date,
+  rightStart: Date,
+  rightEnd: Date
+) => scheduleMinute(leftStart) < scheduleMinute(rightEnd)
+  && scheduleMinute(leftEnd) > scheduleMinute(rightStart);
+
 // 1.3 & 5 Kiểm tra trùng lặp
 const checkConflict = async ({
   teacher,
@@ -1130,7 +1146,7 @@ const checkConflict = async ({
   ].filter((value) => Number.isInteger(value) && value > 0)));
 
   if (teacher) {
-    const conflictTeacher = await client.calendar.findFirst({
+    const possibleTeacherConflicts = await client.calendar.findMany({
       where: {
         teacher,
         start_time: { lt: end_time },
@@ -1138,6 +1154,9 @@ const checkConflict = async ({
         id: excludedIds.length ? { notIn: excludedIds } : undefined
       }
     });
+    const conflictTeacher = possibleTeacherConflicts.find((session: any) => timeRangesOverlap(
+      start_time, end_time, session.start_time, session.end_time
+    ));
     if (conflictTeacher) {
       throw new Error(
         `Trùng lịch giáo viên: “${teacher}”.\n`
@@ -1169,6 +1188,7 @@ const checkConflict = async ({
     }>;
     let conflictAssistant: { username: string; session: typeof overlappingSessions[number] } | null = null;
     for (const session of overlappingSessions) {
+      if (!timeRangesOverlap(start_time, end_time, session.start_time, session.end_time)) continue;
       const assigned = new Set(parseAssistantTeachers(session.assistant_teacher));
       const username = assistantTeachers.find((item) => assigned.has(item));
       if (username) {
@@ -1198,7 +1218,7 @@ const checkConflict = async ({
   // }
 
   if (code) {
-    const conflictCourse = await client.calendar.findFirst({
+    const possibleCourseConflicts = await client.calendar.findMany({
       where: {
         code,
         start_time: { lt: end_time },
@@ -1206,6 +1226,9 @@ const checkConflict = async ({
         id: excludedIds.length ? { notIn: excludedIds } : undefined
       }
     });
+    const conflictCourse = possibleCourseConflicts.find((session: any) => timeRangesOverlap(
+      start_time, end_time, session.start_time, session.end_time
+    ));
     if (conflictCourse) throw new Error("Hai buổi cùng khóa không được trùng thời gian");
   }
 };
@@ -1222,7 +1245,7 @@ type BulkConflictCandidate = {
 };
 
 const schedulesOverlap = (left: BulkConflictCandidate, right: BulkConflictCandidate) => (
-  left.start_time < right.end_time && left.end_time > right.start_time
+  timeRangesOverlap(left.start_time, left.end_time, right.start_time, right.end_time)
 );
 
 /** Kiểm tra xung đột trên trạng thái cuối của cả lô, không dựa vào trạng thái tạm khi UPDATE tuần tự. */

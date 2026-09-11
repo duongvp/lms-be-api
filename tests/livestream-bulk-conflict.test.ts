@@ -104,6 +104,27 @@ test('hai lịch trợ giảng nối tiếp cùng phút không bị xem là trù
   ]));
 });
 
+test('lịch nghỉ học không gây trùng giáo viên hoặc trợ giảng', () => {
+  assert.doesNotThrow(() => validateBulkFinalStateConflicts([
+    {
+      id: 1,
+      teacher: 'Giáo viên A',
+      assistant_teacher: 'trogiang-a',
+      lesson_status: 1,
+      start_time: at('2026-08-28', '09:00'),
+      end_time: at('2026-08-28', '11:00'),
+    },
+    {
+      id: 2,
+      teacher: 'Giáo viên A',
+      assistant_teacher: 'trogiang-a',
+      lesson_status: 0,
+      start_time: at('2026-08-28', '09:30'),
+      end_time: at('2026-08-28', '10:30'),
+    },
+  ]));
+});
+
 test('thông báo rõ trợ giảng và hai lịch bị trùng trong cập nhật hàng loạt', () => {
   assert.throws(() => validateBulkFinalStateConflicts([
     {

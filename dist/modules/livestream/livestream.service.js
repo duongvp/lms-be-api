@@ -821,6 +821,10 @@ const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, s
                 teacher,
                 start_time: { lt: end_time },
                 end_time: { gt: start_time },
+                OR: [
+                    { lesson_status: null },
+                    { lesson_status: { not: 1 } },
+                ],
                 id: excludedIds.length ? { notIn: excludedIds } : undefined
             }
         });
@@ -838,6 +842,7 @@ const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, s
       FROM calendar
       WHERE start_time < ${end_time}
         AND end_time > ${start_time}
+        AND COALESCE(lesson_status, 0) <> 1
         AND assistant_teacher IS NOT NULL
         ${excludedIds.length
             ? client_1.Prisma.sql `AND id NOT IN (${client_1.Prisma.join(excludedIds)})`
@@ -877,6 +882,10 @@ const checkConflict = async ({ teacher, assistant_teacher, channel_name, code, s
                 code,
                 start_time: { lt: end_time },
                 end_time: { gt: start_time },
+                OR: [
+                    { lesson_status: null },
+                    { lesson_status: { not: 1 } },
+                ],
                 id: excludedIds.length ? { notIn: excludedIds } : undefined
             }
         });
@@ -889,6 +898,7 @@ const schedulesOverlap = (left, right) => (timeRangesOverlap(left.start_time, le
 /** Kiểm tra xung đột trên trạng thái cuối của cả lô, không dựa vào trạng thái tạm khi UPDATE tuần tự. */
 const validateBulkFinalStateConflicts = (candidates) => {
     candidates.forEach((candidate) => ensureValidTimeRange(candidate.start_time, candidate.end_time));
+    candidates = candidates.filter((candidate) => Number(candidate.lesson_status) !== 1);
     for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
         for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
             const left = candidates[leftIndex];

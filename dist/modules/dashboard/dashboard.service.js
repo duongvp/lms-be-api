@@ -3,11 +3,47 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getDashboardOverview = void 0;
+exports.getDashboardOverview = exports.getLatestHmoLessonSyncIssues = void 0;
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const dateTime_1 = require("../../utils/dateTime");
+const hmo_lesson_sync_service_1 = require("../hmo-lesson-sync/hmo-lesson-sync.service");
 const numberValue = (value) => Number(value ?? 0);
+const getLatestHmoLessonSyncIssues = async (programCode, errorCode, allowedPrograms = null) => {
+    const latestRuns = await prisma_1.default.$queryRaw `
+    SELECT id FROM hmo_lesson_sync_runs ORDER BY id DESC LIMIT 1
+  `;
+    if (!latestRuns.length)
+        return [];
+    const scopeCondition = allowedPrograms === null
+        ? client_1.Prisma.empty
+        : !allowedPrograms.length
+            ? client_1.Prisma.sql ` AND 1 = 0`
+            : client_1.Prisma.sql ` AND program_code IN (${client_1.Prisma.join(allowedPrograms)})`;
+    const programCondition = programCode
+        ? client_1.Prisma.sql ` AND program_code = ${programCode}`
+        : client_1.Prisma.empty;
+    const errorCondition = errorCode
+        ? client_1.Prisma.sql ` AND error_code = ${errorCode}`
+        : client_1.Prisma.empty;
+    const rows = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+    SELECT id, program_code, calendar_id, learn_number, lesson_name, teacher,
+      course_id, package_id, error_code, message, created_at
+    FROM hmo_lesson_sync_issues
+    WHERE run_id = ${latestRuns[0].id}${scopeCondition}${programCondition}${errorCondition}
+    ORDER BY program_code, learn_number, id
+    LIMIT 2000
+  `);
+    return rows.map((issue) => ({
+        id: String(issue.id), programCode: issue.program_code,
+        calendarId: issue.calendar_id == null ? null : Number(issue.calendar_id),
+        learnNumber: issue.learn_number == null ? null : Number(issue.learn_number),
+        lessonName: issue.lesson_name, teacher: issue.teacher,
+        courseId: issue.course_id, packageId: issue.package_id,
+        errorCode: issue.error_code, message: issue.message, createdAt: issue.created_at,
+    }));
+};
+exports.getLatestHmoLessonSyncIssues = getLatestHmoLessonSyncIssues;
 const getDashboardOverview = async (filter = {}, allowedPrograms = null) => {
     const from = filter.from ?? new Date();
     const to = filter.to ?? new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -168,6 +204,41 @@ const getDashboardOverview = async (filter = {}, allowedPrograms = null) => {
         learnNumber: Number(row.learn_number),
         lessonName: row.lesson_name || `Bài ${Number(row.learn_number)}`,
     }));
+    let latestSync = null;
+    let syncIssues = [];
+    let syncIssuePrograms = [];
+    let hmoLessonSyncAvailable = true;
+    try {
+        await (0, hmo_lesson_sync_service_1.markInterruptedHmoLessonSyncRuns)();
+        const latestSyncRuns = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+      SELECT id, trigger_type, status, programs_total, programs_processed, programs_failed,
+        lessons_total, lessons_synced, lessons_failed, calendars_synced, last_error,
+        heartbeat_at, current_program, started_at, finished_at
+      FROM hmo_lesson_sync_runs ORDER BY id DESC LIMIT 1
+    `);
+        latestSync = latestSyncRuns[0] || null;
+        syncIssues = latestSync ? await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+      SELECT id, program_code, calendar_id, learn_number, lesson_name, teacher,
+        course_id, package_id, error_code, message, created_at
+      FROM hmo_lesson_sync_issues
+      WHERE run_id = ${latestSync.id}${scoped('program_code')}
+      ORDER BY program_code, learn_number, id LIMIT 500
+    `) : [];
+        syncIssuePrograms = latestSync ? await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+      SELECT program_code, COUNT(*) AS issue_count,
+        COUNT(DISTINCT COALESCE(CAST(lesson_id AS CHAR), CONCAT('calendar:', calendar_id))) AS lesson_count
+      FROM hmo_lesson_sync_issues
+      WHERE run_id = ${latestSync.id}${scoped('program_code')}
+      GROUP BY program_code ORDER BY program_code
+    `) : [];
+    }
+    catch (error) {
+        const missingMonitoringTable = String(error?.code) === 'P2010'
+            && (String(error?.meta?.code) === '1146' || String(error?.message).includes("doesn't exist"));
+        if (!missingMonitoringTable)
+            throw error;
+        hmoLessonSyncAvailable = false;
+    }
     return {
         generatedAt: new Date().toISOString(),
         summary: {
@@ -236,6 +307,37 @@ const getDashboardOverview = async (filter = {}, allowedPrograms = null) => {
                 syncedToday: numberValue(hocmai?.synced_today),
             },
         },
+        hmoLessonSyncAvailable,
+        hmoLessonSync: latestSync ? {
+            id: String(latestSync.id),
+            triggerType: latestSync.trigger_type,
+            status: latestSync.status,
+            programsTotal: numberValue(latestSync.programs_total),
+            programsProcessed: numberValue(latestSync.programs_processed),
+            programsFailed: numberValue(latestSync.programs_failed),
+            lessonsTotal: numberValue(latestSync.lessons_total),
+            lessonsSynced: numberValue(latestSync.lessons_synced),
+            lessonsFailed: numberValue(latestSync.lessons_failed),
+            calendarsSynced: numberValue(latestSync.calendars_synced),
+            lastError: latestSync.last_error,
+            heartbeatAt: latestSync.heartbeat_at,
+            currentProgram: latestSync.current_program,
+            startedAt: latestSync.started_at,
+            finishedAt: latestSync.finished_at,
+            issues: syncIssues.map((issue) => ({
+                id: String(issue.id), programCode: issue.program_code,
+                calendarId: issue.calendar_id == null ? null : Number(issue.calendar_id),
+                learnNumber: issue.learn_number == null ? null : Number(issue.learn_number),
+                lessonName: issue.lesson_name, teacher: issue.teacher,
+                courseId: issue.course_id, packageId: issue.package_id,
+                errorCode: issue.error_code, message: issue.message, createdAt: issue.created_at,
+            })),
+            issuePrograms: syncIssuePrograms.map((item) => ({
+                programCode: item.program_code,
+                issueCount: numberValue(item.issue_count),
+                lessonCount: numberValue(item.lesson_count),
+            })),
+        } : null,
     };
 };
 exports.getDashboardOverview = getDashboardOverview;

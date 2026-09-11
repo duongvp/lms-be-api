@@ -36,7 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
+exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.resendToHocmai = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const livestream_io_1 = require("./livestream.io");
@@ -157,6 +157,20 @@ const backfillMissingTeachingUsers = async (req, res) => {
     }
 };
 exports.backfillMissingTeachingUsers = backfillMissingTeachingUsers;
+const resendToHocmai = async (req, res) => {
+    try {
+        const result = await livestreamService.resendCalendarsToHocmai(req.body?.ids);
+        res.status(200).json({
+            success: true,
+            message: 'Đã đưa lịch học vào hàng đợi gửi HMO',
+            data: result,
+        });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.resendToHocmai = resendToHocmai;
 const previewStudentClassroomAssignment = async (req, res, next) => {
     try {
         const data = await (0, classroom_assignment_service_1.previewClassroomAssignment)(Number(req.params.id), {
@@ -260,13 +274,16 @@ const exportFile = async (req, res) => {
     try {
         const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
         const updateTemplate = req.query.purpose === 'update';
+        const operationalWorkbook = req.query.purpose === 'all-programs';
         const rows = await livestreamService.getCalendarRowsForExport(req.query.ids, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.export'), String(req.query.program_code || '').trim() || undefined);
-        const buffer = updateTemplate
-            ? (0, livestream_io_1.buildCalendarUpdateFile)(rows)
-            : (0, livestream_io_1.buildCalendarFile)(rows, format);
-        const responseFormat = updateTemplate ? 'xlsx' : format;
+        const buffer = operationalWorkbook
+            ? (0, livestream_io_1.buildOperationalCalendarWorkbook)(rows)
+            : updateTemplate
+                ? (0, livestream_io_1.buildCalendarUpdateFile)(rows)
+                : (0, livestream_io_1.buildCalendarFile)(rows, format);
+        const responseFormat = updateTemplate || operationalWorkbook ? 'xlsx' : format;
         res.setHeader('Content-Type', (0, livestream_io_1.getCalendarFileContentType)(responseFormat));
-        res.setHeader('Content-Disposition', `attachment; filename="calendar-${updateTemplate ? 'update-assistants' : 'export'}-${Date.now()}.${responseFormat}"`);
+        res.setHeader('Content-Disposition', `attachment; filename="calendar-${operationalWorkbook ? 'all-programs' : updateTemplate ? 'update-assistants' : 'export'}-${Date.now()}.${responseFormat}"`);
         res.send(buffer);
     }
     catch (err) {

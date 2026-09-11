@@ -5,7 +5,9 @@ import { resolvePackagesByCourseId } from '../../integrations/package-course-she
 import { fetchHocmaiCourseOutlines } from '../../integrations/hocmai-course-outline.service';
 import {
   enqueueCalendarSync,
+  enqueueCalendarsSyncBulk,
   enqueueRescheduleSync,
+  reconcileCalendarMappingsAndEnqueue,
   withManualHocmaiQueue,
 } from './hocmai-sync-queue.service';
 import { ResolvedCalendarImportRow } from './calendar-import.types';
@@ -908,12 +910,22 @@ const replacePackageLessonMappingForCalendar = async (
     throw new Error(`Buổi ${calendar?.id || ''}: Lịch học không có key để cập nhật mapping`);
   }
 
-  await tx.package_lesson_mapping.deleteMany({ where: { key } });
-  await createPackageLessonMappingForCalendar(tx, calendar, mappings);
-  await tx.calendar.update({
-    where: { id: Number(calendar.id) },
-    data: { updated_at: new Date() },
-  });
+  const result = await reconcileCalendarMappingsAndEnqueue(
+    tx,
+    calendar,
+    mappings,
+    crypto.randomUUID(),
+    1,
+    false,
+    true
+  );
+  if (result.changed) {
+    await tx.calendar.update({
+      where: { id: Number(calendar.id) },
+      data: { updated_at: new Date() },
+    });
+  }
+  return result;
 };
 
 const assertMappingsBelongToCalendarLesson = async (
@@ -1128,8 +1140,9 @@ const checkConflict = async ({
     });
     if (conflictTeacher) {
       throw new Error(
-        `Trùng lịch giáo viên “${teacher}”: khung giờ đang lưu ${formatScheduleRange(start_time, end_time)} `
-        + `trùng với ${describeConflictSchedule(conflictTeacher)}.`
+        `Trùng lịch giáo viên: “${teacher}”.\n`
+        + `Lịch đang cập nhật: ${formatScheduleRange(start_time, end_time)}.\n`
+        + `Trùng với: ${describeConflictSchedule(conflictTeacher)}.`
       );
     }
   }
@@ -1137,7 +1150,7 @@ const checkConflict = async ({
   const assistantTeachers = parseAssistantTeachers(assistant_teacher);
   if (assistantTeachers.length) {
     const overlappingSessions = await client.$queryRaw(Prisma.sql`
-      SELECT assistant_teacher
+      SELECT id, code, learn_number, lesson_name, start_time, end_time, assistant_teacher
       FROM calendar
       WHERE start_time < ${end_time}
         AND end_time > ${start_time}
@@ -1146,13 +1159,30 @@ const checkConflict = async ({
           ? Prisma.sql`AND id NOT IN (${Prisma.join(excludedIds)})`
           : Prisma.empty}
     `) as Array<{
+      id: number;
+      code: string;
+      learn_number: number;
+      lesson_name: string | null;
+      start_time: Date;
+      end_time: Date;
       assistant_teacher: string | null;
     }>;
-    const conflictAssistant = overlappingSessions.some((session: any) => {
+    let conflictAssistant: { username: string; session: typeof overlappingSessions[number] } | null = null;
+    for (const session of overlappingSessions) {
       const assigned = new Set(parseAssistantTeachers(session.assistant_teacher));
-      return assistantTeachers.some((username) => assigned.has(username));
-    });
-    if (conflictAssistant) throw new Error("Trùng lịch trợ giảng");
+      const username = assistantTeachers.find((item) => assigned.has(item));
+      if (username) {
+        conflictAssistant = { username, session };
+        break;
+      }
+    }
+    if (conflictAssistant) {
+      throw new Error(
+        `Trùng lịch trợ giảng: “${conflictAssistant.username}”.\n`
+        + `Lịch đang cập nhật: ${formatScheduleRange(start_time, end_time)}.\n`
+        + `Trùng với: ${describeConflictSchedule(conflictAssistant.session)}.`
+      );
+    }
   }
 
   // if (channel_name) {
@@ -1206,8 +1236,9 @@ export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidat
       if (!schedulesOverlap(left, right)) continue;
       if (left.teacher && right.teacher && left.teacher === right.teacher) {
         throw new Error(
-          `Trùng lịch giáo viên “${left.teacher}” giữa ${describeConflictSchedule(left)} `
-          + `và ${describeConflictSchedule(right)}.`
+          `Trùng lịch giáo viên: “${left.teacher}”.\n`
+          + `Lịch 1: ${describeConflictSchedule(left)}.\n`
+          + `Lịch 2: ${describeConflictSchedule(right)}.`
         );
       }
     }
@@ -1219,8 +1250,14 @@ export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidat
       const right = candidates[rightIndex];
       if (!schedulesOverlap(left, right)) continue;
       const rightAssistants = new Set(parseAssistantTeachers(right.assistant_teacher));
-      if (parseAssistantTeachers(left.assistant_teacher).some((username) => rightAssistants.has(username))) {
-        throw new Error('Trùng lịch trợ giảng');
+      const conflictAssistant = parseAssistantTeachers(left.assistant_teacher)
+        .find((username) => rightAssistants.has(username));
+      if (conflictAssistant) {
+        throw new Error(
+          `Trùng lịch trợ giảng: “${conflictAssistant}”.\n`
+          + `Lịch 1: ${describeConflictSchedule(left)}.\n`
+          + `Lịch 2: ${describeConflictSchedule(right)}.`
+        );
       }
     }
   }
@@ -2979,8 +3016,21 @@ export const updateCalendarMappings = async (
         });
         if (!calendar) throw new Error(`Dòng ${item.row}: Không tìm thấy lịch học cần cập nhật`);
         assertCanUpdateSession(calendar);
-        await replacePackageLessonMappingForCalendar(tx, calendar, item.nextMappings);
-        await enqueueCalendarSync(tx, operationId, index + 1, 'update', calendar);
+        const mappingResult = await reconcileCalendarMappingsAndEnqueue(
+          tx,
+          calendar,
+          item.nextMappings,
+          operationId,
+          index + 1,
+          true,
+          true
+        );
+        if (mappingResult.changed) {
+          await tx.calendar.update({
+            where: { id: Number(calendar.id) },
+            data: { updated_at: new Date() },
+          });
+        }
         await enqueueCalendarTeamsNotification(tx, {
           eventType: 'updated',
           before: calendar,
@@ -2999,6 +3049,30 @@ export const updateCalendarMappings = async (
     });
     return { count: results.length, operationId, updates: results };
   }));
+};
+
+export const resendCalendarsToHocmai = async (rawIds: unknown) => {
+  if (!Array.isArray(rawIds)) throw new Error('Danh sách lịch học không hợp lệ');
+  const ids = Array.from(new Set(
+    rawIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)
+  ));
+  if (!ids.length) throw new Error('Vui lòng chọn ít nhất 1 lịch học');
+  if (ids.length > 500) throw new Error('Mỗi lần gửi tối đa 500 lịch học');
+
+  const result = await prisma.$transaction(
+    (tx) => enqueueCalendarsSyncBulk(tx, ids),
+    { maxWait: 10_000, timeout: 60_000 }
+  );
+  return {
+    requested: ids.length,
+    queued: result.queuedIds.length,
+    skipped: result.skippedIds.length,
+    missing: result.missingIds.length,
+    operation_id: result.operationId,
+    queued_ids: result.queuedIds,
+    skipped_ids: result.skippedIds,
+    missing_ids: result.missingIds,
+  };
 };
 
 

@@ -226,7 +226,11 @@ export const reorderExistingLessons = async (payload: LessonReorderPayload) => {
     throw new ApiError('Danh sách sắp xếp không hợp lệ', 400);
   }
 
-  const learnNumbers = lessons.map((lesson) => Number(lesson.learn_number));
+  const originalLearnNumbers = lessons.map((lesson) => Number(lesson.learn_number));
+  const firstLearnNumber = Math.min(...originalLearnNumbers);
+  const learnNumbers = payload.renumber
+    ? orderedIds.map((_, index) => firstLearnNumber + index)
+    : originalLearnNumbers;
   const lockedIds = await findPastScheduledLessonIds(payload.ordered_ids);
   const lessonById = new Map(lessons.map((lesson) => [String(lesson.id), lesson]));
   const movedLockedLesson = orderedIds.some((id, index) => (

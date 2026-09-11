@@ -35,7 +35,7 @@ export const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => 
  */
 const syncCalendarSlotsAfterLessonReorder = async (
   tx: any,
-  grade: number | undefined,
+  _grade: number | undefined,
   subjectCode: string,
   lessonIds: bigint[],
   learnNumbers: number[]
@@ -47,8 +47,7 @@ const syncCalendarSlotsAfterLessonReorder = async (
   await tx.$executeRawUnsafe(
     `UPDATE calendar AS calendar_row
      INNER JOIN lessons AS lesson
-       ON lesson.grade <=> ?
-      AND lesson.subject_code = ?
+       ON lesson.subject_code = ?
       AND lesson.learn_number = calendar_row.learn_number
       AND lesson.status <> 0
       AND lesson.id IN (${lessonPlaceholders})
@@ -58,7 +57,6 @@ const syncCalendarSlotsAfterLessonReorder = async (
          calendar_row.updated_at = CURRENT_TIMESTAMP
      WHERE calendar_row.code = ?
        AND calendar_row.learn_number IN (${learnNumberPlaceholders})`,
-    grade,
     subjectCode,
     ...lessonIds,
     subjectCode,
@@ -463,29 +461,33 @@ export const reorderLessonsInGroup = async (
 
     // Tạm chuyển toàn bộ số hiện tại sang âm trong một câu lệnh để tránh
     // vi phạm unique (grade, subject_code, learn_number) khi hoán đổi.
-    await tx.$executeRawUnsafe(
+    const stagedCount = await tx.$executeRawUnsafe(
       `UPDATE lessons
        SET learn_number = -learn_number, updated_at = CURRENT_TIMESTAMP(3)
        WHERE id IN (${idPlaceholders})
-         AND grade <=> ? AND subject_code = ? AND status <> 0`,
+         AND subject_code = ? AND status <> 0`,
       ...orderedIds,
-      grade,
       subjectCode
     );
+    if (Number(stagedCount) !== orderedIds.length) {
+      throw new Error('Không thể cập nhật đầy đủ danh sách bài học đã sắp xếp');
+    }
 
     const cases = orderedIds.map(() => 'WHEN ? THEN ?').join(' ');
     const caseValues = orderedIds.flatMap((id, index) => [id, learnNumbers[index]]);
-    await tx.$executeRawUnsafe(
+    const updatedCount = await tx.$executeRawUnsafe(
       `UPDATE lessons
        SET learn_number = CASE id ${cases} ELSE learn_number END,
            updated_at = CURRENT_TIMESTAMP(3)
        WHERE id IN (${idPlaceholders})
-         AND grade <=> ? AND subject_code = ? AND status <> 0`,
+         AND subject_code = ? AND status <> 0`,
       ...caseValues,
       ...orderedIds,
-      grade,
       subjectCode
     );
+    if (Number(updatedCount) !== orderedIds.length) {
+      throw new Error('Không thể lưu đầy đủ số thứ tự bài học');
+    }
 
     // Calendar giữ nguyên slot (learn_number, thời gian, giáo viên, trợ giảng),
     // chỉ nhận lại session_id và nội dung của lesson sau khi sắp xếp.

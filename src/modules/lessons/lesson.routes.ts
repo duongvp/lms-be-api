@@ -33,6 +33,8 @@ router.get('/scorm-name-sync/sheets', authorize(['lessons.update']), lessonContr
 router.post('/scorm-name-sync/preview', authorize(['lessons.update']), lessonController.previewScormNameSync);
 router.post('/scorm-name-sync/apply', authorize(['lessons.update']), lessonController.applyScormNameSync);
 router.get('/scorm-name-sync/status/:jobId', authorize(['lessons.update']), lessonController.scormNameSyncStatus);
+router.post('/scorm-name-sync/course-mappings/preview', authorize(['lessons.update']), authorizeProgram('lessons.update', (req) => String(req.body?.program_code || '')), lessonController.previewScormCourseMappings);
+router.post('/scorm-name-sync/course-mappings/apply', authorize(['lessons.update']), authorizeProgram('lessons.update', (req) => String(req.body?.program_code || '')), lessonController.applyScormCourseMappings);
 router.get('/', authorize(['lessons.view']), authorizeProgram('lessons.view', (req) => String(req.query.subject_code || req.query.course_code || '')), lessonController.list);
 router.get('/options/subjects', authorize(['lessons.view']), lessonController.subjects);
 router.get('/options/programs', authorize(['lessons.view']), lessonController.programs);

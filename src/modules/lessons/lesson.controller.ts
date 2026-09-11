@@ -38,7 +38,7 @@ import FieldPermissionService from '../roles/field-permission.service';
 import { issueLessonSecondaryToken } from './lesson-secondary-auth';
 import { findLessonProgramByCode } from './lesson.repository';
 import { assertProgramAccess, getProgramScopeFilter } from '../../services/authorization.service';
-import { getScormNameSyncJob, getScormNameSyncSheets, previewScormNameSync as createScormNameSyncPreview, startScormNameSync } from './scorm-name-sync.service';
+import { applyScormCourseMappingSync, getScormNameSyncJob, getScormNameSyncSheets, previewScormCourseMappingSync, previewScormNameSync as createScormNameSyncPreview, startScormNameSync } from './scorm-name-sync.service';
 
 const selectedSyncSheets = (value: unknown) => {
   if (!Array.isArray(value) || value.some((name) => !String(name).trim())) {
@@ -62,6 +62,22 @@ const applyScormNameSync = async (req: Request, res: Response) => {
 const scormNameSyncStatus = async (req: Request, res: Response) => {
   try { return SuccessResponse(res, 'Success', getScormNameSyncJob(String(req.params.jobId || ''))); }
   catch (error: any) { return ErrorResponse(res, error.message, error.statusCode || 404); }
+};
+const previewScormCourseMappings = async (req: Request, res: Response) => {
+  try {
+    return SuccessResponse(res, 'Preview created', await previewScormCourseMappingSync(
+      String(req.body?.program_code || ''),
+      selectedSyncSheets(req.body?.sheet_names)
+    ));
+  } catch (error: any) { return ErrorResponse(res, error.message, error.statusCode || 400); }
+};
+const applyScormCourseMappings = async (req: Request, res: Response) => {
+  try {
+    return SuccessResponse(res, 'Updated', await applyScormCourseMappingSync(
+      String(req.body?.program_code || ''),
+      selectedSyncSheets(req.body?.sheet_names)
+    ));
+  } catch (error: any) { return ErrorResponse(res, error.message, error.statusCode || 400); }
 };
 
 const reauthenticate = async (req: Request, res: Response) => {
@@ -351,6 +367,8 @@ export default {
   previewScormNameSync,
   applyScormNameSync,
   scormNameSyncStatus,
+  previewScormCourseMappings,
+  applyScormCourseMappings,
   reauthenticate,
   reauthStatus,
   list,

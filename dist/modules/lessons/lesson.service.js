@@ -173,7 +173,11 @@ const reorderExistingLessons = async (payload) => {
     if (activeIdSet.size !== orderedIdSet.size || orderedIds.some((id) => !activeIdSet.has(id))) {
         throw new ApiError_1.default('Danh sách sắp xếp không hợp lệ', 400);
     }
-    const learnNumbers = lessons.map((lesson) => Number(lesson.learn_number));
+    const originalLearnNumbers = lessons.map((lesson) => Number(lesson.learn_number));
+    const firstLearnNumber = Math.min(...originalLearnNumbers);
+    const learnNumbers = payload.renumber
+        ? orderedIds.map((_, index) => firstLearnNumber + index)
+        : originalLearnNumbers;
     const lockedIds = await (0, lesson_repository_1.findPastScheduledLessonIds)(payload.ordered_ids);
     const lessonById = new Map(lessons.map((lesson) => [String(lesson.id), lesson]));
     const movedLockedLesson = orderedIds.some((id, index) => (lockedIds.has(id)

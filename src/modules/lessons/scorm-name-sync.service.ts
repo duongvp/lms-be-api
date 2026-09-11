@@ -1,5 +1,8 @@
 import * as XLSX from 'xlsx';
 import { logger } from '../../utils/logger';
+import prisma from '../../lib/prisma';
+import { resolvePackagesByCourseId } from '../../integrations/package-course-sheet.service';
+import { compatibleParts, normalizeTitle, titleSimilarity } from '../hmo-lesson-sync/hmo-lesson-sync.service';
 import type { LessonPreview, LessonSystem, LessonUpdatePayload, ScormNamePreviewResult, SheetInfo, SyncWarning } from './scorm-name-sync.types';
 
 const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/16jD8NrKsCJIqiz6edfSbsui0CdxQhCLvv8RvChR99M0/edit?usp=sharing';
@@ -175,4 +178,187 @@ export const getScormNameSyncJob = (id: string) => {
   const job = syncJobs.get(id);
   if (!job) throw new Error('Không tìm thấy tiến trình đồng bộ');
   return job;
+};
+
+type CourseMappingPreviewRow = {
+  lessonId: string;
+  learnNumber: number;
+  lessonName: string;
+  sheetNames: string[];
+  currentMappings: Array<{ packageId: string; courseId: string }>;
+  sheetMappings: Array<{ packageId: string; courseId: string }>;
+  additions: Array<{ packageId: string; courseId: string }>;
+  removals: Array<{ packageId: string; courseId: string }>;
+};
+
+const mappingKey = (packageId: unknown, courseId: unknown) => `${String(packageId)}\u0000${String(courseId)}`;
+
+export const previewScormCourseMappingSync = async (
+  programCodeInput: string,
+  selectedNames: string[]
+) => {
+  const programCode = normalize(programCodeInput);
+  if (!programCode) throw new Error('Vui lòng chọn Chương trình');
+  const workbook = await getWorkbook();
+  const available = workbookSheets(workbook)
+    .filter((sheet) => normalize(sheet.name).toLocaleLowerCase('vi-VN') !== 'gv');
+  const selected = selectedNames.length
+    ? available.filter((sheet) => selectedNames.includes(sheet.name))
+    : available;
+  if (!selected.length) throw new Error('Không tìm thấy trang tính được chọn');
+
+  const warnings: SyncWarning[] = [];
+  const sourceRows = parseProgramRows(selected, warnings);
+  const lessons = await prisma.lessons.findMany({
+    where: { subject_code: programCode, status: { not: 0 } },
+    select: { id: true, learn_number: true, lesson_name: true },
+    orderBy: [{ learn_number: 'asc' }, { id: 'asc' }],
+  });
+  if (!lessons.length) throw new Error(`Chương trình ${programCode} chưa có bài học`);
+
+  const normalizedSourceRows = sourceRows.map((row) => ({
+    row,
+    normalizedTitle: normalizeTitle(row.lessonName),
+  })).filter((item) => Boolean(item.normalizedTitle));
+  const current = await prisma.lesson_course_mapping.findMany({
+    where: { lesson_id: { in: lessons.map((lesson) => lesson.id) } },
+    select: { lesson_id: true, package_id: true, course_id: true },
+  });
+  const currentByLesson = new Map<string, Array<{ packageId: string; courseId: string }>>();
+  current.forEach((item) => {
+    const key = String(item.lesson_id);
+    currentByLesson.set(key, [...(currentByLesson.get(key) || []), {
+      packageId: item.package_id,
+      courseId: item.course_id,
+    }]);
+  });
+
+  const coursePackageCache = new Map<string, Awaited<ReturnType<typeof resolvePackagesByCourseId>>>();
+  const rows: CourseMappingPreviewRow[] = [];
+  let unmatchedLessons = 0;
+  for (const lesson of lessons) {
+    const lessonTitle = normalizeTitle(lesson.lesson_name);
+    const evaluated = normalizedSourceRows
+      .filter((item) => compatibleParts(lessonTitle, item.normalizedTitle))
+      .map((item) => ({ ...item, score: titleSimilarity(lessonTitle, item.normalizedTitle) }))
+      .filter((item) => item.score >= 0.92)
+      .sort((left, right) => right.score - left.score);
+    const best = evaluated[0];
+    // Nhiều dòng cùng tên là hợp lệ (thường là nhiều GV/Course). Chỉ coi là
+    // mơ hồ khi hai tên lõi khác nhau có điểm gần như nhau.
+    const competing = best && lessonTitle !== best.normalizedTitle && evaluated.find((item) => (
+      item.normalizedTitle !== best.normalizedTitle
+      && best.score - item.score < 0.05
+    ));
+    if (best && competing) {
+      warnings.push({
+        sheetName: best.row.sheetName,
+        rowNumber: best.row.rowNumber,
+        message: `Bài ${lesson.learn_number}: tên “${lesson.lesson_name}” khớp gần với nhiều tên trên sheet; cần kiểm tra thủ công`,
+      });
+      unmatchedLessons += 1;
+      continue;
+    }
+    const matches = best
+      ? evaluated.filter((item) => item.normalizedTitle === best.normalizedTitle).map((item) => item.row)
+      : [];
+    if (!matches.length) {
+      unmatchedLessons += 1;
+      continue;
+    }
+    const courseIds = Array.from(new Set(matches.flatMap((row) => row.courseIds.map(String))));
+    const sheetMappings: Array<{ packageId: string; courseId: string }> = [];
+    let mappingResolutionFailed = false;
+    for (const courseId of courseIds) {
+      try {
+        let packageRows = coursePackageCache.get(courseId);
+        if (!packageRows) {
+          packageRows = await resolvePackagesByCourseId(courseId);
+          coursePackageCache.set(courseId, packageRows);
+        }
+        packageRows.forEach((item) => sheetMappings.push({
+          packageId: item.package_id,
+          courseId: item.course_id,
+        }));
+      } catch (error: any) {
+        mappingResolutionFailed = true;
+        warnings.push({
+          sheetName: matches[0].sheetName,
+          rowNumber: matches[0].rowNumber,
+          message: `Bài ${lesson.learn_number} / Course ${courseId}: ${error?.message || 'Không tìm thấy Package ID tương ứng'}`,
+        });
+      }
+    }
+    // Không dùng một tập Sheet bị thiếu do lỗi tra Package làm nguồn chuẩn để
+    // xóa dữ liệu hiện tại. Người dùng có thể chạy lại sau khi nguồn hoạt động.
+    if (mappingResolutionFailed) {
+      unmatchedLessons += 1;
+      continue;
+    }
+    const uniqueSheetMappings = Array.from(new Map(
+      sheetMappings.map((item) => [mappingKey(item.packageId, item.courseId), item])
+    ).values());
+    const currentMappings = currentByLesson.get(String(lesson.id)) || [];
+    const currentKeys = new Set(currentMappings.map((item) => mappingKey(item.packageId, item.courseId)));
+    const sheetKeys = new Set(uniqueSheetMappings.map((item) => mappingKey(item.packageId, item.courseId)));
+    rows.push({
+      lessonId: String(lesson.id),
+      learnNumber: lesson.learn_number,
+      lessonName: lesson.lesson_name,
+      sheetNames: Array.from(new Set(matches.map((row) => row.sheetName))),
+      currentMappings,
+      sheetMappings: uniqueSheetMappings,
+      additions: uniqueSheetMappings.filter((item) => !currentKeys.has(mappingKey(item.packageId, item.courseId))),
+      removals: currentMappings.filter((item) => !sheetKeys.has(mappingKey(item.packageId, item.courseId))),
+    });
+  }
+
+  return {
+    programCode,
+    sheetsProcessed: selected.length,
+    lessonsTotal: lessons.length,
+    matchedLessons: rows.length,
+    unmatchedLessons,
+    updatesNeeded: rows.reduce((total, row) => total + row.additions.length + row.removals.length, 0),
+    rows,
+    warnings,
+  };
+};
+
+export const applyScormCourseMappingSync = async (
+  programCode: string,
+  selectedNames: string[]
+) => {
+  const preview = await previewScormCourseMappingSync(programCode, selectedNames);
+  const result = await prisma.$transaction(async (tx) => {
+    let added = 0;
+    let removed = 0;
+    for (const row of preview.rows) {
+      if (row.removals.length) {
+        const deleted = await tx.lesson_course_mapping.deleteMany({
+          where: {
+            lesson_id: BigInt(row.lessonId),
+            OR: row.removals.map((mapping) => ({
+              package_id: mapping.packageId,
+              course_id: mapping.courseId,
+            })),
+          },
+        });
+        removed += deleted.count;
+      }
+      if (row.additions.length) {
+        const created = await tx.lesson_course_mapping.createMany({
+          data: row.additions.map((mapping) => ({
+            lesson_id: BigInt(row.lessonId),
+            package_id: mapping.packageId,
+            course_id: mapping.courseId,
+          })),
+          skipDuplicates: true,
+        });
+        added += created.count;
+      }
+    }
+    return { added, removed };
+  }, { maxWait: 10_000, timeout: 120_000 });
+  return { ...preview, ...result };
 };

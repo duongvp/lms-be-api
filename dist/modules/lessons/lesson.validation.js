@@ -202,19 +202,24 @@ const validateLessonBulkUpdatePayload = (body) => {
 };
 exports.validateLessonBulkUpdatePayload = validateLessonBulkUpdatePayload;
 const validateLessonReorderPayload = (body) => {
-    const grade = requiredInteger(body.grade, 'grade');
-    if (grade < 1 || grade > 12)
+    const grade = optionalInteger(body.grade, 'grade');
+    if (grade !== undefined && (grade < 1 || grade > 12)) {
         throw new ApiError_1.default('grade phải nằm trong khoảng 1-12', 400);
+    }
     const subjectCode = requiredString(body.subject_code, 'subject_code', 100);
     const orderedIds = validateLessonIds(body.ordered_ids);
     const mode = stringOrUndefined(body.mode) ?? 'insert';
     if (mode !== 'insert' && mode !== 'swap') {
         throw new ApiError_1.default('mode chỉ hỗ trợ insert hoặc swap', 400);
     }
+    if (body.renumber !== undefined && typeof body.renumber !== 'boolean') {
+        throw new ApiError_1.default('renumber phải là boolean', 400);
+    }
     return {
         grade,
         subject_code: subjectCode,
         mode,
+        renumber: body.renumber === true,
         ordered_ids: orderedIds,
     };
 };

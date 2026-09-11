@@ -9,4 +9,6 @@ const dashboard_controller_1 = require("./dashboard.controller");
 const router = (0, express_1.Router)();
 router.use(auth_middleware_1.default.authenticate);
 router.get('/overview', auth_middleware_1.default.authorize(['dashboard_view']), dashboard_controller_1.overview);
+router.get('/hmo-lesson-sync/issues', auth_middleware_1.default.authorize(['dashboard_view']), dashboard_controller_1.hmoLessonSyncIssues);
+router.post('/hmo-lesson-sync/run', auth_middleware_1.default.authorize(['calendar.update']), dashboard_controller_1.runHmoLessonSync);
 exports.default = router;

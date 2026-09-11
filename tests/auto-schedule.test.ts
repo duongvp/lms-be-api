@@ -9,6 +9,7 @@ test('xếp lịch xen kẽ theo block và bỏ qua ngày nghỉ', () => {
     start_date: '2027-06-20',
     strategy: 'interleaved',
     holidays: ['2027-06-21'],
+    holiday_handling: 'next_session',
     blocks: [
       {
         learn_number: 1,
@@ -28,8 +29,110 @@ test('xếp lịch xen kẽ theo block và bỏ qua ngày nghỉ', () => {
   });
 
   assert.deepEqual(result.calendars.map((item) => item.learn_number), [1, 2, 1, 2]);
-  assert.equal(result.calendars[0].start_time.slice(0, 10), '2027-06-28');
+  assert.equal(result.calendars[0].start_time.slice(0, 10), '2027-06-22');
   assert.ok(result.calendars.every((item) => !item.start_time.startsWith('2027-06-21')));
+});
+
+test('TopClass có thể chuyển ngày nghỉ sang buổi học kế tiếp trong lịch tuần', () => {
+  const result = previewAutoSchedule({
+    program_code: 'nguvan-9-2027',
+    system_type: 'topclass',
+    start_date: '2027-01-01', // Thứ 6
+    holidays: ['2027-01-01'],
+    holiday_handling: 'next_session',
+    blocks: [{
+      lessons: [{
+        learn_number: 1,
+        sessions: [
+          { weekday: 5, start_time: '19:00', end_time: '20:30', teacher: 'gv-thu-6' },
+          { weekday: 7, start_time: '20:00', end_time: '21:30', teacher: 'gv-chu-nhat' },
+        ],
+      }],
+    }],
+  });
+
+  assert.equal(result.calendars[0].start_time.slice(0, 10), '2027-01-03');
+  assert.equal(result.calendars[0].teacher, 'gv-chu-nhat');
+});
+
+test('TopClass mặc định tạo lịch ngày nghỉ và đánh dấu nghỉ', () => {
+  const result = previewAutoSchedule({
+    program_code: 'nguvan-9-2027',
+    system_type: 'topclass',
+    start_date: '2027-01-01',
+    holidays: ['2027-01-01'],
+    blocks: [{
+      lessons: [{
+        learn_number: 1,
+        sessions: [{ weekday: 5, start_time: '19:00', end_time: '20:30' }],
+      }],
+    }],
+  });
+
+  assert.equal(result.calendars[0].start_time.slice(0, 10), '2027-01-01');
+  assert.equal(result.calendars[0].lesson_status, 1);
+  assert.equal(result.calendars[0].cancel_reason, 'Ngày nghỉ');
+  assert.equal(result.calendars[0].auto_schedule.preview_holiday, true);
+  assert.equal(result.calendars.length, 1);
+});
+
+test('TopClass bỏ chuỗi ngày nghỉ liên tiếp mà không tiêu thụ bài trong đề cương', () => {
+  const holidays = [
+    '2027-02-02', '2027-02-04', '2027-02-05', '2027-02-07',
+    '2027-02-09', '2027-02-11', '2027-02-12',
+  ];
+  const result = previewAutoSchedule({
+    program_code: 'toan-12-2027',
+    system_type: 'topclass',
+    start_date: '2027-01-29',
+    holidays,
+    holiday_handling: 'next_session',
+    blocks: [{
+      lessons: [
+        { learn_number: 62, sessions: [{ weekday: 5, start_time: '19:00', end_time: '20:30' }] },
+        { learn_number: 63, sessions: [{ weekday: 7, start_time: '19:00', end_time: '20:30' }] },
+        { learn_number: 64, sessions: [{ weekday: 2, start_time: '19:00', end_time: '20:30' }] },
+      ],
+    }],
+  });
+
+  assert.deepEqual(result.calendars.map((item) => ({
+    learnNumber: item.learn_number,
+    date: item.start_time.slice(0, 10),
+  })), [
+    { learnNumber: 62, date: '2027-01-29' },
+    { learnNumber: 63, date: '2027-01-31' },
+    { learnNumber: 64, date: '2027-02-14' },
+  ]);
+  assert.ok(result.calendars.every((item) => !holidays.includes(item.start_time.slice(0, 10))));
+});
+
+test('TopClass cho phép mỗi đợt nghỉ có cách xử lý khác nhau', () => {
+  const result = previewAutoSchedule({
+    program_code: 'toan-11-2027',
+    system_type: 'topclass',
+    start_date: '2027-01-01',
+    holidays: ['2027-01-01', '2027-01-03'],
+    holiday_rules: [
+      { date: '2027-01-01', handling: 'create_canceled' },
+      { date: '2027-01-03', handling: 'next_session' },
+    ],
+    blocks: [{
+      lessons: [
+        { learn_number: 54, sessions: [{ weekday: 5, start_time: '19:00', end_time: '20:30' }] },
+        { learn_number: 55, sessions: [{ weekday: 7, start_time: '19:00', end_time: '20:30' }] },
+      ],
+    }],
+  });
+
+  assert.deepEqual(result.calendars.map((item) => ({
+    learnNumber: item.learn_number,
+    date: item.start_time.slice(0, 10),
+    status: item.lesson_status,
+  })), [
+    { learnNumber: 54, date: '2027-01-01', status: 1 },
+    { learnNumber: 55, date: '2027-01-08', status: 0 },
+  ]);
 });
 
 test('từ chối khung giờ kết thúc trước giờ bắt đầu', () => {

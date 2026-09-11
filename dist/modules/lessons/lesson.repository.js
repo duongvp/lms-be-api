@@ -34,15 +34,14 @@ exports.syncCalendarsFromLessons = syncCalendarsFromLessons;
  * phải đứng yên. Nội dung bài mới được gắn vào slot cùng learn_number; tuyệt
  * đối không di chuyển start/end time hoặc phân công giảng dạy theo lesson id.
  */
-const syncCalendarSlotsAfterLessonReorder = async (tx, grade, subjectCode, lessonIds, learnNumbers) => {
+const syncCalendarSlotsAfterLessonReorder = async (tx, _grade, subjectCode, lessonIds, learnNumbers) => {
     if (lessonIds.length === 0 || learnNumbers.length === 0)
         return;
     const lessonPlaceholders = lessonIds.map(() => '?').join(', ');
     const learnNumberPlaceholders = learnNumbers.map(() => '?').join(', ');
     await tx.$executeRawUnsafe(`UPDATE calendar AS calendar_row
      INNER JOIN lessons AS lesson
-       ON lesson.grade <=> ?
-      AND lesson.subject_code = ?
+       ON lesson.subject_code = ?
       AND lesson.learn_number = calendar_row.learn_number
       AND lesson.status <> 0
       AND lesson.id IN (${lessonPlaceholders})
@@ -51,7 +50,7 @@ const syncCalendarSlotsAfterLessonReorder = async (tx, grade, subjectCode, lesso
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
      WHERE calendar_row.code = ?
-       AND calendar_row.learn_number IN (${learnNumberPlaceholders})`, grade, subjectCode, ...lessonIds, subjectCode, ...learnNumbers);
+       AND calendar_row.learn_number IN (${learnNumberPlaceholders})`, subjectCode, ...lessonIds, subjectCode, ...learnNumbers);
 };
 const syncCalendarFromLesson = async (tx, lessonId) => (0, exports.syncCalendarsFromLessons)(tx, [lessonId]);
 const buildWhere = (query) => {
@@ -324,17 +323,23 @@ const reorderLessonsInGroup = async (grade, subjectCode, orderedIds, learnNumber
         const idPlaceholders = orderedIds.map(() => '?').join(', ');
         // Tạm chuyển toàn bộ số hiện tại sang âm trong một câu lệnh để tránh
         // vi phạm unique (grade, subject_code, learn_number) khi hoán đổi.
-        await tx.$executeRawUnsafe(`UPDATE lessons
+        const stagedCount = await tx.$executeRawUnsafe(`UPDATE lessons
        SET learn_number = -learn_number, updated_at = CURRENT_TIMESTAMP(3)
        WHERE id IN (${idPlaceholders})
-         AND grade <=> ? AND subject_code = ? AND status <> 0`, ...orderedIds, grade, subjectCode);
+         AND subject_code = ? AND status <> 0`, ...orderedIds, subjectCode);
+        if (Number(stagedCount) !== orderedIds.length) {
+            throw new Error('Không thể cập nhật đầy đủ danh sách bài học đã sắp xếp');
+        }
         const cases = orderedIds.map(() => 'WHEN ? THEN ?').join(' ');
         const caseValues = orderedIds.flatMap((id, index) => [id, learnNumbers[index]]);
-        await tx.$executeRawUnsafe(`UPDATE lessons
+        const updatedCount = await tx.$executeRawUnsafe(`UPDATE lessons
        SET learn_number = CASE id ${cases} ELSE learn_number END,
            updated_at = CURRENT_TIMESTAMP(3)
        WHERE id IN (${idPlaceholders})
-         AND grade <=> ? AND subject_code = ? AND status <> 0`, ...caseValues, ...orderedIds, grade, subjectCode);
+         AND subject_code = ? AND status <> 0`, ...caseValues, ...orderedIds, subjectCode);
+        if (Number(updatedCount) !== orderedIds.length) {
+            throw new Error('Không thể lưu đầy đủ số thứ tự bài học');
+        }
         // Calendar giữ nguyên slot (learn_number, thời gian, giáo viên, trợ giảng),
         // chỉ nhận lại session_id và nội dung của lesson sau khi sắp xếp.
         await syncCalendarSlotsAfterLessonReorder(tx, grade, subjectCode, orderedIds, learnNumbers);

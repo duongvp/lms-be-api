@@ -34,6 +34,8 @@ router.get('/scorm-name-sync/sheets', authorize(['lessons.update']), lesson_cont
 router.post('/scorm-name-sync/preview', authorize(['lessons.update']), lesson_controller_1.default.previewScormNameSync);
 router.post('/scorm-name-sync/apply', authorize(['lessons.update']), lesson_controller_1.default.applyScormNameSync);
 router.get('/scorm-name-sync/status/:jobId', authorize(['lessons.update']), lesson_controller_1.default.scormNameSyncStatus);
+router.post('/scorm-name-sync/course-mappings/preview', authorize(['lessons.update']), authorizeProgram('lessons.update', (req) => String(req.body?.program_code || '')), lesson_controller_1.default.previewScormCourseMappings);
+router.post('/scorm-name-sync/course-mappings/apply', authorize(['lessons.update']), authorizeProgram('lessons.update', (req) => String(req.body?.program_code || '')), lesson_controller_1.default.applyScormCourseMappings);
 router.get('/', authorize(['lessons.view']), authorizeProgram('lessons.view', (req) => String(req.query.subject_code || req.query.course_code || '')), lesson_controller_1.default.list);
 router.get('/options/subjects', authorize(['lessons.view']), lesson_controller_1.default.subjects);
 router.get('/options/programs', authorize(['lessons.view']), lesson_controller_1.default.programs);

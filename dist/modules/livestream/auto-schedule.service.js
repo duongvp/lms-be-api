@@ -153,7 +153,27 @@ const previewAutoSchedule = (payload) => {
             throw new Error(`Ngày nghỉ ${value} không hợp lệ`);
         return value;
     }));
+    const holidayHandlingByDate = new Map();
+    (payload.holiday_rules || []).forEach((rule) => {
+        if (!DATE_PATTERN.test(rule?.date || ''))
+            throw new Error(`Ngày nghỉ ${rule?.date || '-'} không hợp lệ`);
+        if (!['create_canceled', 'next_session'].includes(rule?.handling)) {
+            throw new Error(`Cách xử lý ngày nghỉ ${rule.date} không hợp lệ`);
+        }
+        holidays.add(rule.date);
+        holidayHandlingByDate.set(rule.date, rule.handling);
+    });
     const sequence = orderedSessions(payload.blocks, payload.strategy || 'by_block', payload.system_type === 'topuni' ? 1 : undefined);
+    const holidayHandling = payload.holiday_handling === 'next_session'
+        || (payload.system_type === 'topuni'
+            && payload.holiday_handling === undefined
+            && !(payload.holiday_rules || []).length)
+        ? 'next_session'
+        : 'create_canceled';
+    const holidayHandlingForDate = (date) => (holidayHandlingByDate.get(date) || holidayHandling);
+    const skippedHolidays = new Set([...holidays].filter((date) => holidayHandlingForDate(date) === 'next_session'));
+    const hasNextSessionHoliday = skippedHolidays.size > 0;
+    const topclassWeekdays = [...new Set(sequence.map(({ session }) => Number(session.weekday)))];
     const topuniWeekdays = [...new Set((payload.topuni_weekdays || []).map(Number))];
     const topuniWeekInterval = Number(payload.topuni_week_interval ?? 1);
     if (payload.system_type === 'topuni'
@@ -169,7 +189,7 @@ const previewAutoSchedule = (payload) => {
         ? topuniWeekdays
         : [Number(sequence[0]?.session.weekday)];
     const topuniAnchorDate = payload.system_type === 'topuni'
-        ? nextStudyDate(cursor, topuniAnchorWeekdays, holidays)
+        ? nextStudyDate(cursor, topuniAnchorWeekdays, skippedHolidays)
         : undefined;
     const lessonOccurrences = new Map();
     const customizeLessonNames = Boolean(payload.customize_lesson_names);
@@ -180,17 +200,22 @@ const previewAutoSchedule = (payload) => {
         if (!Number.isInteger(lesson.learn_number) || lesson.learn_number <= 0) {
             throw new Error(`Block ${index + 1} có learn_number không hợp lệ`);
         }
-        const studyDate = nextStudyDate(cursor, payload.system_type === 'topuni' && payload.topuni_per_lesson_schedule
-            ? [Number(session.weekday)]
-            : payload.system_type === 'topuni' && topuniWeekdays.length
-                ? topuniWeekdays
-                : [Number(session.weekday)], holidays, payload.system_type === 'topuni' ? topuniWeekInterval : 1, topuniAnchorDate);
+        const studyDate = nextStudyDate(cursor, payload.system_type === 'topclass' && hasNextSessionHoliday
+            ? topclassWeekdays
+            : payload.system_type === 'topuni' && payload.topuni_per_lesson_schedule
+                ? [Number(session.weekday)]
+                : payload.system_type === 'topuni' && topuniWeekdays.length
+                    ? topuniWeekdays
+                    : [Number(session.weekday)], skippedHolidays, payload.system_type === 'topuni' ? topuniWeekInterval : 1, topuniAnchorDate);
         const studyWeekday = studyDate.getDay() === 0 ? 7 : studyDate.getDay();
-        const activeSession = payload.system_type === 'topuni'
-            && topuniWeekdays.length
-            && !payload.topuni_per_lesson_schedule
+        const activeSession = payload.system_type === 'topclass' && hasNextSessionHoliday
             ? lesson.sessions.find((item) => Number(item.weekday) === studyWeekday)
-            : session;
+                || sequence.find((item) => Number(item.session.weekday) === studyWeekday)?.session
+            : payload.system_type === 'topuni'
+                && topuniWeekdays.length
+                && !payload.topuni_per_lesson_schedule
+                ? lesson.sessions.find((item) => Number(item.weekday) === studyWeekday)
+                : session;
         if (!activeSession) {
             throw new Error(`TopUni chưa cấu hình khung giờ cho thứ ${studyWeekday}`);
         }
@@ -198,6 +223,8 @@ const previewAutoSchedule = (payload) => {
         const endTime = combineDateTime(studyDate, activeSession.end_time);
         if (endTime <= startTime)
             throw new Error('Giờ kết thúc phải sau giờ bắt đầu');
+        const isCanceledHoliday = holidays.has(dateOnly(studyDate))
+            && holidayHandlingForDate(dateOnly(studyDate)) === 'create_canceled';
         cursor = new Date(studyDate);
         cursor.setDate(cursor.getDate() + 1);
         const lessonKey = lesson.session_id == null
@@ -230,8 +257,9 @@ const previewAutoSchedule = (payload) => {
             room: activeSession.room,
             start_time: formatCalendarWallTime(startTime),
             end_time: formatCalendarWallTime(endTime),
-            lesson_status: 0,
-            package_lesson_mappings: (activeSession.hmo_mappings || []).map((mapping) => ({
+            lesson_status: isCanceledHoliday ? 1 : 0,
+            ...(isCanceledHoliday ? { cancel_reason: 'Ngày nghỉ' } : {}),
+            package_lesson_mappings: isCanceledHoliday ? [] : (activeSession.hmo_mappings || []).map((mapping) => ({
                 package_ids: [mapping.package_id],
                 course_id: mapping.course_id,
                 lesson_ids: [mapping.lesson_id],
@@ -241,6 +269,7 @@ const previewAutoSchedule = (payload) => {
                 lesson_index: lessonsOf(block).indexOf(lesson),
                 session_index: lesson.sessions.indexOf(activeSession),
                 hmo_section_id: activeSession.lesson_id,
+                ...(isCanceledHoliday ? { preview_holiday: true } : {}),
             },
         };
     });

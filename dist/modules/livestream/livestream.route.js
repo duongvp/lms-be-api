@@ -192,6 +192,7 @@ router.put('/bulk', authorize(['calendar.update']), authorizePrograms('calendar.
 // Công cụ khôi phục enrollment cho dữ liệu calendar legacy. Không yêu cầu
 // quyền nghiệp vụ riêng theo yêu cầu tạm thời, nhưng vẫn phải đăng nhập.
 router.post('/sync-missing-teaching-users', livestreamController.backfillMissingTeachingUsers);
+router.post('/hocmai-sync-queue/resend', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), livestreamController.resendToHocmai);
 router.post('/:id/classroom-assignment/preview', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), livestreamController.previewStudentClassroomAssignment);
 router.post('/:id/classroom-assignment/apply', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), livestreamController.applyStudentClassroomAssignment);
 router.put('/:id/reschedule', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body?.new_session || {}))), livestreamController.rescheduleSession);

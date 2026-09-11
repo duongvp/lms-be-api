@@ -50,6 +50,22 @@ const scormNameSyncStatus = async (req, res) => {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 404);
     }
 };
+const previewScormCourseMappings = async (req, res) => {
+    try {
+        return (0, apiResponse_1.SuccessResponse)(res, 'Preview created', await (0, scorm_name_sync_service_1.previewScormCourseMappingSync)(String(req.body?.program_code || ''), selectedSyncSheets(req.body?.sheet_names)));
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
+    }
+};
+const applyScormCourseMappings = async (req, res) => {
+    try {
+        return (0, apiResponse_1.SuccessResponse)(res, 'Updated', await (0, scorm_name_sync_service_1.applyScormCourseMappingSync)(String(req.body?.program_code || ''), selectedSyncSheets(req.body?.sheet_names)));
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
+    }
+};
 const reauthenticate = async (req, res) => {
     try {
         return (0, apiResponse_1.SuccessResponse)(res, 'Xác thực cấp 2 thành công', (0, lesson_secondary_auth_1.issueLessonSecondaryToken)(req, req.body?.password));
@@ -324,6 +340,8 @@ exports.default = {
     previewScormNameSync,
     applyScormNameSync,
     scormNameSyncStatus,
+    previewScormCourseMappings,
+    applyScormCourseMappings,
     reauthenticate,
     reauthStatus,
     list,

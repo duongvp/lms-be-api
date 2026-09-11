@@ -33,6 +33,7 @@ export interface LessonReorderPayload {
   grade?: number;
   subject_code: string;
   mode: 'insert' | 'swap';
+  renumber: boolean;
   ordered_ids: bigint[];
 }
 

@@ -45,7 +45,7 @@ test('từ chối khi trạng thái cuối của hai lịch vẫn trùng giáo v
     },
   ]), (error: unknown) => {
     assert.ok(error instanceof Error);
-    assert.match(error.message, /Trùng lịch giáo viên “Giáo viên A”/);
+    assert.match(error.message, /Trùng lịch giáo viên: “Giáo viên A”/);
     assert.match(error.message, /khóa COURSE-1, Bài 10, “Bài thứ nhất”, ID lịch 1/);
     assert.match(error.message, /28\/08\/2026 08:00–28\/08\/2026 10:00/);
     assert.match(error.message, /khóa COURSE-2, Bài 20, “Bài thứ hai”, ID lịch 2/);
@@ -68,4 +68,33 @@ test('hai lịch nối tiếp sát giờ không bị xem là trùng', () => {
       end_time: at('2026-08-28', '12:00'),
     },
   ]));
+});
+
+test('thông báo rõ trợ giảng và hai lịch bị trùng trong cập nhật hàng loạt', () => {
+  assert.throws(() => validateBulkFinalStateConflicts([
+    {
+      id: 11,
+      assistant_teacher: 'trogiang-a,trogiang-b',
+      code: 'COURSE-11',
+      learn_number: 11,
+      lesson_name: 'Lịch thứ nhất',
+      start_time: at('2026-09-08', '18:00'),
+      end_time: at('2026-09-08', '20:00'),
+    },
+    {
+      id: 12,
+      assistant_teacher: 'trogiang-b',
+      code: 'COURSE-12',
+      learn_number: 12,
+      lesson_name: 'Lịch thứ hai',
+      start_time: at('2026-09-08', '19:00'),
+      end_time: at('2026-09-08', '21:00'),
+    },
+  ]), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /Trùng lịch trợ giảng: “trogiang-b”/);
+    assert.match(error.message, /khóa COURSE-11, Bài 11, “Lịch thứ nhất”, ID lịch 11/);
+    assert.match(error.message, /khóa COURSE-12, Bài 12, “Lịch thứ hai”, ID lịch 12/);
+    return true;
+  });
 });

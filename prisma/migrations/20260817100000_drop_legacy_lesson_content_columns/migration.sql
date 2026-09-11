@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS `lessons_legacy_content_backup_20260817` (
 );
 
 INSERT INTO `lessons_legacy_content_backup_20260817` (
-  `lesson_id`,
+  `lesson_id`,  
   `lesson_document`,
   `lesson_baitap`,
   `lesson_tomtat`,

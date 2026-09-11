@@ -3,6 +3,7 @@ import * as livestreamService from './livestream.service';
 import FieldPermissionService from '../roles/field-permission.service';
 import {
   buildCalendarFile,
+  buildOperationalCalendarWorkbook,
   buildCalendarUpdateFile,
   buildCalendarTemplate,
   getCalendarFileContentType,
@@ -133,6 +134,19 @@ export const backfillMissingTeachingUsers = async (req: Request, res: Response):
   }
 };
 
+export const resendToHocmai = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await livestreamService.resendCalendarsToHocmai(req.body?.ids);
+    res.status(200).json({
+      success: true,
+      message: 'Đã đưa lịch học vào hàng đợi gửi HMO',
+      data: result,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
 export const previewStudentClassroomAssignment = async (
   req: Request,
   res: Response,
@@ -258,19 +272,22 @@ export const exportFile = async (req: Request, res: Response): Promise<void> => 
   try {
     const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
     const updateTemplate = req.query.purpose === 'update';
+    const operationalWorkbook = req.query.purpose === 'all-programs';
     const rows = await livestreamService.getCalendarRowsForExport(
       req.query.ids,
       getProgramScopeFilter(req.user, 'calendar.export'),
       String(req.query.program_code || '').trim() || undefined
     );
-    const buffer = updateTemplate
+    const buffer = operationalWorkbook
+      ? buildOperationalCalendarWorkbook(rows)
+      : updateTemplate
       ? buildCalendarUpdateFile(rows)
       : buildCalendarFile(rows, format);
-    const responseFormat = updateTemplate ? 'xlsx' : format;
+    const responseFormat = updateTemplate || operationalWorkbook ? 'xlsx' : format;
     res.setHeader('Content-Type', getCalendarFileContentType(responseFormat));
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="calendar-${updateTemplate ? 'update-assistants' : 'export'}-${Date.now()}.${responseFormat}"`
+      `attachment; filename="calendar-${operationalWorkbook ? 'all-programs' : updateTemplate ? 'update-assistants' : 'export'}-${Date.now()}.${responseFormat}"`
     );
     res.send(buffer);
   } catch (err: any) {

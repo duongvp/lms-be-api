@@ -244,6 +244,12 @@ router.post(
   livestreamController.backfillMissingTeachingUsers
 );
 router.post(
+  '/hocmai-sync-queue/resend',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),
+  livestreamController.resendToHocmai
+);
+router.post(
   '/:id/classroom-assignment/preview',
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', calendarCodeById),

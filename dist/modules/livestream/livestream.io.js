@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.buildCalendarTemplate = exports.getCalendarFileContentType = exports.buildCalendarUpdateFile = exports.buildCalendarFile = exports.validateCalendarImportRows = exports.parseCalendarMappingImportFile = exports.parseCalendarImportFile = exports.CALENDAR_UPDATE_FILE_COLUMNS = exports.CALENDAR_FILE_COLUMNS = exports.CALENDAR_IMPORT_FILE_COLUMNS = void 0;
+exports.buildCalendarTemplate = exports.getCalendarFileContentType = exports.buildCalendarUpdateFile = exports.buildOperationalCalendarWorkbook = exports.buildCalendarFile = exports.validateCalendarImportRows = exports.parseCalendarMappingImportFile = exports.parseCalendarImportFile = exports.CALENDAR_UPDATE_FILE_COLUMNS = exports.CALENDAR_FILE_COLUMNS = exports.CALENDAR_IMPORT_FILE_COLUMNS = void 0;
 const XLSX = __importStar(require("xlsx"));
 exports.CALENDAR_IMPORT_FILE_COLUMNS = [
     'Môn',
@@ -711,6 +711,99 @@ const buildCalendarFile = (rows, format) => {
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 };
 exports.buildCalendarFile = buildCalendarFile;
+const OPERATIONAL_COLUMNS = [
+    ['Môn', 'operational_subject'], ['Mã buổi học', 'operational_lesson_code'], ['Tên bài giảng', 'lesson_name'],
+    ['Tên GV', 'teacher_name'], ['Ngày live', 'live_date'], ['Thứ', 'weekday'],
+    ['Khung giờ', 'time_range'], ['Tài liệu live\n(TL HS)', 'lesson_document'],
+    ['Nhiệm vụ học tập', 'lesson_baitap'], ['Tài liệu lưu trữ', 'archive_document'],
+    ['BTV ND', 'content_homework'], ['Trợ giảng', 'assistant_name'],
+    ['Link Sharepoint', 'sharepoint_link'], ['ID course', 'course_ids'],
+    ['ID Bài giảng', 'lesson_ids'], ['ID package', 'package_ids'],
+    ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['Ngày XB', ''],
+    ['Trạng thái', ''], ['BTV vận hành', ''], ['BACK', ''], ['Link record', ''],
+    ['Link API', ''], ['Tháng live', ''], ['', ''], ['ID', ''], ['Combine', ''], ['Test', ''],
+];
+const operationalSheetName = (rows, code, used) => {
+    const grade = code.match(/(?:^|-)(\d{1,2})(?:-|$)/)?.[1];
+    const subject = String(rows[0]?.subject || code).trim();
+    const base = `${subject}${grade && !subject.includes(grade) ? ` ${grade}` : ''}`
+        .replace(/[\\/?*\[\]:]/g, ' ').trim().slice(0, 31) || 'Chương trình';
+    let name = base;
+    let index = 2;
+    while (used.has(name.toLocaleLowerCase('vi'))) {
+        const suffix = ` (${index++})`;
+        name = `${base.slice(0, 31 - suffix.length)}${suffix}`;
+    }
+    used.add(name.toLocaleLowerCase('vi'));
+    return name;
+};
+const normalizeOperationalSubject = (value) => String(value || '')
+    .replace(/\b(?:lớp\s*)?\d{1,2}\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+const operationalSubjectPrefix = (subject, grade) => {
+    const normalized = subject.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').toLowerCase();
+    if (normalized.includes('khoa hoc tu nhien') || normalized.includes('khtn'))
+        return `KHTN${grade}`;
+    if (normalized.includes('tieng anh') || /(^|\s)ta($|\s)/.test(normalized))
+        return `TA${grade}`;
+    if (normalized.includes('vat ly') || normalized.includes('vat li') || /(^|\s)vl($|\s)/.test(normalized))
+        return `VL${grade}`;
+    if (normalized.includes('hoa hoc') || /(^|\s)hh($|\s)/.test(normalized))
+        return `HH${grade}`;
+    if (normalized.includes('ngu van') || normalized === 'van')
+        return `V${grade}`;
+    if (normalized.includes('toan'))
+        return `T${grade}`;
+    const initials = normalized.split(/\s+/).filter(Boolean).map((part) => part[0]).join('').toUpperCase() || 'MH';
+    return `${initials}${grade}`;
+};
+const prepareOperationalRows = (items, code) => {
+    const grade = code.match(/(?:^|-)(\d{1,2})(?:-|$)/)?.[1]
+        || String(items[0]?.subject || '').match(/\b(\d{1,2})\b/)?.[1]
+        || '';
+    const occurrenceByLesson = new Map();
+    return items.map((row) => {
+        const lessonNumber = Number(row.learn_number);
+        const lessonKey = Number.isFinite(lessonNumber) ? String(lessonNumber) : String(row.lesson_name || '');
+        const occurrence = (occurrenceByLesson.get(lessonKey) || 0) + 1;
+        occurrenceByLesson.set(lessonKey, occurrence);
+        const subject = normalizeOperationalSubject(row.subject);
+        const paddedLesson = Number.isFinite(lessonNumber)
+            ? String(lessonNumber).padStart(2, '0')
+            : String(occurrence).padStart(2, '0');
+        return {
+            ...row,
+            operational_subject: subject,
+            operational_lesson_code: `${operationalSubjectPrefix(subject, grade)}_L${occurrence}_${paddedLesson}`,
+        };
+    });
+};
+const buildOperationalCalendarWorkbook = (rows) => {
+    const workbook = XLSX.utils.book_new();
+    const groups = new Map();
+    rows.forEach((row) => {
+        const code = String(row.code || 'Chương trình').trim();
+        groups.set(code, [...(groups.get(code) || []), row]);
+    });
+    const used = new Set();
+    Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b, 'vi')).forEach(([code, items]) => {
+        const operationalRows = prepareOperationalRows(items, code);
+        const matrix = [
+            OPERATIONAL_COLUMNS.map(([header]) => header),
+            ...operationalRows.map((row) => OPERATIONAL_COLUMNS.map(([, key]) => key ? row[key] ?? '' : '')),
+        ];
+        const sheet = XLSX.utils.aoa_to_sheet(matrix);
+        sheet['!cols'] = OPERATIONAL_COLUMNS.map(([, key]) => ({
+            wch: ['lesson_name', 'lesson_document', 'lesson_baitap', 'archive_document'].includes(key) ? 34 : 18,
+        }));
+        XLSX.utils.book_append_sheet(workbook, sheet, operationalSheetName(items, code, used));
+    });
+    if (!workbook.SheetNames.length)
+        XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([]), 'Lịch học');
+    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+};
+exports.buildOperationalCalendarWorkbook = buildOperationalCalendarWorkbook;
 const buildCalendarUpdateFile = (rows) => {
     const worksheet = XLSX.utils.json_to_sheet(rows.map((row) => Object.fromEntries(exports.CALENDAR_UPDATE_FILE_COLUMNS.map((column) => [column.header, row[column.key] ?? '']))), {
         header: exports.CALENDAR_UPDATE_FILE_COLUMNS.map((column) => column.header),

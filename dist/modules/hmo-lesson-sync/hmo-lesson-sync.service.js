@@ -53,6 +53,13 @@ const parseCandidate = (candidate) => {
 };
 const teacherMatches = (actual, expected) => actual === expected
     || (!expected.includes(' ') && actual.split(' ').at(-1) === expected);
+const teacherMatchQuality = (actual, expected) => {
+    if (!expected)
+        return 0;
+    if (actual === expected)
+        return 2;
+    return teacherMatches(actual, expected) ? 1 : -1;
+};
 const partMarkers = (title) => Array.from(new Set(title.split(' ').filter((part) => /^p\d+$/.test(part)))).sort().join('|');
 const compatibleParts = (left, right) => {
     const leftParts = partMarkers(left);
@@ -87,12 +94,16 @@ exports.titleSimilarity = titleSimilarity;
 const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
     const candidates = rawCandidates.map(parseCandidate);
     const evaluated = calendarRows.map((row, index) => {
-        const title = (0, exports.normalizeTitle)(row.lesson_name);
+        // Modal hàng loạt mặc định dùng tên chuẩn trong bảng lessons để match.
+        // Tên calendar có thể chứa [Lịch n], [HỌC BÙ] hoặc hậu tố vận hành và chỉ
+        // được dùng để suy ra occurrence.
+        const title = (0, exports.normalizeTitle)(row.source_lesson_name);
         const teacher = normalizeTeacher(row.teacher_name || row.teacher);
-        const matches = candidates.map((candidate) => {
+        const allMatches = candidates.map((candidate) => {
             if (!(0, exports.compatibleParts)(title, candidate.title))
                 return null;
-            if (candidate.teacher && !teacherMatches(teacher, candidate.teacher))
+            const matchQuality = teacherMatchQuality(teacher, candidate.teacher);
+            if (matchQuality < 0)
                 return null;
             const score = (0, exports.titleSimilarity)(title, candidate.title);
             if (score < 0.92)
@@ -102,11 +113,16 @@ const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
                 score,
                 exactTitle: title === candidate.title,
                 teacherMatched: Boolean(candidate.teacher && teacherMatches(teacher, candidate.teacher)),
+                teacherMatchQuality: matchQuality,
             };
-        }).filter((item) => Boolean(item)).sort((left, right) => (Number(right.teacherMatched) - Number(left.teacherMatched)
+        }).filter((item) => Boolean(item)).sort((left, right) => (right.teacherMatchQuality - left.teacherMatchQuality
             || Number(right.exactTitle) - Number(left.exactTitle)
             || right.score - left.score
             || left.candidate.lessonId.localeCompare(right.candidate.lessonId, 'vi', { numeric: true })));
+        const bestTeacherQuality = allMatches[0]?.teacherMatchQuality;
+        let matches = bestTeacherQuality === undefined
+            ? allMatches
+            : allMatches.filter((item) => item.teacherMatchQuality === bestTeacherQuality);
         if (matches[0] && !matches[0].exactTitle) {
             const competing = matches.find((item, matchIndex) => matchIndex > 0
                 && item.teacherMatched === matches[0].teacherMatched
@@ -114,6 +130,9 @@ const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
             if (competing && matches[0].score - competing.score < 0.05) {
                 return { row, index, teacher, matches: [], ambiguousCount: matches.length };
             }
+        }
+        if (matches[0]) {
+            matches = matches.filter((item) => item.candidate.title === matches[0].candidate.title);
         }
         return { row, index, teacher, matches, ambiguousCount: 0 };
     });
@@ -184,7 +203,8 @@ const executeRun = async (runId) => {
         const rows = await prisma_1.default.$queryRaw `
       SELECT c.id AS calendar_id, c.key, c.code, c.code AS program_code, c.learn_number, c.lesson_count,
         c.teacher, tp.display_name AS teacher_name, l.id AS lesson_id,
-        l.subject_code, c.lesson_name, lcm.package_id, lcm.course_id,
+        l.subject_code, l.lesson_name AS source_lesson_name,
+        c.lesson_name, lcm.package_id, lcm.course_id,
         (c.start_time > NOW() AND COALESCE(c.lesson_status, 0) <> 1) AS is_target
       FROM calendar c
       INNER JOIN lessons l ON l.id = c.session_id AND l.status <> 0
@@ -241,8 +261,17 @@ const executeRun = async (runId) => {
                 const matchingCalendars = Array.from(calendarGroups.values())
                     .filter((group) => group.some((item) => String(item.package_id) === pair.packageId && String(item.course_id) === pair.courseId))
                     .map((group) => group[0]);
-                matchCalendarsForCourse(matchingCalendars, outline.lessons).forEach((match, calendarId) => {
-                    courseMatches.set(`${calendarId}::${pairKey}`, match);
+                // Giống modal hàng loạt: reset phép phân bổ Lesson ID cho từng bài nội
+                // bộ (session_id), không claim ID xuyên qua các bài trùng tên khác nhau.
+                const calendarsByLesson = new Map();
+                matchingCalendars.forEach((calendar) => {
+                    const lessonId = String(calendar.lesson_id);
+                    calendarsByLesson.set(lessonId, [...(calendarsByLesson.get(lessonId) || []), calendar]);
+                });
+                calendarsByLesson.forEach((lessonCalendars) => {
+                    matchCalendarsForCourse(lessonCalendars, outline.lessons).forEach((match, calendarId) => {
+                        courseMatches.set(`${calendarId}::${pairKey}`, match);
+                    });
                 });
             });
             let programHasError = false;

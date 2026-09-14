@@ -143,7 +143,7 @@ const getTeachers = (sheet) => {
     return teachers;
 };
 const bareTeacherName = (name) => name.replace(/^(cô|thầy)\s+/iu, '').trim();
-const parseProgramRows = (sheets, warnings) => sheets.flatMap((sheet) => {
+const parseProgramRows = (sheets, warnings, options = { requireLessonIds: true }) => sheets.flatMap((sheet) => {
     const columns = headerIndexes(sheet.rows, sheet.name);
     const parsed = [];
     sheet.rows.slice(columns.headerRow + 1).forEach((row, offset) => {
@@ -153,13 +153,17 @@ const parseProgramRows = (sheets, warnings) => sheets.flatMap((sheet) => {
         const subject = columns.subject === undefined ? '' : normalize(row[columns.subject]);
         // Sheet vận hành có các dòng hướng dẫn/đệm; thiếu bất kỳ cột nghiệp vụ nào
         // hoặc Môn trống/chứa "nghỉ" đều không phải lesson cần đồng bộ.
-        if (!lessonName || !teacherName || !normalize(row[columns.course]) || !normalize(row[columns.lesson]) || (columns.subject !== undefined && (!subject || /nghỉ/iu.test(subject))))
+        if (!lessonName || !teacherName || !normalize(row[columns.course])
+            || (options.requireLessonIds !== false && !normalize(row[columns.lesson]))
+            || (columns.subject !== undefined && (!subject || /nghỉ/iu.test(subject))))
             return;
         const courseIds = parseIds(row[columns.course], 'ID course', sheet.name, rowNumber, warnings);
-        const lessonIds = parseIds(row[columns.lesson], 'ID Bài giảng', sheet.name, rowNumber, warnings);
+        const lessonIds = options.requireLessonIds === false
+            ? []
+            : parseIds(row[columns.lesson], 'ID Bài giảng', sheet.name, rowNumber, warnings);
         if (!courseIds || !lessonIds)
             return;
-        if (courseIds.length !== lessonIds.length) {
+        if (options.requireLessonIds !== false && courseIds.length !== lessonIds.length) {
             warnings.push({ sheetName: sheet.name, rowNumber, message: context(sheet.name, rowNumber, 'số lượng ID course và ID Bài giảng không bằng nhau') });
             return;
         }
@@ -280,7 +284,9 @@ const previewScormCourseMappingSync = async (programCodeInput, selectedNames) =>
     if (!selected.length)
         throw new Error('Không tìm thấy trang tính được chọn');
     const warnings = [];
-    const sourceRows = parseProgramRows(selected, warnings);
+    // Đồng bộ Course/Package chỉ cần tên bài và Course ID. ID Bài giảng HMO có
+    // thể chưa được tạo ở các bài tương lai và không được phép làm mất dòng nguồn.
+    const sourceRows = parseProgramRows(selected, warnings, { requireLessonIds: false });
     const lessons = await prisma_1.default.lessons.findMany({
         where: { subject_code: programCode, status: { not: 0 } },
         select: { id: true, learn_number: true, lesson_name: true },

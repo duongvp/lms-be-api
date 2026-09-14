@@ -257,6 +257,7 @@ export const getDashboardOverview = async (
     lessonName: row.lesson_name || `Bài ${Number(row.learn_number)}`,
   }));
   let latestSync: any = null;
+  let latestCronStartedAt: Date | null = null;
   let syncIssues: any[] = [];
   let syncIssuePrograms: any[] = [];
   let hmoLessonSyncAvailable = true;
@@ -265,10 +266,13 @@ export const getDashboardOverview = async (
     const latestSyncRuns = await prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT id, trigger_type, status, programs_total, programs_processed, programs_failed,
         lessons_total, lessons_synced, lessons_failed, calendars_synced, last_error,
-        heartbeat_at, current_program, started_at, finished_at
+        heartbeat_at, current_program, started_at, finished_at,
+        (SELECT cron_run.started_at FROM hmo_lesson_sync_runs AS cron_run
+          WHERE cron_run.trigger_type = 'cron' ORDER BY cron_run.id DESC LIMIT 1) AS cron_started_at
       FROM hmo_lesson_sync_runs ORDER BY id DESC LIMIT 1
     `);
     latestSync = latestSyncRuns[0] || null;
+    latestCronStartedAt = latestSync?.cron_started_at || null;
     syncIssues = latestSync ? await prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT id, program_code, calendar_id, learn_number, lesson_name, teacher,
         course_id, package_id, error_code, message, created_at
@@ -292,6 +296,13 @@ export const getDashboardOverview = async (
 
   return {
     generatedAt: new Date().toISOString(),
+    hmoLessonSyncCron: {
+      enabled: String(process.env.HMO_LESSON_SYNC_ENABLED || '').toLowerCase() === 'true',
+      hour: Math.min(23, Math.max(0, Number(process.env.HMO_LESSON_SYNC_HOUR || 6))),
+      minute: Math.min(59, Math.max(0, Number(process.env.HMO_LESSON_SYNC_MINUTE || 0))),
+      timeZone: process.env.HMO_LESSON_SYNC_TIMEZONE || 'Asia/Ho_Chi_Minh',
+      lastRunAt: latestCronStartedAt,
+    },
     summary: {
       courses: numberValue(summary?.courses),
       lessons: numberValue(summary?.lessons),

@@ -49,6 +49,11 @@ const parseCandidate = (candidate: Candidate) => {
 };
 const teacherMatches = (actual: string, expected: string) => actual === expected
   || (!expected.includes(' ') && actual.split(' ').at(-1) === expected);
+const teacherMatchQuality = (actual: string, expected: string) => {
+  if (!expected) return 0;
+  if (actual === expected) return 2;
+  return teacherMatches(actual, expected) ? 1 : -1;
+};
 const partMarkers = (title: string) => Array.from(new Set(title.split(' ').filter((part) => /^p\d+$/.test(part)))).sort().join('|');
 export const compatibleParts = (left: string, right: string) => {
   const leftParts = partMarkers(left); const rightParts = partMarkers(right);
@@ -85,11 +90,15 @@ type CalendarCandidateMatch = {
 const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Candidate[]) => {
   const candidates = rawCandidates.map(parseCandidate);
   const evaluated = calendarRows.map((row, index) => {
-    const title = normalizeTitle(row.lesson_name);
+    // Modal hàng loạt mặc định dùng tên chuẩn trong bảng lessons để match.
+    // Tên calendar có thể chứa [Lịch n], [HỌC BÙ] hoặc hậu tố vận hành và chỉ
+    // được dùng để suy ra occurrence.
+    const title = normalizeTitle(row.source_lesson_name);
     const teacher = normalizeTeacher(row.teacher_name || row.teacher);
-    const matches = candidates.map((candidate) => {
+    const allMatches = candidates.map((candidate) => {
       if (!compatibleParts(title, candidate.title)) return null;
-      if (candidate.teacher && !teacherMatches(teacher, candidate.teacher)) return null;
+      const matchQuality = teacherMatchQuality(teacher, candidate.teacher);
+      if (matchQuality < 0) return null;
       const score = titleSimilarity(title, candidate.title);
       if (score < 0.92) return null;
       return {
@@ -97,13 +106,18 @@ const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Candidate[]
         score,
         exactTitle: title === candidate.title,
         teacherMatched: Boolean(candidate.teacher && teacherMatches(teacher, candidate.teacher)),
+        teacherMatchQuality: matchQuality,
       };
     }).filter((item): item is NonNullable<typeof item> => Boolean(item)).sort((left, right) => (
-      Number(right.teacherMatched) - Number(left.teacherMatched)
+      right.teacherMatchQuality - left.teacherMatchQuality
       || Number(right.exactTitle) - Number(left.exactTitle)
       || right.score - left.score
       || left.candidate.lessonId.localeCompare(right.candidate.lessonId, 'vi', { numeric: true })
     ));
+    const bestTeacherQuality = allMatches[0]?.teacherMatchQuality;
+    let matches = bestTeacherQuality === undefined
+      ? allMatches
+      : allMatches.filter((item) => item.teacherMatchQuality === bestTeacherQuality);
     if (matches[0] && !matches[0].exactTitle) {
       const competing = matches.find((item, matchIndex) => matchIndex > 0
         && item.teacherMatched === matches[0].teacherMatched
@@ -111,6 +125,9 @@ const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Candidate[]
       if (competing && matches[0].score - competing.score < 0.05) {
         return { row, index, teacher, matches: [] as typeof matches, ambiguousCount: matches.length };
       }
+    }
+    if (matches[0]) {
+      matches = matches.filter((item) => item.candidate.title === matches[0].candidate.title);
     }
     return { row, index, teacher, matches, ambiguousCount: 0 };
   });
@@ -181,12 +198,18 @@ const executeRun = async (runId: bigint) => {
     const rows = await prisma.$queryRaw<any[]>`
       SELECT c.id AS calendar_id, c.key, c.code, c.code AS program_code, c.learn_number, c.lesson_count,
         c.teacher, tp.display_name AS teacher_name, l.id AS lesson_id,
-        l.subject_code, c.lesson_name, lcm.package_id, lcm.course_id,
+        l.subject_code, l.lesson_name AS source_lesson_name,
+        c.lesson_name, lcm.package_id, lcm.course_id,
+        plm.lesson_id AS mapped_hmo_lesson_id,
         (c.start_time > NOW() AND COALESCE(c.lesson_status, 0) <> 1) AS is_target
       FROM calendar c
       INNER JOIN lessons l ON l.id = c.session_id AND l.status <> 0
       LEFT JOIN teacher_profiles tp ON tp.username = c.teacher
       LEFT JOIN lesson_course_mapping lcm ON lcm.lesson_id = l.id
+      LEFT JOIN package_lesson_mapping plm
+        ON plm.key = c.key
+       AND plm.package_id = lcm.package_id
+       AND plm.course_id = lcm.course_id
       WHERE COALESCE(c.lesson_status, 0) <> 1
       ORDER BY l.subject_code, l.learn_number, c.start_time, c.id
     `;
@@ -237,8 +260,17 @@ const executeRun = async (runId: bigint) => {
         const matchingCalendars = Array.from(calendarGroups.values())
           .filter((group) => group.some((item) => String(item.package_id) === pair.packageId && String(item.course_id) === pair.courseId))
           .map((group) => group[0]);
-        matchCalendarsForCourse(matchingCalendars, outline.lessons as Candidate[]).forEach((match, calendarId) => {
-          courseMatches.set(`${calendarId}::${pairKey}`, match);
+        // Giống modal hàng loạt: reset phép phân bổ Lesson ID cho từng bài nội
+        // bộ (session_id), không claim ID xuyên qua các bài trùng tên khác nhau.
+        const calendarsByLesson = new Map<string, any[]>();
+        matchingCalendars.forEach((calendar) => {
+          const lessonId = String(calendar.lesson_id);
+          calendarsByLesson.set(lessonId, [...(calendarsByLesson.get(lessonId) || []), calendar]);
+        });
+        calendarsByLesson.forEach((lessonCalendars) => {
+          matchCalendarsForCourse(lessonCalendars, outline.lessons as Candidate[]).forEach((match, calendarId) => {
+            courseMatches.set(`${calendarId}::${pairKey}`, match);
+          });
         });
       });
       let programHasError = false;
@@ -258,6 +290,22 @@ const executeRun = async (runId: bigint) => {
         let failure = false;
         for (const pair of configuredPairs) {
           const pairKey = `${pair.packageId}::${pair.courseId}`;
+          // Mapping do quản trị viên chọn và đã lưu là nguồn tin cậy. Không
+          // gọi lại outline HMO cho cặp này, vì HMO có thể trả rỗng tạm thời
+          // dù Lesson ID đã được gán hợp lệ trong calendar.
+          const existingMapping = calendarRows.find((item) => (
+            String(item.package_id) === pair.packageId
+            && String(item.course_id) === pair.courseId
+            && String(item.mapped_hmo_lesson_id || '').trim()
+          ));
+          if (existingMapping?.mapped_hmo_lesson_id) {
+            nextMappings.push({
+              package_id: pair.packageId,
+              course_id: pair.courseId,
+              lesson_id: String(existingMapping.mapped_hmo_lesson_id),
+            });
+            continue;
+          }
           const outlineError = outlineErrors.get(pairKey);
           if (outlineError) {
             await addIssue(runId, row, 'HMO_REQUEST_FAILED', outlineError, pair);
@@ -286,9 +334,15 @@ const executeRun = async (runId: bigint) => {
           await addIssue(runId, row, 'MISSING_CALENDAR_KEY', 'Lịch chưa có key nên không thể lưu Lesson ID HMO.');
           programHasError = true; failedLessonIds.add(String(row.lesson_id)); continue;
         }
-        const mappingResult = await prisma.$transaction(async (tx) => {
-          return reconcileCalendarMappingsAndEnqueue(tx, row, nextMappings);
-        });
+        const mappingResult = await prisma.$transaction(
+          (tx) => reconcileCalendarMappingsAndEnqueue(tx, row, nextMappings),
+          {
+            maxWait: 10_000,
+            // Prisma mặc định đóng interactive transaction sau 5 giây. Job có
+            // thể phải chờ lock khi calendar đang được cập nhật đồng thời.
+            timeout: 30_000,
+          }
+        );
         if (mappingResult.changed) calendarsSynced += 1;
         syncedLessonIds.add(String(row.lesson_id));
       }

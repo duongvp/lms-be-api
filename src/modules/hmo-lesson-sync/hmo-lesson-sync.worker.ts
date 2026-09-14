@@ -23,6 +23,9 @@ export const startHmoLessonSyncWorker = () => {
   void check();
   timer = setInterval(() => void check(), 30_000);
   timer.unref();
-  logger.info(`HMO lesson sync cron enabled at ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
+  logger.info(
+    `HMO lesson sync cron enabled at ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+    + ` (${process.env.HMO_LESSON_SYNC_TIMEZONE || 'Asia/Ho_Chi_Minh'})`
+  );
   return () => { if (timer) clearInterval(timer); timer = null; };
 };

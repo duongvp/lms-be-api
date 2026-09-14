@@ -21,6 +21,7 @@ import {
   resolveCalendarTeacherProfile,
   syncCalendarTeachingUsers,
 } from './calendar-user-sync.service';
+export { provisionCalendarEvgStream, provisionCalendarsEvgBulk } from './evg-stream.service';
 
 export type HocmaiSectionOption = {
   package_id: string;
@@ -46,14 +47,16 @@ export type CalendarChangeActor = {
 
 const normalizeChangeReason = (payload: any) => {
   const reason = String(payload?.reason ?? payload?.change_reason ?? '').trim();
-  if (!reason) {
+  if (payload?.send_notification !== false && !reason) {
     throw new Error("Vui lòng nhập lý do thay đổi lịch học");
   }
   if (reason.length > 500) {
     throw new Error("Lý do thay đổi không được vượt quá 500 ký tự");
   }
-  return reason;
+  return reason || 'Nghỉ học';
 };
+
+const shouldSendChangeNotification = (payload: any) => payload?.send_notification !== false;
 
 const normalizeChangeActor = (actor?: CalendarChangeActor) => {
   const userId = Number(actor?.userId);
@@ -1857,10 +1860,11 @@ export const createValidatedInternalCalendarImport = async (
 
 const cancelWithoutMakeup = async (tx: any, current: any, payload: any, reason: string) => {
   const lessonNameOptions = getRescheduleLessonNameOptions(payload);
+  const lessonNotification = shouldSendChangeNotification(payload) ? reason : null;
   return updateCalendarRecord(tx, current.id, {
     lesson_status: 1,
     cancel_reason: reason,
-    lesson_noti: reason,
+    lesson_noti: lessonNotification,
     lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
     skip_teacher_user_sync: true,
   });
@@ -1882,6 +1886,7 @@ const cancelWithMakeup = async (
     orderBy: [{ id: 'asc' }],
   });
   const lessonNameOptions = getRescheduleLessonNameOptions(payload);
+  const lessonNotification = shouldSendChangeNotification(payload) ? reason : null;
   const newSessionInput = normalizeRoom({ ...(payload.new_session || payload) });
   delete newSessionInput.mode;
   delete newSessionInput.update_mode;
@@ -1922,7 +1927,7 @@ const cancelWithMakeup = async (
   const updatedCurrent = await updateCalendarRecord(tx, current.id, {
     lesson_status: 1,
     cancel_reason: reason,
-    lesson_noti: reason,
+    lesson_noti: lessonNotification,
     key: canceledKey,
     lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
     skip_teacher_user_sync: true,
@@ -1943,6 +1948,7 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any, reason: 
     orderBy: [{ id: 'asc' }],
   });
   const lessonNameOptions = getRescheduleLessonNameOptions(payload);
+  const lessonNotification = shouldSendChangeNotification(payload) ? reason : null;
   const newSessionInput = normalizeRoom({ ...(payload.new_session || {}) });
   normalizeTeachingAssignmentsForScheduleUpdate(newSessionInput);
   if (!newSessionInput.start_time || !newSessionInput.end_time) {
@@ -2000,7 +2006,7 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any, reason: 
   const updatedCurrent = await updateCalendarRecord(tx, current.id, {
     lesson_status: 1,
     cancel_reason: reason,
-    lesson_noti: reason,
+    lesson_noti: lessonNotification,
     key: canceledKey,
     lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
     skip_teacher_user_sync: true,
@@ -2135,7 +2141,9 @@ const rescheduleSessionInTransaction = async (
 
     await enqueueRescheduleSync(tx, action, result, operationId);
 
-    if (action === 'cancel') {
+    if (!shouldSendChangeNotification(payload)) {
+      // Vẫn đồng bộ trạng thái nghỉ học sang HMO nhưng không tạo thông báo Teams.
+    } else if (action === 'cancel') {
       await enqueueCalendarTeamsNotification(tx, {
         eventType: 'cancelled',
         before: current,
@@ -2197,6 +2205,90 @@ export const rescheduleSession = async (
     () => rescheduleSessionInTransaction(tx, id, payload, changeActor)
   )
 ));
+
+const swapTimeValue = (value: unknown, fallback: Date, label: string) => {
+  if (value === undefined || value === null || value === '') return new Date(fallback);
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) throw new Error(`${label} không hợp lệ`);
+  return parsed;
+};
+
+/** Hoán đổi vị trí thời gian của hai buổi, giữ nguyên toàn bộ nội dung và phân công. */
+export const swapSessionTimes = async (
+  payload: any,
+  changeActor?: CalendarChangeActor
+) => {
+  const firstId = Number(payload?.first_id);
+  const secondId = Number(payload?.second_id);
+  if (!Number.isInteger(firstId) || firstId <= 0 || !Number.isInteger(secondId) || secondId <= 0) {
+    throw new Error('Vui lòng chọn đủ hai lịch học cần hoán đổi');
+  }
+  if (firstId === secondId) throw new Error('Hai lịch học hoán đổi phải khác nhau');
+
+  return withCalendarTriggerErrorHint(() => withSerializableTransaction(
+    async (tx) => withManualHocmaiQueue(tx, async () => {
+      const sessions = await tx.calendar.findMany({
+        where: { id: { in: [firstId, secondId] } },
+      });
+      if (sessions.length !== 2) throw new Error('Có lịch học đã chọn không còn tồn tại');
+      await hydrateAssistantTeachers(tx, sessions);
+      const first = sessions.find((item) => item.id === firstId)!;
+      const second = sessions.find((item) => item.id === secondId)!;
+      assertCanUpdateSession(first);
+      assertCanUpdateSession(second);
+
+      // Mặc định A nhận khung giờ của B và ngược lại. Giá trị gửi từ modal
+      // chỉ ghi đè đúng đầu mút mà người dùng chủ động chỉnh.
+      const firstStart = swapTimeValue(payload?.first_start_time, second.start_time, 'Giờ bắt đầu lịch thứ nhất');
+      const firstEnd = swapTimeValue(payload?.first_end_time, second.end_time, 'Giờ kết thúc lịch thứ nhất');
+      const secondStart = swapTimeValue(payload?.second_start_time, first.start_time, 'Giờ bắt đầu lịch thứ hai');
+      const secondEnd = swapTimeValue(payload?.second_end_time, first.end_time, 'Giờ kết thúc lịch thứ hai');
+      const ignoredIds = [firstId, secondId];
+
+      const finalSessions: BulkConflictCandidate[] = [
+        { ...first, assistant_teacher: (first as any).assistant_teacher, start_time: firstStart, end_time: firstEnd },
+        { ...second, assistant_teacher: (second as any).assistant_teacher, start_time: secondStart, end_time: secondEnd },
+      ];
+      validateBulkFinalStateConflicts(finalSessions);
+      for (const session of finalSessions) {
+        await checkConflict({
+          teacher: session.teacher,
+          assistant_teacher: session.assistant_teacher,
+          code: session.code || undefined,
+          start_time: session.start_time,
+          end_time: session.end_time,
+          ignoredIds,
+          client: tx,
+        });
+      }
+
+      const operationId = crypto.randomUUID();
+      const reason = String(payload?.reason || 'Hoán đổi lịch học').trim().slice(0, 500);
+      const updatedFirst = await updateCalendarRecord(tx, firstId, {
+        start_time: firstStart,
+        end_time: firstEnd,
+      });
+      const updatedSecond = await updateCalendarRecord(tx, secondId, {
+        start_time: secondStart,
+        end_time: secondEnd,
+      });
+      await hydrateAssistantTeachers(tx, [updatedFirst, updatedSecond]);
+
+      await auditTimeChange(tx, first, updatedFirst, changeActor, reason);
+      await auditTimeChange(tx, second, updatedSecond, changeActor, reason);
+      await enqueueCalendarSync(tx, operationId, 1, 'update', updatedFirst);
+      await enqueueCalendarSync(tx, operationId, 2, 'update', updatedSecond);
+      await enqueueManyCalendarTeamsNotifications(tx, [
+        { eventType: 'updated', before: first, after: updatedFirst, actor: changeActor, operationId },
+        { eventType: 'updated', before: second, after: updatedSecond, actor: changeActor, operationId },
+      ]);
+
+      return { operation_id: operationId, first: updatedFirst, second: updatedSecond };
+    }),
+    3,
+    60_000
+  ));
+};
 
 export const bulkRescheduleSessions = async (
   payload: any,
@@ -3039,50 +3131,58 @@ export const updateCalendarMappings = async (
 ) => {
   const updates = normalizeCalendarMappingUpdates(payload?.updates);
   const plan = await buildMappingUpdatePlan(updates);
-  return withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
-    const operationId = crypto.randomUUID();
-    const results: any[] = [];
-    await withManualHocmaiQueue(tx, async () => {
-      for (let index = 0; index < plan.length; index += 1) {
-        const item = plan[index];
-        const calendar = await tx.calendar.findUnique({
-          where: { id: Number(item.calendar.id) },
-        });
-        if (!calendar) throw new Error(`Dòng ${item.row}: Không tìm thấy lịch học cần cập nhật`);
-        assertCanUpdateSession(calendar);
-        const mappingResult = await reconcileCalendarMappingsAndEnqueue(
-          tx,
-          calendar,
-          item.nextMappings,
-          operationId,
-          index + 1,
-          true,
-          true
-        );
-        if (mappingResult.changed) {
-          await tx.calendar.update({
-            where: { id: Number(calendar.id) },
-            data: { updated_at: new Date() },
+  return withCalendarTriggerErrorHint(() => prisma.$transaction(
+    async (tx) => {
+      const operationId = crypto.randomUUID();
+      const results: any[] = [];
+      await withManualHocmaiQueue(tx, async () => {
+        for (let index = 0; index < plan.length; index += 1) {
+          const item = plan[index];
+          const calendar = await tx.calendar.findUnique({
+            where: { id: Number(item.calendar.id) },
+          });
+          if (!calendar) throw new Error(`Dòng ${item.row}: Không tìm thấy lịch học cần cập nhật`);
+          assertCanUpdateSession(calendar);
+          const mappingResult = await reconcileCalendarMappingsAndEnqueue(
+            tx,
+            calendar,
+            item.nextMappings,
+            operationId,
+            index + 1,
+            true,
+            true
+          );
+          if (mappingResult.changed) {
+            await tx.calendar.update({
+              where: { id: Number(calendar.id) },
+              data: { updated_at: new Date() },
+            });
+          }
+          await enqueueCalendarTeamsNotification(tx, {
+            eventType: 'updated',
+            before: calendar,
+            after: { ...calendar, package_lesson_mappings: item.nextMappings },
+            actor: changeActor,
+            operationId,
+          });
+          results.push({
+            id: calendar.id,
+            key: calendar.key,
+            code: calendar.code,
+            learn_number: calendar.learn_number,
+            package_lesson_mappings: item.nextMappings,
           });
         }
-        await enqueueCalendarTeamsNotification(tx, {
-          eventType: 'updated',
-          before: calendar,
-          after: { ...calendar, package_lesson_mappings: item.nextMappings },
-          actor: changeActor,
-          operationId,
-        });
-        results.push({
-          id: calendar.id,
-          key: calendar.key,
-          code: calendar.code,
-          learn_number: calendar.learn_number,
-          package_lesson_mappings: item.nextMappings,
-        });
-      }
-    });
-    return { count: results.length, operationId, updates: results };
-  }));
+      });
+      return { count: results.length, operationId, updates: results };
+    },
+    {
+      maxWait: 10_000,
+      // Modal có thể cập nhật nhiều calendar trong cùng một transaction để
+      // đảm bảo atomic; tránh timeout mặc định 5 giây giữa các vòng lặp.
+      timeout: 120_000,
+    }
+  ));
 };
 
 export const resendCalendarsToHocmai = async (rawIds: unknown) => {
@@ -3374,6 +3474,7 @@ export const updateBulk = async (
           lesson_name: typeof item.lesson_name === 'string'
             ? item.lesson_name.trim()
             : current.lesson_name,
+          lesson_status: item.mark_as_holiday === true ? 1 : current.lesson_status,
           start_time: startTime,
           end_time: endTime,
         });
@@ -3417,6 +3518,11 @@ export const updateBulk = async (
             newEnd.setUTCHours(Number(hours), Number(minutes), 0, 0);
           }
 
+          if (item.mark_as_holiday === true) {
+            dataToUpdate.lesson_status = 1;
+            dataToUpdate.cancel_reason = 'Ngày nghỉ';
+          }
+
           if (item.start_date || item.start_time || item.end_time) {
             dataToUpdate.start_time = newStart;
             dataToUpdate.end_time = newEnd;
@@ -3458,7 +3564,7 @@ export const updateBulk = async (
           }
           await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', updated);
           teamsEvents.push({
-            eventType: 'updated',
+            eventType: item.mark_as_holiday === true ? 'cancelled' : 'updated',
             before: current,
             after: updated,
             actor: changeActor,

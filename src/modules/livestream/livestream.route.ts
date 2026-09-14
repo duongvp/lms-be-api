@@ -116,6 +116,7 @@ const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
       'grade',
       'reason',
       'change_reason',
+      'send_notification',
       'update_mode',
       'mode',
       'course_end_time',
@@ -248,6 +249,28 @@ router.post(
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),
   livestreamController.resendToHocmai
+);
+router.put(
+  '/swap',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', (req) => calendarCodesByIds([
+    req.body?.first_id,
+    req.body?.second_id,
+  ])),
+  authorizeFields('calendar', () => ['start_time', 'end_time']),
+  livestreamController.swapSessionTimes
+);
+router.post(
+  '/evg-stream/bulk',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),
+  livestreamController.provisionEvgStreamsBulk
+);
+router.post(
+  '/:id/evg-stream',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', calendarCodeById),
+  livestreamController.provisionEvgStream
 );
 router.post(
   '/:id/classroom-assignment/preview',

@@ -209,6 +209,42 @@ export const rescheduleSession = async (req: Request, res: Response, next: NextF
   }
 };
 
+export const swapSessionTimes = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const result = await livestreamService.swapSessionTimes(req.body, getChangeActor(req));
+    res.status(200).json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const provisionEvgStream = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const result = await livestreamService.provisionCalendarEvgStream(
+      Number(req.params.id),
+      String(req.user?.username || ''),
+      req.body?.mode || (req.body?.force === true ? 'overwrite' : 'skip_existing')
+    );
+    res.status(200).json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const provisionEvgStreamsBulk = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number);
+    const result = await livestreamService.provisionCalendarsEvgBulk(
+      ids,
+      String(req.user?.username || ''),
+      req.body?.mode || 'skip_existing'
+    );
+    res.status(200).json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(400).json({ success: false, message: err.message });
+  }
+};
+
 export const cancelSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { id } = req.params;

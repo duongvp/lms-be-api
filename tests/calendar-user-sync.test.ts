@@ -5,6 +5,8 @@ import {
   buildCalendarRoomClassId,
   buildTeachingUserName,
   ensureCalendarTeachingUsers,
+  ensureCalendarScanTeachingUsers,
+  normalizeScanTeachingUsers,
   excelDateSerialFromCalendarDate,
   resolveCalendarTeacherProfile,
   syncCalendarTeachingUsers,
@@ -616,4 +618,115 @@ test('không thu hồi giáo viên hoặc trợ giảng cũ khi còn buổi khá
     ['gv-moi', 'tg-moi']
   );
   assert.equal(deletes.length, 0);
+});
+
+
+test('quét nhân sự tạo tài khoản hỗ trợ như trợ giảng rồi chỉ cập nhật khi quét lại', async () => {
+  const records = new Map<string, any>();
+  const creates: any[] = [];
+  const updates: any[] = [];
+  const client = {
+    teacher_profiles: { findMany: async () => [] },
+    users: {
+      findFirst: async ({ where }: any) => where.learn_number !== undefined
+        ? records.get(`${where.username}|${where.code}|${where.learn_number}`) || null
+        : { student_hmid: 'HM-LOAN' },
+      create: async ({ data }: any) => {
+        const record = { ...data, id: creates.length + 1 };
+        records.set(`${data.username}|${data.code}|${data.learn_number}`, record);
+        creates.push(record);
+      },
+      update: async (input: any) => { updates.push(input); },
+    },
+  };
+  const calendar = {
+    code: 'toan-8-2027', learn_number: 24,
+    start_time: '2026-09-16T18:00:00.000Z', lesson_status: 0,
+  };
+  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar), { created: 1, updated: 0 });
+  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar), { created: 0, updated: 1 });
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].username, 'loandtt3@hocmai.vn');
+  assert.equal(creates[0].email, 'loandtt3@hocmai.vn');
+  assert.equal(creates[0].name, 'HM-LOAN - Giáo viên');
+  assert.equal(creates[0].room_id, 1);
+  assert.equal(creates[0].islearn, 0);
+  assert.equal(updates[0].where.id, creates[0].id);
+  assert.equal(updates[0].data.class_id, creates[0].class_id);
+  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, { ...calendar, lesson_status: 1 }), { created: 0, updated: 0 });
+});
+
+test('quét không tạo trùng tài khoản hỗ trợ đã được gán làm trợ giảng', async () => {
+  const creates: any[] = [];
+  const client = {
+    teacher_profiles: { findMany: async () => [{ username: 'loandtt3@hocmai.vn', display_name: 'Loan' }] },
+    users: {
+      findFirst: async () => null,
+      create: async (input: any) => { creates.push(input); },
+    },
+  };
+  await ensureCalendarScanTeachingUsers(client, {
+    code: 'toan-8-2027', learn_number: 24,
+    start_time: '2026-09-16T18:00:00.000Z',
+    assistant_teacher: 'loandtt3@hocmai.vn', lesson_status: 0,
+  });
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].data.username, 'loandtt3@hocmai.vn');
+});
+
+
+test('danh sách tài khoản quét có mặc định, loại trùng, cho phép rỗng và kiểm tra vai trò', () => {
+  assert.deepEqual(normalizeScanTeachingUsers(undefined), [{ username: 'loandtt3@hocmai.vn', role: 'assistant' }]);
+  assert.deepEqual(normalizeScanTeachingUsers([]), []);
+  assert.deepEqual(normalizeScanTeachingUsers([
+    { username: ' tg01 ', role: 'assistant' }, { username: 'tg01', role: 'assistant' },
+  ]), [{ username: 'tg01', role: 'assistant' }]);
+  assert.throws(() => normalizeScanTeachingUsers([{ username: 'tg01', role: 'admin' }]));
+  assert.throws(() => normalizeScanTeachingUsers([{ username: '', role: 'assistant' }]));
+  assert.throws(() => normalizeScanTeachingUsers(null));
+});
+
+test('quét nhiều tài khoản theo danh sách FE và không tự thêm tài khoản mặc định', async () => {
+  const creates: any[] = [];
+  const client = {
+    teacher_profiles: { findMany: async () => [
+      { username: 'gv02', display_name: 'Giáo viên 02', student_hmid: 'HM-GV02' },
+      { username: 'tg02', display_name: 'Trợ giảng 02', student_hmid: 'HM-TG02' },
+    ] },
+    users: {
+      findFirst: async () => null,
+      create: async (input: any) => { creates.push(input.data); },
+    },
+  };
+  const calendar = { code: 'toan-8-2027', learn_number: 24, start_time: '2026-09-16T18:00:00.000Z', lesson_status: 0 };
+  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar, [
+    { username: 'gv02', role: 'teacher' }, { username: 'tg02', role: 'assistant' },
+  ]), { created: 2, updated: 0 });
+  assert.deepEqual(creates.map((record) => record.username), ['gv02', 'tg02']);
+  assert.deepEqual(creates.map((record) => record.name), ['HM-GV02 - Giáo viên 02', 'HM-TG02 - Giáo viên']);
+  creates.length = 0;
+  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar, []), { created: 0, updated: 0 });
+  assert.equal(creates.length, 0);
+});
+
+
+test('tài khoản giáo viên được chọn bổ sung vẫn lưu tên theo quy tắc trợ giảng', async () => {
+  const creates: any[] = [];
+  const client = {
+    teacher_profiles: { findMany: async () => [
+      { username: 'gv-bosung', display_name: 'Nguyễn Văn A', student_hmid: '123456' },
+    ] },
+    users: {
+      findFirst: async () => null,
+      create: async ({ data }: any) => { creates.push(data); },
+    },
+  };
+  await ensureCalendarScanTeachingUsers(client, {
+    code: 'toan-8-2027', learn_number: 24,
+    start_time: '2026-09-16T18:00:00.000Z', lesson_status: 0,
+  }, [{ username: 'gv-bosung', role: 'assistant' }]);
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].username, 'gv-bosung');
+  assert.equal(creates[0].name, '123456 - Giáo viên');
+  assert.equal(creates[0].student_hmid, '123456');
 });

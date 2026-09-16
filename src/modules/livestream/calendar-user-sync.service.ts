@@ -319,7 +319,8 @@ const upsertTeachingUser = async (
 export const ensureCalendarTeachingUsers = async (
   client: any,
   calendar: CalendarTeachingSnapshot,
-  profileCache?: Map<string, ResolvedTeachingProfile[]>
+  profileCache?: Map<string, ResolvedTeachingProfile[]>,
+  additionalProfiles: ResolvedTeachingProfile[] = []
 ) => {
   if (!isActiveSchedule(calendar)) return { created: 0, updated: 0 };
 
@@ -332,6 +333,9 @@ export const ensureCalendarTeachingUsers = async (
     profiles = await resolveTeachingProfiles(client, calendar);
     profileCache?.set(profileCacheKey, profiles);
   }
+  profiles = Array.from(new Map(
+    [...profiles, ...additionalProfiles].map((profile) => [normalizeText(profile.username), profile])
+  ).values());
   if (!profiles.length) return { created: 0, updated: 0 };
 
   const classId = buildCalendarClassId(
@@ -418,6 +422,44 @@ export const ensureCalendarTeachingUsers = async (
   }
 
   return { created, updated };
+};
+
+export type ScanTeachingUser = { username: string; role: 'teacher' | 'assistant' };
+
+export const normalizeScanTeachingUsers = (value: unknown): ScanTeachingUser[] => {
+  if (value === undefined) return [{ username: 'loandtt3@hocmai.vn', role: 'assistant' }];
+  if (!Array.isArray(value)) throw new Error('Danh sách tài khoản bổ sung không hợp lệ');
+  const users = new Map<string, ScanTeachingUser>();
+  for (const item of value) {
+    const username = normalizeText(item?.username);
+    if (!username || username.length > 100 || !['teacher', 'assistant'].includes(item?.role)) {
+      throw new Error('Tài khoản hoặc vai trò nhân sự bổ sung không hợp lệ');
+    }
+    users.set(username, { username, role: item.role });
+  }
+  return Array.from(users.values());
+};
+
+/** Bổ sung các tài khoản được chọn riêng khi chạy Quét user nhân sự. */
+export const ensureCalendarScanTeachingUsers = async (
+  client: any,
+  calendar: CalendarTeachingSnapshot,
+  additionalUsers: ScanTeachingUser[] = normalizeScanTeachingUsers(undefined)
+) => {
+  if (!isActiveSchedule(calendar)) return { created: 0, updated: 0 };
+  const profiles: TeachingProfile[] = additionalUsers.length
+    ? await client.teacher_profiles.findMany({
+        where: { username: { in: additionalUsers.map((user) => user.username) } },
+        select: { username: true, display_name: true, student_hmid: true },
+      })
+    : [];
+  const profilesByUsername = new Map(profiles.map((profile) => [profile.username, profile]));
+  return ensureCalendarTeachingUsers(client, calendar, undefined, additionalUsers.map((user) => ({
+    ...profilesByUsername.get(user.username),
+    username: user.username,
+    display_name: profilesByUsername.get(user.username)?.display_name ?? null,
+    role: user.role,
+  })));
 };
 
 const isStillAssigned = async (

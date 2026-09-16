@@ -18,6 +18,8 @@ import {
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 import {
   ensureCalendarTeachingUsers,
+  ensureCalendarScanTeachingUsers,
+  normalizeScanTeachingUsers,
   resolveCalendarTeacherProfile,
   syncCalendarTeachingUsers,
 } from './calendar-user-sync.service';
@@ -3687,7 +3689,8 @@ export const updateBulk = async (
  * trợ giảng dùng "student_hmid - Giáo viên". Xử lý theo lô để không giữ
  * transaction quá lâu.
  */
-export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
+export const backfillMissingCalendarTeachingUsers = async (ids?: number[], additionalUsers?: unknown) => {
+  const scanUsers = normalizeScanTeachingUsers(additionalUsers);
   const batchSize = 100;
   let scanned = 0;
   let created = 0;
@@ -3710,7 +3713,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
         const batchErrors: Array<{ calendar_id: number; message: string }> = [];
         for (const calendar of calendars) {
           try {
-            const result = await ensureCalendarTeachingUsers(tx, calendar);
+            const result = await ensureCalendarScanTeachingUsers(tx, calendar, scanUsers);
             batchCreated += result.created;
             batchUpdated += result.updated;
           } catch (error: any) {
@@ -3756,7 +3759,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[]) => {
         const batchErrors: Array<{ calendar_id: number; message: string }> = [];
         for (const calendar of calendars) {
           try {
-            const result = await ensureCalendarTeachingUsers(tx, calendar);
+            const result = await ensureCalendarScanTeachingUsers(tx, calendar, scanUsers);
             batchCreated += result.created;
             batchUpdated += result.updated;
           } catch (error: any) {

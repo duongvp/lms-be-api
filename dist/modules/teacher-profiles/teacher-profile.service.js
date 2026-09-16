@@ -3,10 +3,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importTeacherProfiles = exports.getTeacherProfilesForExport = exports.deleteTeacherProfile = exports.updateTeacherProfileStatus = exports.updateTeacherProfile = exports.createTeacherProfile = exports.getTeacherProfile = exports.listTeacherProfiles = void 0;
+exports.importTeacherProfiles = exports.getTeacherProfilesForExport = exports.deleteTeacherProfile = exports.updateTeacherProfileStatus = exports.updateTeacherProfile = exports.createTeacherProfile = exports.syncTeacherProfilesHmidBulk = exports.syncTeacherProfileHmid = exports.getTeacherProfile = exports.listTeacherProfiles = void 0;
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
+const hocmai_user_search_service_1 = require("../../integrations/hocmai-user-search.service");
 const teacher_profile_types_1 = require("./teacher-profile.types");
 const normalizeProfileRow = (row) => ({
     ...row,
@@ -39,7 +40,9 @@ const findUsage = async (username, displayName) => {
 };
 const getProfileRow = async (id) => {
     const rows = await prisma_1.default.$queryRaw `
-    SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
+    SELECT id, username, can_view_stream_key, display_name, status,
+      student_hmid, hmid_sync_status, hmid_synced_at, hmid_sync_error,
+      created_at, updated_at
     FROM teacher_profiles
     WHERE id = ${id}
     LIMIT 1
@@ -79,7 +82,9 @@ const listTeacherProfiles = async (query) => {
       ${where}
     `),
         prisma_1.default.$queryRaw(client_1.Prisma.sql `
-      SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
+      SELECT id, username, can_view_stream_key, display_name, status,
+        student_hmid, hmid_sync_status, hmid_synced_at, hmid_sync_error,
+        created_at, updated_at
       FROM teacher_profiles
       ${where}
       ORDER BY status DESC, display_name ASC, username ASC
@@ -97,22 +102,101 @@ const listTeacherProfiles = async (query) => {
 };
 exports.listTeacherProfiles = listTeacherProfiles;
 exports.getTeacherProfile = getProfileRow;
+const syncTeacherProfileHmid = async (id) => {
+    const current = await getProfileRow(id);
+    const identity = await (0, hocmai_user_search_service_1.findHocmaiUserIdentity)(current.username);
+    const studentHmid = identity.studentHmid || current.student_hmid;
+    const syncStatus = identity.studentHmid
+        ? 'synced'
+        : current.student_hmid ? current.hmid_sync_status : identity.status;
+    await prisma_1.default.$executeRaw `
+    UPDATE teacher_profiles
+    SET student_hmid = ${studentHmid},
+        hmid_sync_status = ${syncStatus},
+        hmid_synced_at = ${identity.status === 'synced' ? new Date() : current.hmid_synced_at},
+        hmid_sync_error = ${identity.error},
+        updated_at = NOW()
+    WHERE id = ${id}
+  `;
+    return getProfileRow(id);
+};
+exports.syncTeacherProfileHmid = syncTeacherProfileHmid;
+const syncTeacherProfilesHmidBulk = async (ids) => {
+    const profiles = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+    SELECT id, username, can_view_stream_key, display_name, status,
+      student_hmid, hmid_sync_status, hmid_synced_at, hmid_sync_error,
+      created_at, updated_at
+    FROM teacher_profiles
+    WHERE id IN (${client_1.Prisma.join(ids)})
+    ORDER BY id ASC
+  `);
+    const results = [];
+    let nextIndex = 0;
+    const worker = async () => {
+        while (nextIndex < profiles.length) {
+            const profile = profiles[nextIndex];
+            nextIndex += 1;
+            const identity = await (0, hocmai_user_search_service_1.findHocmaiUserIdentity)(profile.username);
+            const studentHmid = identity.studentHmid || profile.student_hmid;
+            const syncStatus = identity.studentHmid
+                ? 'synced'
+                : profile.student_hmid ? profile.hmid_sync_status : identity.status;
+            await prisma_1.default.$executeRaw `
+        UPDATE teacher_profiles
+        SET student_hmid = ${studentHmid},
+            hmid_sync_status = ${syncStatus},
+            hmid_synced_at = ${identity.status === 'synced' ? new Date() : profile.hmid_synced_at},
+            hmid_sync_error = ${identity.error},
+            updated_at = NOW()
+        WHERE id = ${Number(profile.id)}
+      `;
+            results.push({
+                id: Number(profile.id),
+                username: profile.username,
+                student_hmid: studentHmid,
+                hmid_sync_status: syncStatus,
+                hmid_sync_error: identity.error,
+            });
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, profiles.length) }, () => worker()));
+    return {
+        total: results.length,
+        synced: results.filter((item) => item.hmid_sync_status === 'synced').length,
+        not_found: results.filter((item) => item.hmid_sync_status === 'not_found').length,
+        failed: results.filter((item) => item.hmid_sync_status === 'failed').length,
+        pending: results.filter((item) => item.hmid_sync_status === 'pending').length,
+        results,
+    };
+};
+exports.syncTeacherProfilesHmidBulk = syncTeacherProfilesHmidBulk;
 const createTeacherProfile = async (payload) => {
     try {
+        // Gọi HOCMAI trước khi ghi DB để không giữ connection/transaction trong
+        // lúc chờ mạng. Lỗi HOCMAI không chặn việc tạo hồ sơ nhân sự.
+        const identity = await (0, hocmai_user_search_service_1.findHocmaiUserIdentity)(payload.username);
         await prisma_1.default.$executeRaw `
       INSERT INTO teacher_profiles (
-        username, display_name, can_view_stream_key, status, created_at, updated_at
+        username, display_name, can_view_stream_key, status,
+        student_hmid, hmid_sync_status, hmid_synced_at, hmid_sync_error,
+        created_at, updated_at
       ) VALUES (
         ${payload.username},
         ${payload.display_name ?? null},
         ${payload.can_view_stream_key ?? teacher_profile_types_1.STREAM_KEY_ACCESS.TEACHER},
         ${payload.status ?? 1},
+        ${identity.studentHmid},
+        ${identity.status},
+        ${identity.status === 'synced' ? new Date() : null},
+        ${identity.error},
         NOW(),
         NOW()
       )
     `;
         const rows = await prisma_1.default.$queryRaw `
-      SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
+      SELECT id, username, can_view_stream_key, display_name, status,
+        student_hmid, hmid_sync_status, hmid_synced_at, hmid_sync_error,
+        created_at, updated_at
       FROM teacher_profiles
       WHERE username = ${payload.username}
       LIMIT 1
@@ -195,7 +279,9 @@ const importTeacherProfiles = async (rows, mode) => prisma_1.default.$transactio
     const usernames = rows.map((row) => row.username);
     const existingRows = usernames.length
         ? await tx.$queryRaw(client_1.Prisma.sql `
-        SELECT id, username, can_view_stream_key, display_name, status, created_at, updated_at
+        SELECT id, username, can_view_stream_key, display_name, status,
+          student_hmid, hmid_sync_status, hmid_synced_at, hmid_sync_error,
+          created_at, updated_at
         FROM teacher_profiles
         WHERE username IN (${client_1.Prisma.join(usernames)})
       `)

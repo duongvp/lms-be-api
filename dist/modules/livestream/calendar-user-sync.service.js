@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.syncCalendarTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarRoomClassId = exports.buildCalendarClassId = exports.excelDateSerialFromCalendarDate = exports.buildTeachingUserName = void 0;
+exports.syncCalendarTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarRoomClassId = exports.buildCalendarClassId = exports.calendarDateAtMidnight = exports.excelDateSerialFromCalendarDate = exports.buildTeachingUserName = void 0;
 const client_1 = require("@prisma/client");
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -38,6 +38,13 @@ const excelDateSerialFromCalendarDate = (value) => {
     return Math.floor((dateOnlyUtc - EXCEL_EPOCH_UTC) / DAY_IN_MS);
 };
 exports.excelDateSerialFromCalendarDate = excelDateSerialFromCalendarDate;
+const calendarDateAtMidnight = (value) => {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime()))
+        throw new Error('Ngày lịch học không hợp lệ');
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+};
+exports.calendarDateAtMidnight = calendarDateAtMidnight;
 const buildCalendarClassId = (code, startTime, learnNumber) => {
     const normalizedCode = normalizeText(code);
     const normalizedLearnNumber = Number(learnNumber);
@@ -81,7 +88,7 @@ const resolveCalendarTeacherProfile = async (client, identifier) => {
                 { display_name: normalizedIdentifier },
             ],
         },
-        select: { username: true, display_name: true },
+        select: { username: true, display_name: true, student_hmid: true },
         orderBy: { id: 'asc' },
     });
     const exactUsername = profiles.find((profile) => profile.username === normalizedIdentifier);
@@ -104,7 +111,7 @@ const resolveTeachingProfiles = async (client, calendar) => {
                 username: { in: assistantUsernames },
                 can_view_stream_key: 0,
             },
-            select: { username: true, display_name: true },
+            select: { username: true, display_name: true, student_hmid: true },
         })
         : [];
     const assistantByUsername = new Map(assistants.map((profile) => [profile.username, profile]));
@@ -166,11 +173,13 @@ const findTeachingStudentHmid = async (client, username, code) => {
     return normalizeText(fallback?.student_hmid) || null;
 };
 const upsertTeachingUser = async (client, calendar, profile, classId) => {
+    const lessonDate = (0, exports.calendarDateAtMidnight)(calendar.start_time);
     const username = normalizeText(profile.username);
     if (username.length > 100) {
         throw new Error(`Username nhân sự "${username}" vượt quá 100 ký tự`);
     }
-    const studentHmid = await findTeachingStudentHmid(client, username, calendar.code);
+    const studentHmid = normalizeText(profile.student_hmid)
+        || await findTeachingStudentHmid(client, username, calendar.code);
     const displayName = (0, exports.buildTeachingUserName)(studentHmid, profile.role === 'assistant' ? 'Giáo viên' : profile.display_name, username);
     const identityWhere = {
         username,
@@ -192,7 +201,7 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
         islearn: 0,
         room_id: 1,
         class_id: classId,
-        created_at: new Date(),
+        created_at: lessonDate,
         updated_at: new Date(),
     };
     const updateData = {
@@ -200,6 +209,7 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
         islearn: 0,
         room_id: 1,
         class_id: classId,
+        created_at: lessonDate,
         ...(studentHmid ? { student_hmid: studentHmid } : {}),
         updated_at: new Date(),
     };
@@ -245,6 +255,7 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
     if (!profiles.length)
         return { created: 0, updated: 0 };
     const classId = (0, exports.buildCalendarClassId)(calendar.code, calendar.start_time, calendar.learn_number);
+    const lessonDate = (0, exports.calendarDateAtMidnight)(calendar.start_time);
     let created = 0;
     let updated = 0;
     for (const profile of profiles) {
@@ -259,6 +270,7 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
             select: { id: true, student_hmid: true, name: true },
         });
         const studentHmid = normalizeText(existing?.student_hmid)
+            || normalizeText(profile.student_hmid)
             || await findTeachingStudentHmid(client, username, calendar.code);
         const displayName = (0, exports.buildTeachingUserName)(studentHmid, profile.role === 'assistant' ? 'Giáo viên' : profile.display_name, username);
         const updateData = {
@@ -266,6 +278,7 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
             islearn: 0,
             room_id: 1,
             class_id: classId,
+            created_at: lessonDate,
             ...(studentHmid ? { student_hmid: studentHmid } : {}),
             updated_at: new Date(),
         };
@@ -290,7 +303,7 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
                     islearn: 0,
                     room_id: 1,
                     class_id: classId,
-                    created_at: new Date(),
+                    created_at: lessonDate,
                     updated_at: new Date(),
                 },
             });

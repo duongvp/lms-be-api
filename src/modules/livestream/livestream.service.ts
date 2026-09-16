@@ -1875,7 +1875,8 @@ const cancelWithMakeup = async (
   current: any,
   payload: any,
   reason: string,
-  preloadedSourceMappings?: any[]
+  preloadedSourceMappings?: any[],
+  canceledSource?: any
 ) => {
   // Mapping của key gốc vẫn phải giữ cho lịch bù. Đọc trước để copy riêng cho
   // bản ghi nghỉ có key _huy, từ đó HMO có đủ package/course/lesson để đồng bộ.
@@ -1909,36 +1910,45 @@ const cancelWithMakeup = async (
   });
 
   const canceledKey = await generateUniqueCanceledKey(tx, current.key);
+  const sourceSession = canceledSource || current;
   const newSessionData = {
-    ...copySessionData(current),
+    ...copySessionData(sourceSession),
     ...newSessionInput,
     start_time: startTime,
     end_time: endTime,
-    teacher: newSessionInput.teacher ?? current.teacher,
-    channel_name: newSessionInput.channel_name ?? current.channel_name,
+    teacher: newSessionInput.teacher ?? sourceSession.teacher,
+    channel_name: newSessionInput.channel_name ?? sourceSession.channel_name,
     lesson_status: 0,
     lesson_count: normalizeLessonCount(current.lesson_count) ?? 0,
     key: current.key,
-    lesson_name: lessonNameOptions.makeupLessonName(current.lesson_name),
+    lesson_name: lessonNameOptions.makeupLessonName(sourceSession.lesson_name),
   };
 
   // Giải phóng key gốc trước, sau đó gắn chính key đó cho lịch học bù.
   // Mapping không đổi vì vẫn trỏ đến key gốc đang hoạt động.
-  const updatedCurrent = await updateCalendarRecord(tx, current.id, {
-    lesson_status: 1,
-    cancel_reason: reason,
-    lesson_noti: lessonNotification,
-    key: canceledKey,
-    lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
-    skip_teacher_user_sync: true,
-  });
+  const updatedCurrent = await updateCalendarRecord(tx, current.id, canceledSource
+    ? { key: canceledKey, skip_teacher_user_sync: true }
+    : {
+        lesson_status: 1,
+        cancel_reason: reason,
+        lesson_noti: lessonNotification,
+        key: canceledKey,
+        lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
+        skip_teacher_user_sync: true,
+      });
   await copyPackageLessonMappingsForCalendar(tx, updatedCurrent, sourceMappings);
   const createdSession = await createCalendarRecord(tx, newSessionData, current);
 
   return { canceled_session: updatedCurrent, created_session: createdSession };
 };
 
-const rescheduleFollowing = async (tx: any, current: any, payload: any, reason: string) => {
+const rescheduleFollowing = async (
+  tx: any,
+  current: any,
+  payload: any,
+  reason: string,
+  canceledSource?: any
+) => {
   // Các slot bị dời vẫn dùng key cũ nên mapping cũ được giữ nguyên. Chỉ bản
   // ghi nghỉ _huy cần một bản copy mapping để queue HMO không bỏ qua nó.
   const sourceKey = String(current.key || '').trim();
@@ -1988,7 +1998,8 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any, reason: 
   });
   await hydrateAssistantTeachers(tx, followings);
 
-  const allSessions = [current, ...followings];
+  const sourceSession = canceledSource || current;
+  const allSessions = [sourceSession, ...followings];
   const lastSource = allSessions[allSessions.length - 1];
   await checkConflict({
     teacher: newSessionInput.teacher ?? lastSource.teacher,
@@ -2003,14 +2014,16 @@ const rescheduleFollowing = async (tx: any, current: any, payload: any, reason: 
   const canceledKey = await generateUniqueCanceledKey(tx, current.key);
   // Key gốc đi cùng lesson xuống slot kế tiếp. Row nghỉ dùng key riêng để
   // lưu lịch sử và không chiếm key đang hoạt động của lesson.
-  const updatedCurrent = await updateCalendarRecord(tx, current.id, {
-    lesson_status: 1,
-    cancel_reason: reason,
-    lesson_noti: lessonNotification,
-    key: canceledKey,
-    lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
-    skip_teacher_user_sync: true,
-  });
+  const updatedCurrent = await updateCalendarRecord(tx, current.id, canceledSource
+    ? { key: canceledKey, skip_teacher_user_sync: true }
+    : {
+        lesson_status: 1,
+        cancel_reason: reason,
+        lesson_noti: lessonNotification,
+        key: canceledKey,
+        lesson_name: lessonNameOptions.canceledLessonName(current.lesson_name),
+        skip_teacher_user_sync: true,
+      });
   await createPackageLessonMappingForCalendar(tx, updatedCurrent, sourceMappings);
 
   const shiftedSessions = [];
@@ -2080,7 +2093,24 @@ const rescheduleSessionInTransaction = async (
   const current = context?.current ?? await tx.calendar.findUnique({ where: { id } });
   if (!current) throw new Error("Not found");
   if (!context?.current) await hydrateAssistantTeachers(tx, [current]);
-  assertCanUpdateSession(current);
+  const afterCancel = payload?.source_state === 'canceled_without_makeup';
+  let canceledSource: any | undefined;
+  if (afterCancel) {
+    if (Number(current.lesson_status) !== 1) {
+      throw new Error('Buổi học không ở trạng thái nghỉ học');
+    }
+    const latestChange = await tx.calendar_change_logs.findFirst({
+      where: { calendar_id: current.id },
+      orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
+    });
+    if (!latestChange || latestChange.action !== 'cancel') {
+      throw new Error('Buổi nghỉ này đã có lịch bù, đã dời chuỗi hoặc không có lịch sử nghỉ hợp lệ');
+    }
+    const beforeData = latestChange.before_data as any;
+    canceledSource = beforeData?.source_session || current;
+  } else {
+    assertCanUpdateSession(current);
+  }
 
     let action: 'cancel' | 'makeup' | 'following';
     let result: any;
@@ -2091,7 +2121,7 @@ const rescheduleSessionInTransaction = async (
       result = await cancelWithoutMakeup(tx, current, payload, reason);
     } else if (['makeup', 'make_up', 'compensate'].includes(mode)) {
       action = 'makeup';
-      result = await cancelWithMakeup(tx, current, payload, reason, context?.sourceMappings);
+      result = await cancelWithMakeup(tx, current, payload, reason, context?.sourceMappings, canceledSource);
     } else if (mode === 'following') {
       action = 'following';
       beforeFollowingSessions = await tx.calendar.findMany({
@@ -2107,7 +2137,16 @@ const rescheduleSessionInTransaction = async (
         orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
       });
       await hydrateAssistantTeachers(tx, beforeFollowingSessions);
-      result = await rescheduleFollowing(tx, current, payload, reason);
+      if (afterCancel) {
+        const nextActiveSession = beforeFollowingSessions[0];
+        if (!nextActiveSession) {
+          throw new Error('Không thể dời chuỗi vì không còn buổi học tiếp theo');
+        }
+        if (nextActiveSession.start_time <= getVietnamWallClockDate()) {
+          throw new Error('Không thể dời chuỗi vì buổi học tiếp theo đã bắt đầu hoặc đã diễn ra');
+        }
+      }
+      result = await rescheduleFollowing(tx, current, payload, reason, canceledSource);
     } else {
       throw new Error("Invalid reschedule mode");
     }
@@ -2124,7 +2163,7 @@ const rescheduleSessionInTransaction = async (
 
     await writeCalendarChangeLog(tx, {
       operationId,
-      action,
+      action: afterCancel ? `${action}_after_cancel` : action,
       current,
       reason,
       actor,
@@ -2153,13 +2192,13 @@ const rescheduleSessionInTransaction = async (
       });
     } else if (action === 'makeup') {
       await enqueueManyCalendarTeamsNotifications(tx, [
-        {
+        ...(!afterCancel ? [{
           eventType: 'cancelled',
           before: current,
           after: result.canceled_session,
           actor,
           operationId,
-        },
+        } as const] : []),
         {
           eventType: 'created',
           after: result.created_session,
@@ -2169,13 +2208,13 @@ const rescheduleSessionInTransaction = async (
       ]);
     } else {
       await enqueueManyCalendarTeamsNotifications(tx, [
-        {
+        ...(!afterCancel ? [{
           eventType: 'cancelled',
           before: current,
           after: result.canceled_session,
           actor,
           operationId,
-        },
+        } as const] : []),
         ...(result.shifted_sessions || []).map((session: any, index: number) => ({
           eventType: 'updated' as const,
           before: beforeFollowingSessions[index],
@@ -2826,6 +2865,58 @@ export const getCalendar = async (
       orderBy,
     }),
   ]);
+  const canceledIds = data
+    .filter((record) => Number(record.lesson_status) === 1)
+    .map((record) => record.id);
+  const latestCancelEligibility = canceledIds.length
+    ? await prisma.$queryRaw<Array<{
+        calendar_id: number;
+        action: string;
+        before_data: any;
+        next_active_start_time: Date | null;
+      }>>(Prisma.sql`
+        SELECT change_log.calendar_id,
+               change_log.action,
+               change_log.before_data,
+               (
+                 SELECT MIN(next_session.start_time)
+                 FROM calendar AS next_session
+                 INNER JOIN calendar AS canceled_session
+                   ON canceled_session.id = change_log.calendar_id
+                 WHERE next_session.code = canceled_session.code
+                   AND next_session.system_type = canceled_session.system_type
+                   AND next_session.start_time > canceled_session.start_time
+                   AND COALESCE(next_session.lesson_status, 0) <> 1
+               ) AS next_active_start_time
+        FROM calendar_change_logs AS change_log
+        INNER JOIN (
+          SELECT calendar_id, MAX(id) AS latest_id
+          FROM calendar_change_logs
+          WHERE calendar_id IN (${Prisma.join(canceledIds)})
+          GROUP BY calendar_id
+        ) AS latest ON latest.latest_id = change_log.id
+      `)
+    : [];
+  const latestActionByCalendarId = new Map(
+    latestCancelEligibility.map((row) => [Number(row.calendar_id), row.action])
+  );
+  const originalLessonNameByCalendarId = new Map(
+    latestCancelEligibility.map((row) => {
+      const beforeData = typeof row.before_data === 'string'
+        ? JSON.parse(row.before_data)
+        : row.before_data;
+      return [Number(row.calendar_id), beforeData?.source_session?.lesson_name ?? null];
+    })
+  );
+  const canFollowingByCalendarId = new Map(
+    latestCancelEligibility.map((row) => [
+      Number(row.calendar_id),
+      Boolean(
+        row.next_active_start_time
+        && new Date(row.next_active_start_time) > getVietnamWallClockDate()
+      ),
+    ])
+  );
   await hydrateAssistantTeachers(prisma, data);
   const assignmentStatuses = data.length
     ? await prisma.classroom_assignment_history.groupBy({
@@ -2859,6 +2950,14 @@ export const getCalendar = async (
         classroom_assigned: !isCancelled && (hasAssignmentHistory || hasStarted),
         classroom_assigned_at: assignmentStatusByCalendarId.get(record.id) ?? null,
         package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
+        can_create_makeup_after_cancel: isCancelled
+          && latestActionByCalendarId.get(record.id) === 'cancel',
+        can_following_after_cancel: isCancelled
+          && latestActionByCalendarId.get(record.id) === 'cancel'
+          && canFollowingByCalendarId.get(record.id) === true,
+        canceled_original_lesson_name: isCancelled
+          ? originalLessonNameByCalendarId.get(record.id) ?? null
+          : null,
       };
     }),
   };

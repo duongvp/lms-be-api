@@ -10,6 +10,8 @@ import {
   listTeacherProfiles,
   updateTeacherProfile,
   updateTeacherProfileStatus,
+  syncTeacherProfileHmid,
+  syncTeacherProfilesHmidBulk,
 } from './teacher-profile.service';
 import {
   validateTeacherProfileId,
@@ -88,6 +90,31 @@ const updateStatus = async (req: Request, res: Response) => {
       status
     );
     return SuccessResponse(res, 'Đã cập nhật trạng thái nhân sự', result);
+  } catch (error: any) {
+    return ErrorResponse(res, error.message, error.statusCode || 400);
+  }
+};
+
+const syncHmid = async (req: Request, res: Response) => {
+  try {
+    const result = await syncTeacherProfileHmid(
+      validateTeacherProfileId(req.params.id)
+    );
+    return SuccessResponse(res, 'Đã đồng bộ HMID nhân sự', result);
+  } catch (error: any) {
+    return ErrorResponse(res, error.message, error.statusCode || 400);
+  }
+};
+
+const syncHmidBulk = async (req: Request, res: Response) => {
+  try {
+    const rawIds = req.body?.ids;
+    if (!Array.isArray(rawIds) || !rawIds.length || rawIds.length > 100) {
+      return ErrorResponse(res, 'Danh sách đồng bộ phải có từ 1 đến 100 nhân sự', 400);
+    }
+    const ids = Array.from(new Set(rawIds.map((id) => validateTeacherProfileId(id))));
+    const result = await syncTeacherProfilesHmidBulk(ids);
+    return SuccessResponse(res, 'Đã hoàn tất đồng bộ HMID hàng loạt', result);
   } catch (error: any) {
     return ErrorResponse(res, error.message, error.statusCode || 400);
   }
@@ -183,6 +210,8 @@ export default {
   create,
   update,
   updateStatus,
+  syncHmid,
+  syncHmidBulk,
   remove,
   exportFile,
   template,

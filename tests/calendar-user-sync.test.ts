@@ -277,9 +277,11 @@ test('quét user lưu tên thật cho giáo viên và nhãn Giáo viên cho tr�
   assert.equal(result.created, 2);
   assert.equal(creates[0].data.username, 'gv01');
   assert.equal(creates[0].data.name, 'HM-GV01 - Giáo viên 01');
+  assert.equal(creates[0].data.created_at.toISOString(), '2026-08-13T00:00:00.000Z');
   assert.equal(creates[1].data.username, 'tg01');
   assert.equal(creates[1].data.name, 'HM12345 - Giáo viên');
   assert.equal(creates[1].data.student_hmid, 'HM12345');
+  assert.equal(creates[1].data.created_at.toISOString(), '2026-08-13T00:00:00.000Z');
 });
 
 test('quét lại vá student_hmid null và chuẩn hóa name của toàn bộ nhân sự', async () => {
@@ -319,9 +321,11 @@ test('quét lại vá student_hmid null và chuẩn hóa name của toàn bộ n
   assert.equal(updates.length, 2);
   const teacherUpdate = updates.find((item) => item.where.id === 1);
   assert.equal(teacherUpdate.data.name, 'HM-GV01 - Giáo viên 01');
+  assert.equal(teacherUpdate.data.created_at.toISOString(), '2026-08-13T00:00:00.000Z');
   const assistantUpdate = updates.find((item) => item.where.id === 2);
   assert.equal(assistantUpdate.data.student_hmid, 'HM12345');
   assert.equal(assistantUpdate.data.name, 'HM12345 - Giáo viên');
+  assert.equal(assistantUpdate.data.created_at.toISOString(), '2026-08-13T00:00:00.000Z');
 });
 
 test('vá HMID ưu tiên giá trị cùng chương trình khi username có HMID khác ở chương trình khác', async () => {

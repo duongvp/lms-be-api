@@ -7,6 +7,7 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const logger_1 = require("../../utils/logger");
 const constants_1 = require("./constants");
+const client_1 = require("@prisma/client");
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const authorization_service_1 = require("../../services/authorization.service");
 // Middleware xác thực JWT
@@ -42,14 +43,9 @@ const authenticate = async (req, res, next) => {
             res.status(401).json({ success: false, message: 'Session is invalid or revoked' });
             return;
         }
-        const user = await prisma_1.default.users.findUnique({
-            where: { id: decoded.userId }
-        });
-        if (!user) {
-            res.status(401).json({ success: false, message: 'User not found' });
-            return;
-        }
-        const { roles, permissionCodes, programScope } = await (0, authorization_service_1.loadUserAccess)(user.id);
+        // loadUserAccess cache cả user và RBAC trong thời gian ngắn. Sau lần đầu,
+        // mỗi request chỉ cần truy vấn session thay vì đọc lại user/role/scope.
+        const { user, roles, permissionCodes, programScope } = await (0, authorization_service_1.loadUserAccess)(Number(decoded.userId));
         // Gắn user vào request
         req.user = {
             userId: user.id,
@@ -63,6 +59,16 @@ const authenticate = async (req, res, next) => {
         next();
     }
     catch (error) {
+        const isPoolTimeout = error instanceof client_1.Prisma.PrismaClientKnownRequestError
+            && error.code === 'P2024';
+        if (isPoolTimeout) {
+            logger_1.logger.error('Database connection pool timeout during authentication:', error);
+            res.status(503).json({
+                success: false,
+                message: 'Hệ thống đang bận, vui lòng thử lại sau giây lát',
+            });
+            return;
+        }
         logger_1.logger.error('Authentication error:', error);
         res.status(401).json({ success: false, message: 'Authentication failed' });
     }

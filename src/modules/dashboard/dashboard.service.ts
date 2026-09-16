@@ -1,7 +1,6 @@
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
-import { markInterruptedHmoLessonSyncRuns } from '../hmo-lesson-sync/hmo-lesson-sync.service';
 
 type CountRow = { total: bigint | number };
 
@@ -35,6 +34,25 @@ type OutlineQuizRow = {
 };
 
 const numberValue = (value: bigint | number | null | undefined) => Number(value ?? 0);
+
+const runQueriesWithConcurrency = async <
+  T extends ReadonlyArray<() => Promise<any>>
+>(tasks: T, concurrency = 3): Promise<{ [K in keyof T]: Awaited<ReturnType<T[K]>> }> => {
+  const results: any[] = new Array(tasks.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < tasks.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await tasks[index]();
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(concurrency, tasks.length) },
+    () => worker()
+  ));
+  return results as { [K in keyof T]: Awaited<ReturnType<T[K]>> };
+};
 
 export type DashboardTimeFilter = { from?: Date; to?: Date };
 
@@ -115,8 +133,8 @@ export const getDashboardOverview = async (
     )`;
   };
 
-  const [summaryRows, todayRows, weeklyRows, upcomingRows, recentChanges, teamsRows, hocmaiRows, outlineQuizRows] = await Promise.all([
-    prisma.$queryRaw<SummaryRow[]>(Prisma.sql`
+  const [summaryRows, todayRows, weeklyRows, upcomingRows, recentChanges, teamsRows, hocmaiRows, outlineQuizRows] = await runQueriesWithConcurrency([
+    () => prisma.$queryRaw<SummaryRow[]>(Prisma.sql`
       SELECT
         (SELECT COUNT(DISTINCT calendar_summary.code) FROM calendar AS calendar_summary
           WHERE ${calendarRange}${calendarScoped('calendar_summary')}) AS courses,
@@ -145,7 +163,7 @@ export const getDashboardOverview = async (
         (SELECT COUNT(*) FROM teacher_profiles WHERE status = 1 AND can_view_stream_key = 0) AS assistants,
         (SELECT COUNT(DISTINCT userId) FROM user_roles) AS admin_users
     `),
-    prisma.$queryRaw<TodayRow[]>(Prisma.sql`
+    () => prisma.$queryRaw<TodayRow[]>(Prisma.sql`
       SELECT
         COUNT(*) AS total,
         SUM(CASE WHEN COALESCE(lesson_status, 0) <> 1 AND start_time > NOW() THEN 1 ELSE 0 END) AS upcoming,
@@ -155,7 +173,7 @@ export const getDashboardOverview = async (
       FROM calendar AS calendar_today
       WHERE ${calendarRange}${calendarScoped('calendar_today')}
     `),
-    prisma.$queryRaw<Array<{ date: string; total: bigint; cancelled: bigint }>>(Prisma.sql`
+    () => prisma.$queryRaw<Array<{ date: string; total: bigint; cancelled: bigint }>>(Prisma.sql`
       SELECT DATE_FORMAT(start_time, '%Y-%m-%d') AS date,
         COUNT(*) AS total,
         SUM(CASE WHEN lesson_status = 1 THEN 1 ELSE 0 END) AS cancelled
@@ -164,7 +182,7 @@ export const getDashboardOverview = async (
       GROUP BY DATE_FORMAT(start_time, '%Y-%m-%d')
       ORDER BY DATE_FORMAT(start_time, '%Y-%m-%d') ASC
     `),
-    prisma.$queryRaw<Array<{
+    () => prisma.$queryRaw<Array<{
       id: number;
       code: string;
       learn_number: number;
@@ -187,7 +205,7 @@ export const getDashboardOverview = async (
       ORDER BY start_time ASC, id ASC
       LIMIT 8
     `),
-    prisma.$queryRaw<Array<{
+    () => prisma.$queryRaw<Array<{
       id: bigint;
       action: string;
       code: string;
@@ -212,21 +230,21 @@ export const getDashboardOverview = async (
       ORDER BY created_at DESC, id DESC
       LIMIT 6
     `),
-    prisma.$queryRaw<Array<{ pending: bigint; failed: bigint; sent_today: bigint }>>(Prisma.sql`
+    () => prisma.$queryRaw<Array<{ pending: bigint; failed: bigint; sent_today: bigint }>>(Prisma.sql`
       SELECT
         SUM(CASE WHEN status IN (0, 2, 3) THEN 1 ELSE 0 END) AS pending,
         SUM(CASE WHEN status = 4 THEN 1 ELSE 0 END) AS failed,
         SUM(CASE WHEN status = 1 AND DATE(sent_at) = CURDATE() THEN 1 ELSE 0 END) AS sent_today
       FROM teams_notification_outbox
     `),
-    prisma.$queryRaw<Array<{ pending: bigint; failed: bigint; synced_today: bigint }>>(Prisma.sql`
+    () => prisma.$queryRaw<Array<{ pending: bigint; failed: bigint; synced_today: bigint }>>(Prisma.sql`
       SELECT
         SUM(CASE WHEN COALESCE(status, 0) IN (0, 3) THEN 1 ELSE 0 END) AS pending,
         SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END) AS failed,
         SUM(CASE WHEN status = 1 AND DATE(synced_at) = CURDATE() THEN 1 ELSE 0 END) AS synced_today
       FROM hocmai_sync_queue
     `),
-    prisma.$queryRaw<OutlineQuizRow[]>(Prisma.sql`
+    () => prisma.$queryRaw<OutlineQuizRow[]>(Prisma.sql`
       SELECT calendar_outline.id,
              COALESCE(NULLIF(TRIM(calendar_outline.code), ''), session_lesson.subject_code) AS program_code,
              COALESCE(NULLIF(TRIM(session_lesson.subject_name), ''), NULLIF(TRIM(calendar_outline.subject), '')) AS subject_name,
@@ -243,7 +261,7 @@ export const getDashboardOverview = async (
       WHERE ${calendarRange}${calendarScoped('calendar_outline')}
       ORDER BY calendar_outline.code ASC, calendar_outline.learn_number ASC, calendar_outline.start_time ASC, calendar_outline.id ASC
     `),
-  ]);
+  ] as const, 3);
 
   const summary = summaryRows[0];
   const today = todayRows[0];
@@ -262,7 +280,6 @@ export const getDashboardOverview = async (
   let syncIssuePrograms: any[] = [];
   let hmoLessonSyncAvailable = true;
   try {
-    await markInterruptedHmoLessonSyncRuns();
     const latestSyncRuns = await prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT id, trigger_type, status, programs_total, programs_processed, programs_failed,
         lessons_total, lessons_synced, lessons_failed, calendars_synced, last_error,

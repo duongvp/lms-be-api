@@ -22,6 +22,10 @@ import {
   applyClassroomAssignment,
   previewClassroomAssignment,
 } from './classroom-assignment.service';
+import {
+  getCalendarStudentSyncJob,
+  startCalendarStudentSync,
+} from './calendar-student-sync.service';
 
 const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => ({
   userId: Number(req.user?.userId),
@@ -144,6 +148,37 @@ export const resendToHocmai = async (req: Request, res: Response): Promise<void>
     });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const syncStudents = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    res.status(202).json({
+      success: true,
+      message: 'Đã bắt đầu đồng bộ học viên',
+      data: startCalendarStudentSync(
+        req.body?.ids,
+        req.body?.registeredAt,
+        Number(req.user?.userId)
+      ),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getStudentSyncProgress = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    res.status(200).json({
+      success: true,
+      data: getCalendarStudentSyncJob(String(req.params.jobId || ''), Number(req.user?.userId)),
+    });
+  } catch (error) {
+    next(error);
   }
 };
 

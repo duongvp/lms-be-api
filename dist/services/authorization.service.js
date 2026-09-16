@@ -3,15 +3,35 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getFirstProgramScopeFilter = exports.getProgramScopeFilter = exports.assertProgramAccess = exports.isProgramAllowed = exports.loadUserAccess = void 0;
+exports.getFirstProgramScopeFilter = exports.getProgramScopeFilter = exports.assertProgramAccess = exports.isProgramAllowed = exports.invalidateUserAccessCache = exports.loadUserAccess = void 0;
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../lib/prisma"));
 const ApiError_1 = __importDefault(require("../utils/ApiError"));
 const isMissingScopeSchema = (error) => (error instanceof client_1.Prisma.PrismaClientKnownRequestError
     && (error.code === 'P2021' || (error.code === 'P2010'
         && String(error.meta?.message || '').toLowerCase().includes('doesn\'t exist'))));
-const legacyAccessQuery = async (userId) => {
-    const user = await prisma_1.default.users.findUnique({ where: { id: userId } });
+const positiveConfigNumber = (value, fallback, minimum) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+};
+const ACCESS_CACHE_TTL_MS = positiveConfigNumber(process.env.AUTHORIZATION_CACHE_TTL_MS, 30_000, 1_000);
+const ACCESS_CACHE_MAX_ENTRIES = positiveConfigNumber(process.env.AUTHORIZATION_CACHE_MAX_ENTRIES, 1_000, 100);
+const accessCache = new Map();
+const trimAccessCache = () => {
+    const now = Date.now();
+    for (const [userId, entry] of accessCache) {
+        if (entry.expiresAt <= now)
+            accessCache.delete(userId);
+    }
+    while (accessCache.size >= ACCESS_CACHE_MAX_ENTRIES) {
+        const oldestUserId = accessCache.keys().next().value;
+        if (oldestUserId === undefined)
+            break;
+        accessCache.delete(oldestUserId);
+    }
+};
+const legacyAccessQuery = async (userId, preloadedUser) => {
+    const user = preloadedUser ?? await prisma_1.default.users.findUnique({ where: { id: userId } });
     if (!user)
         throw new ApiError_1.default('User not found', 404);
     const userRoles = await prisma_1.default.userRoles.findMany({
@@ -26,8 +46,8 @@ const legacyAccessQuery = async (userId) => {
     });
     return { user, userRoles };
 };
-const loadUserAccess = async (userId) => {
-    const access = await legacyAccessQuery(userId);
+const loadUserAccessUncached = async (userId, preloadedUser) => {
+    const access = await legacyAccessQuery(userId, preloadedUser);
     let roleScopeRows = [];
     try {
         roleScopeRows = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
@@ -77,7 +97,35 @@ const loadUserAccess = async (userId) => {
     }
     return { user: access.user, roles, permissionCodes, programScope };
 };
+const loadUserAccess = async (userId, preloadedUser) => {
+    const cached = accessCache.get(userId);
+    if (cached && cached.expiresAt > Date.now())
+        return cached.promise;
+    if (cached)
+        accessCache.delete(userId);
+    trimAccessCache();
+    const promise = loadUserAccessUncached(userId, preloadedUser);
+    accessCache.set(userId, {
+        expiresAt: Date.now() + ACCESS_CACHE_TTL_MS,
+        promise,
+    });
+    try {
+        return await promise;
+    }
+    catch (error) {
+        if (accessCache.get(userId)?.promise === promise)
+            accessCache.delete(userId);
+        throw error;
+    }
+};
 exports.loadUserAccess = loadUserAccess;
+const invalidateUserAccessCache = (userId) => {
+    if (userId === undefined)
+        accessCache.clear();
+    else
+        accessCache.delete(userId);
+};
+exports.invalidateUserAccessCache = invalidateUserAccessCache;
 const isProgramAllowed = (user, permissionCode, programCode) => {
     if (!user)
         return false;

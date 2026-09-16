@@ -336,11 +336,17 @@ model teacher_profiles {
   can_view_stream_key Int @db.TinyInt
   display_name String?   @db.VarChar(100)
   status       Int       @default(1) @db.TinyInt
+  student_hmid String?   @db.VarChar(50)
+  hmid_sync_status String @default("pending") @db.VarChar(20)
+  hmid_synced_at DateTime? @db.DateTime(3)
+  hmid_sync_error String? @db.VarChar(500)
   created_at   DateTime? @default(now()) @db.Timestamp(0)
   updated_at   DateTime? @default(now()) @db.Timestamp(0)
 
   @@index([teacher_type], map: "idx_teacher_type")
   @@index([status, teacher_type], map: "idx_teacher_status_type")
+  @@index([student_hmid], map: "idx_teacher_student_hmid")
+  @@index([hmid_sync_status], map: "idx_teacher_hmid_sync_status")
 }
 
 model team_notify_history {

@@ -155,6 +155,7 @@ const normalizeCalendarFields = (fields) => Array.from(new Set(fields
     'grade',
     'reason',
     'change_reason',
+    'send_notification',
     'update_mode',
     'mode',
     'course_end_time',
@@ -193,6 +194,14 @@ router.put('/bulk', authorize(['calendar.update']), authorizePrograms('calendar.
 // quyền nghiệp vụ riêng theo yêu cầu tạm thời, nhưng vẫn phải đăng nhập.
 router.post('/sync-missing-teaching-users', livestreamController.backfillMissingTeachingUsers);
 router.post('/hocmai-sync-queue/resend', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), livestreamController.resendToHocmai);
+router.post('/students/sync', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), livestreamController.syncStudents);
+router.get('/students/sync/:jobId', authorize(['calendar.update']), livestreamController.getStudentSyncProgress);
+router.put('/swap', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds([
+    req.body?.first_id,
+    req.body?.second_id,
+])), authorizeFields('calendar', () => ['start_time', 'end_time']), livestreamController.swapSessionTimes);
+router.post('/evg-stream/bulk', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), livestreamController.provisionEvgStreamsBulk);
+router.post('/:id/evg-stream', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), livestreamController.provisionEvgStream);
 router.post('/:id/classroom-assignment/preview', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), livestreamController.previewStudentClassroomAssignment);
 router.post('/:id/classroom-assignment/apply', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), livestreamController.applyStudentClassroomAssignment);
 router.put('/:id/reschedule', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), authorizeTeachingAssignment('calendar.teacher.manage'), authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body?.new_session || {}))), livestreamController.rescheduleSession);

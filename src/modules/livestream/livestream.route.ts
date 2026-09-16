@@ -250,6 +250,17 @@ router.post(
   authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),
   livestreamController.resendToHocmai
 );
+router.post(
+  '/students/sync',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),
+  livestreamController.syncStudents
+);
+router.get(
+  '/students/sync/:jobId',
+  authorize(['calendar.update']),
+  livestreamController.getStudentSyncProgress
+);
 router.put(
   '/swap',
   authorize(['calendar.update']),

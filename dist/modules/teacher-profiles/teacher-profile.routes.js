@@ -20,7 +20,9 @@ router.get('/template', authorize(['teacher_profile.import']), teacher_profile_c
 router.post('/import', authorize(['teacher_profile.import']), upload.single('file'), teacher_profile_controller_1.default.importFile);
 router.get('/:id', authorize(['teacher_profile.view']), teacher_profile_controller_1.default.detail);
 router.post('/', authorize(['teacher_profile.create']), authorizeFields('teacher_profile', (req) => Object.keys(req.body || {})), teacher_profile_controller_1.default.create);
+router.post('/sync-hmid/bulk', authorize(['teacher_profile.update']), teacher_profile_controller_1.default.syncHmidBulk);
 router.put('/:id', authorize(['teacher_profile.update']), authorizeFields('teacher_profile', (req) => Object.keys(req.body || {}).filter((field) => field !== 'username')), teacher_profile_controller_1.default.update);
 router.patch('/:id/status', authorize(['teacher_profile.status']), authorizeFields('teacher_profile', () => ['status']), teacher_profile_controller_1.default.updateStatus);
+router.post('/:id/sync-hmid', authorize(['teacher_profile.update']), teacher_profile_controller_1.default.syncHmid);
 router.delete('/:id', authorize(['teacher_profile.delete']), teacher_profile_controller_1.default.remove);
 exports.default = router;

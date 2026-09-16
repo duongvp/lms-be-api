@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import prisma from '../../lib/prisma';
 import { logger } from '../../utils/logger';
 import { TOKEN_TYPES } from './constants';
+import { Prisma } from '@prisma/client';
 import FieldPermissionService from '../roles/field-permission.service';
 import { assertProgramAccess, loadUserAccess } from '../../services/authorization.service';
 
@@ -68,16 +69,11 @@ const authenticate = async (
       return;
     }
 
-    const user = await prisma.users.findUnique({
-      where: { id: decoded.userId }
-    });
-
-    if (!user) {
-      res.status(401).json({ success: false, message: 'User not found' });
-      return;
-    }
-
-    const { roles, permissionCodes, programScope } = await loadUserAccess(user.id);
+    // loadUserAccess cache cả user và RBAC trong thời gian ngắn. Sau lần đầu,
+    // mỗi request chỉ cần truy vấn session thay vì đọc lại user/role/scope.
+    const { user, roles, permissionCodes, programScope } = await loadUserAccess(
+      Number(decoded.userId)
+    );
 
     // Gắn user vào request
     req.user = {
@@ -92,6 +88,16 @@ const authenticate = async (
 
     next();
   } catch (error: any) {
+    const isPoolTimeout = error instanceof Prisma.PrismaClientKnownRequestError
+      && error.code === 'P2024';
+    if (isPoolTimeout) {
+      logger.error('Database connection pool timeout during authentication:', error);
+      res.status(503).json({
+        success: false,
+        message: 'Hệ thống đang bận, vui lòng thử lại sau giây lát',
+      });
+      return;
+    }
     logger.error('Authentication error:', error);
     res.status(401).json({ success: false, message: 'Authentication failed' });
   }

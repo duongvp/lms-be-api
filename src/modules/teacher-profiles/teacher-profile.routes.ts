@@ -27,6 +27,11 @@ router.post(
   authorizeFields('teacher_profile', (req) => Object.keys(req.body || {})),
   controller.create
 );
+router.post(
+  '/sync-hmid/bulk',
+  authorize(['teacher_profile.update']),
+  controller.syncHmidBulk
+);
 router.put(
   '/:id',
   authorize(['teacher_profile.update']),
@@ -41,6 +46,11 @@ router.patch(
   authorize(['teacher_profile.status']),
   authorizeFields('teacher_profile', () => ['status']),
   controller.updateStatus
+);
+router.post(
+  '/:id/sync-hmid',
+  authorize(['teacher_profile.update']),
+  controller.syncHmid
 );
 router.delete('/:id', authorize(['teacher_profile.delete']), controller.remove);
 

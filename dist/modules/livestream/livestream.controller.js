@@ -36,7 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.resendToHocmai = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
+exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.provisionEvgStreamsBulk = exports.provisionEvgStream = exports.swapSessionTimes = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.getStudentSyncProgress = exports.syncStudents = exports.resendToHocmai = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const livestream_io_1 = require("./livestream.io");
@@ -45,6 +45,7 @@ const auto_schedule_service_1 = require("./auto-schedule.service");
 const calendar_import_service_1 = require("./calendar-import.service");
 const authorization_service_1 = require("../../services/authorization.service");
 const classroom_assignment_service_1 = require("./classroom-assignment.service");
+const calendar_student_sync_service_1 = require("./calendar-student-sync.service");
 const getChangeActor = (req) => ({
     userId: Number(req.user?.userId),
     username: String(req.user?.username || ''),
@@ -171,6 +172,31 @@ const resendToHocmai = async (req, res) => {
     }
 };
 exports.resendToHocmai = resendToHocmai;
+const syncStudents = async (req, res, next) => {
+    try {
+        res.status(202).json({
+            success: true,
+            message: 'Đã bắt đầu đồng bộ học viên',
+            data: (0, calendar_student_sync_service_1.startCalendarStudentSync)(req.body?.ids, req.body?.registeredAt, Number(req.user?.userId)),
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.syncStudents = syncStudents;
+const getStudentSyncProgress = async (req, res, next) => {
+    try {
+        res.status(200).json({
+            success: true,
+            data: (0, calendar_student_sync_service_1.getCalendarStudentSyncJob)(String(req.params.jobId || ''), Number(req.user?.userId)),
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getStudentSyncProgress = getStudentSyncProgress;
 const previewStudentClassroomAssignment = async (req, res, next) => {
     try {
         const data = await (0, classroom_assignment_service_1.previewClassroomAssignment)(Number(req.params.id), {
@@ -220,6 +246,37 @@ const rescheduleSession = async (req, res, next) => {
     }
 };
 exports.rescheduleSession = rescheduleSession;
+const swapSessionTimes = async (req, res, next) => {
+    try {
+        const result = await livestreamService.swapSessionTimes(req.body, getChangeActor(req));
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.swapSessionTimes = swapSessionTimes;
+const provisionEvgStream = async (req, res, next) => {
+    try {
+        const result = await livestreamService.provisionCalendarEvgStream(Number(req.params.id), String(req.user?.username || ''), req.body?.mode || (req.body?.force === true ? 'overwrite' : 'skip_existing'));
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.provisionEvgStream = provisionEvgStream;
+const provisionEvgStreamsBulk = async (req, res, next) => {
+    try {
+        const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number);
+        const result = await livestreamService.provisionCalendarsEvgBulk(ids, String(req.user?.username || ''), req.body?.mode || 'skip_existing');
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(400).json({ success: false, message: err.message });
+    }
+};
+exports.provisionEvgStreamsBulk = provisionEvgStreamsBulk;
 const cancelSession = async (req, res, next) => {
     try {
         const { id } = req.params;

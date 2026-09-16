@@ -205,11 +205,16 @@ const executeRun = async (runId) => {
         c.teacher, tp.display_name AS teacher_name, l.id AS lesson_id,
         l.subject_code, l.lesson_name AS source_lesson_name,
         c.lesson_name, lcm.package_id, lcm.course_id,
+        plm.lesson_id AS mapped_hmo_lesson_id,
         (c.start_time > NOW() AND COALESCE(c.lesson_status, 0) <> 1) AS is_target
       FROM calendar c
       INNER JOIN lessons l ON l.id = c.session_id AND l.status <> 0
       LEFT JOIN teacher_profiles tp ON tp.username = c.teacher
       LEFT JOIN lesson_course_mapping lcm ON lcm.lesson_id = l.id
+      LEFT JOIN package_lesson_mapping plm
+        ON plm.key = c.key
+       AND plm.package_id = lcm.package_id
+       AND plm.course_id = lcm.course_id
       WHERE COALESCE(c.lesson_status, 0) <> 1
       ORDER BY l.subject_code, l.learn_number, c.start_time, c.id
     `;
@@ -293,6 +298,20 @@ const executeRun = async (runId) => {
                 let failure = false;
                 for (const pair of configuredPairs) {
                     const pairKey = `${pair.packageId}::${pair.courseId}`;
+                    // Mapping do quản trị viên chọn và đã lưu là nguồn tin cậy. Không
+                    // gọi lại outline HMO cho cặp này, vì HMO có thể trả rỗng tạm thời
+                    // dù Lesson ID đã được gán hợp lệ trong calendar.
+                    const existingMapping = calendarRows.find((item) => (String(item.package_id) === pair.packageId
+                        && String(item.course_id) === pair.courseId
+                        && String(item.mapped_hmo_lesson_id || '').trim()));
+                    if (existingMapping?.mapped_hmo_lesson_id) {
+                        nextMappings.push({
+                            package_id: pair.packageId,
+                            course_id: pair.courseId,
+                            lesson_id: String(existingMapping.mapped_hmo_lesson_id),
+                        });
+                        continue;
+                    }
                     const outlineError = outlineErrors.get(pairKey);
                     if (outlineError) {
                         await addIssue(runId, row, 'HMO_REQUEST_FAILED', outlineError, pair);
@@ -328,8 +347,11 @@ const executeRun = async (runId) => {
                     failedLessonIds.add(String(row.lesson_id));
                     continue;
                 }
-                const mappingResult = await prisma_1.default.$transaction(async (tx) => {
-                    return (0, hocmai_sync_queue_service_1.reconcileCalendarMappingsAndEnqueue)(tx, row, nextMappings);
+                const mappingResult = await prisma_1.default.$transaction((tx) => (0, hocmai_sync_queue_service_1.reconcileCalendarMappingsAndEnqueue)(tx, row, nextMappings), {
+                    maxWait: 10_000,
+                    // Prisma mặc định đóng interactive transaction sau 5 giây. Job có
+                    // thể phải chờ lock khi calendar đang được cập nhật đồng thời.
+                    timeout: 30_000,
                 });
                 if (mappingResult.changed)
                     calendarsSynced += 1;

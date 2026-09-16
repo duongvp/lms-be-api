@@ -31,8 +31,40 @@ type RoleScopeRow = {
   subject_code: string | null;
 };
 
-const legacyAccessQuery = async (userId: number) => {
-  const user = await prisma.users.findUnique({ where: { id: userId } });
+const positiveConfigNumber = (value: string | undefined, fallback: number, minimum: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+};
+const ACCESS_CACHE_TTL_MS = positiveConfigNumber(
+  process.env.AUTHORIZATION_CACHE_TTL_MS,
+  30_000,
+  1_000
+);
+const ACCESS_CACHE_MAX_ENTRIES = positiveConfigNumber(
+  process.env.AUTHORIZATION_CACHE_MAX_ENTRIES,
+  1_000,
+  100
+);
+type LoadedUserAccess = Awaited<ReturnType<typeof loadUserAccessUncached>>;
+const accessCache = new Map<number, {
+  expiresAt: number;
+  promise: Promise<LoadedUserAccess>;
+}>();
+
+const trimAccessCache = () => {
+  const now = Date.now();
+  for (const [userId, entry] of accessCache) {
+    if (entry.expiresAt <= now) accessCache.delete(userId);
+  }
+  while (accessCache.size >= ACCESS_CACHE_MAX_ENTRIES) {
+    const oldestUserId = accessCache.keys().next().value;
+    if (oldestUserId === undefined) break;
+    accessCache.delete(oldestUserId);
+  }
+};
+
+const legacyAccessQuery = async (userId: number, preloadedUser?: any) => {
+  const user = preloadedUser ?? await prisma.users.findUnique({ where: { id: userId } });
   if (!user) throw new ApiError('User not found', 404);
   const userRoles = await prisma.userRoles.findMany({
     where: { userId, role: { isActive: true } },
@@ -47,8 +79,8 @@ const legacyAccessQuery = async (userId: number) => {
   return { user, userRoles };
 };
 
-export const loadUserAccess = async (userId: number) => {
-  const access = await legacyAccessQuery(userId);
+const loadUserAccessUncached = async (userId: number, preloadedUser?: any) => {
+  const access = await legacyAccessQuery(userId, preloadedUser);
   let roleScopeRows: RoleScopeRow[] = [];
   try {
     roleScopeRows = await prisma.$queryRaw<RoleScopeRow[]>(Prisma.sql`
@@ -100,6 +132,30 @@ export const loadUserAccess = async (userId: number) => {
   }
 
   return { user: access.user, roles, permissionCodes, programScope };
+};
+
+export const loadUserAccess = async (userId: number, preloadedUser?: any) => {
+  const cached = accessCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+  if (cached) accessCache.delete(userId);
+
+  trimAccessCache();
+  const promise = loadUserAccessUncached(userId, preloadedUser);
+  accessCache.set(userId, {
+    expiresAt: Date.now() + ACCESS_CACHE_TTL_MS,
+    promise,
+  });
+  try {
+    return await promise;
+  } catch (error) {
+    if (accessCache.get(userId)?.promise === promise) accessCache.delete(userId);
+    throw error;
+  }
+};
+
+export const invalidateUserAccessCache = (userId?: number) => {
+  if (userId === undefined) accessCache.clear();
+  else accessCache.delete(userId);
 };
 
 export const isProgramAllowed = (

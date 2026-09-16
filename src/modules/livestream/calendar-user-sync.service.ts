@@ -6,6 +6,7 @@ const DAY_IN_MS = 24 * 60 * 60 * 1000;
 type TeachingProfile = {
   username: string;
   display_name: string | null;
+  student_hmid?: string | null;
 };
 
 type ResolvedTeachingProfile = TeachingProfile & {
@@ -77,6 +78,16 @@ export const excelDateSerialFromCalendarDate = (value: Date | string) => {
   return Math.floor((dateOnlyUtc - EXCEL_EPOCH_UTC) / DAY_IN_MS);
 };
 
+export const calendarDateAtMidnight = (value: Date | string) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error('Ngày lịch học không hợp lệ');
+  return new Date(Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate()
+  ));
+};
+
 export const buildCalendarClassId = (
   code: string,
   startTime: Date | string,
@@ -126,7 +137,7 @@ export const resolveCalendarTeacherProfile = async (client: any, identifier: unk
         { display_name: normalizedIdentifier },
       ],
     },
-    select: { username: true, display_name: true },
+    select: { username: true, display_name: true, student_hmid: true },
     orderBy: { id: 'asc' },
   }) as TeachingProfile[];
   const exactUsername = profiles.find((profile) => profile.username === normalizedIdentifier);
@@ -150,7 +161,7 @@ const resolveTeachingProfiles = async (
           username: { in: assistantUsernames },
           can_view_stream_key: 0,
         },
-        select: { username: true, display_name: true },
+        select: { username: true, display_name: true, student_hmid: true },
       }) as TeachingProfile[]
     : [];
   const assistantByUsername = new Map(
@@ -233,15 +244,13 @@ const upsertTeachingUser = async (
   profile: ResolvedTeachingProfile,
   classId: string
 ) => {
+  const lessonDate = calendarDateAtMidnight(calendar.start_time);
   const username = normalizeText(profile.username);
   if (username.length > 100) {
     throw new Error(`Username nhân sự "${username}" vượt quá 100 ký tự`);
   }
-  const studentHmid = await findTeachingStudentHmid(
-    client,
-    username,
-    calendar.code
-  );
+  const studentHmid = normalizeText(profile.student_hmid)
+    || await findTeachingStudentHmid(client, username, calendar.code);
   const displayName = buildTeachingUserName(
     studentHmid,
     profile.role === 'assistant' ? 'Giáo viên' : profile.display_name,
@@ -268,7 +277,7 @@ const upsertTeachingUser = async (
     islearn: 0,
     room_id: 1,
     class_id: classId,
-    created_at: new Date(),
+    created_at: lessonDate,
     updated_at: new Date(),
   };
   const updateData = {
@@ -276,6 +285,7 @@ const upsertTeachingUser = async (
     islearn: 0,
     room_id: 1,
     class_id: classId,
+    created_at: lessonDate,
     ...(studentHmid ? { student_hmid: studentHmid } : {}),
     updated_at: new Date(),
   };
@@ -329,6 +339,7 @@ export const ensureCalendarTeachingUsers = async (
     calendar.start_time,
     calendar.learn_number
   );
+  const lessonDate = calendarDateAtMidnight(calendar.start_time);
   let created = 0;
   let updated = 0;
 
@@ -345,6 +356,7 @@ export const ensureCalendarTeachingUsers = async (
     });
 
     const studentHmid = normalizeText(existing?.student_hmid)
+      || normalizeText(profile.student_hmid)
       || await findTeachingStudentHmid(client, username, calendar.code);
     const displayName = buildTeachingUserName(
       studentHmid,
@@ -356,6 +368,7 @@ export const ensureCalendarTeachingUsers = async (
       islearn: 0,
       room_id: 1,
       class_id: classId,
+      created_at: lessonDate,
       ...(studentHmid ? { student_hmid: studentHmid } : {}),
       updated_at: new Date(),
     };
@@ -382,7 +395,7 @@ export const ensureCalendarTeachingUsers = async (
           islearn: 0,
           room_id: 1,
           class_id: classId,
-          created_at: new Date(),
+          created_at: lessonDate,
           updated_at: new Date(),
         },
       });

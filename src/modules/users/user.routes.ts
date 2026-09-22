@@ -15,12 +15,12 @@ const authorizeAdmin = (req: any, res: any, next: any) => {
 };
 const authorizeRoleAssignment = (req: any, res: any, next: any) => {
     if (
-        req.body?.roleIds !== undefined
+        (req.body?.roleIds !== undefined || req.body?.programScope !== undefined)
         && !req.user?.roles?.includes('admin')
     ) {
         return res.status(403).json({
             success: false,
-            message: 'Only admin can assign roles',
+            message: 'Chỉ admin được gán vai trò và phạm vi chương trình',
         });
     }
     next();
@@ -112,7 +112,7 @@ router.put(
     authorize(['users.update']),
     authorizeRoleAssignment,
     authorizeFields('users', (req) =>
-        Object.keys(req.body || {}).filter((field) => field !== 'roleIds')
+        Object.keys(req.body || {}).filter((field) => !['roleIds', 'programScope'].includes(field))
     ),
     userController.updateUser
 );

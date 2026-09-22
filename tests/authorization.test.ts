@@ -13,9 +13,9 @@ const user = (overrides: Partial<AuthorizationUser> = {}): AuthorizationUser => 
   ...overrides,
 });
 
-test('legacy permission without policy remains unrestricted', () => {
-  assert.equal(isProgramAllowed(user(), 'calendar.view', 'toan-7-2027'), true);
-  assert.equal(getProgramScopeFilter(user(), 'calendar.view'), null);
+test('account without a program scope is denied by default', () => {
+  assert.equal(isProgramAllowed(user(), 'calendar.view', 'toan-7-2027'), false);
+  assert.deepEqual(getProgramScopeFilter(user(), 'calendar.view'), []);
 });
 
 test('global restricted scope applies to every functional permission', () => {

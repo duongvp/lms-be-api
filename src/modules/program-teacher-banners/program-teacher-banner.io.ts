@@ -37,3 +37,23 @@ export const buildBannerTemplate = () => {
   XLSX.utils.book_append_sheet(workbook, sheet, 'Banner');
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 };
+
+export const buildBannerExport = (rows: Array<{
+  program_code: string;
+  username: string;
+  display_name?: string | null;
+  banner_url: string;
+  status: number;
+}>) => {
+  const sheet = XLSX.utils.json_to_sheet(rows.map((row) => ({
+    code: row.program_code,
+    teacher: row.username,
+    teacher_name: row.display_name || '',
+    banner_url: row.banner_url,
+    status: row.status ? 'Hoạt động' : 'Tắt',
+  })), { header: ['code', 'teacher', 'teacher_name', 'banner_url', 'status'] });
+  sheet['!cols'] = [{ wch: 28 }, { wch: 30 }, { wch: 30 }, { wch: 70 }, { wch: 14 }];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Banner');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+};

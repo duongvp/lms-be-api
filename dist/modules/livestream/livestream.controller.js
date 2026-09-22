@@ -203,6 +203,7 @@ const previewStudentClassroomAssignment = async (req, res, next) => {
     try {
         const data = await (0, classroom_assignment_service_1.previewClassroomAssignment)(Number(req.params.id), {
             maxStudentsPerClassroom: req.body?.max_students_per_classroom,
+            updateMode: req.body?.update_mode,
         });
         res.status(200).json({ success: true, data });
     }
@@ -217,6 +218,7 @@ const applyStudentClassroomAssignment = async (req, res, next) => {
             username: req.user?.username,
         }, {
             maxStudentsPerClassroom: req.body?.max_students_per_classroom,
+            updateMode: req.body?.update_mode,
         });
         res.status(200).json({ success: true, data });
     }

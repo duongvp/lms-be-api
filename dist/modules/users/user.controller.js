@@ -13,6 +13,7 @@ const createUser = async (req, res) => {
             email: req.body?.email,
             phone: req.body?.phone,
             roleIds: Array.isArray(req.body?.roleIds) ? req.body.roleIds : [],
+            programScope: req.body?.programScope,
         });
         return res.status(201).json({ success: true, message: 'Created', data: result });
     }

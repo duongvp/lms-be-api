@@ -7,6 +7,7 @@ const router = Router();
 router.use(authMiddleware.authenticate);
 router.get('/', authMiddleware.authorize(['program_teacher_banner.view']), controller.list);
 router.get('/options', authMiddleware.authorize(['program_teacher_banner.view']), controller.options);
+router.get('/export', authMiddleware.authorize(['program_teacher_banner.import']), controller.exportFile);
 router.get('/template', authMiddleware.authorize(['program_teacher_banner.import']), controller.template);
 router.post('/import', authMiddleware.authorize(['program_teacher_banner.import']), multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single('file'), controller.importFile);
 router.get('/:id', authMiddleware.authorize(['program_teacher_banner.view']), controller.detail);

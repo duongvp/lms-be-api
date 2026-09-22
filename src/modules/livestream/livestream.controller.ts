@@ -192,6 +192,7 @@ export const previewStudentClassroomAssignment = async (
   try {
     const data = await previewClassroomAssignment(Number(req.params.id), {
       maxStudentsPerClassroom: req.body?.max_students_per_classroom,
+      updateMode: req.body?.update_mode,
     });
     res.status(200).json({ success: true, data });
   } catch (error: any) {
@@ -209,6 +210,7 @@ export const applyStudentClassroomAssignment = async (
       username: req.user?.username,
     }, {
       maxStudentsPerClassroom: req.body?.max_students_per_classroom,
+      updateMode: req.body?.update_mode,
     });
     res.status(200).json({ success: true, data });
   } catch (error: any) {

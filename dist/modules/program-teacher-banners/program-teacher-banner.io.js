@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.buildBannerTemplate = exports.parseBannerFile = void 0;
+exports.buildBannerExport = exports.buildBannerTemplate = exports.parseBannerFile = void 0;
 const XLSX = __importStar(require("xlsx"));
 const normalizedHeader = (value) => String(value || '').trim().toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd')
@@ -74,3 +74,17 @@ const buildBannerTemplate = () => {
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 };
 exports.buildBannerTemplate = buildBannerTemplate;
+const buildBannerExport = (rows) => {
+    const sheet = XLSX.utils.json_to_sheet(rows.map((row) => ({
+        code: row.program_code,
+        teacher: row.username,
+        teacher_name: row.display_name || '',
+        banner_url: row.banner_url,
+        status: row.status ? 'Hoạt động' : 'Tắt',
+    })), { header: ['code', 'teacher', 'teacher_name', 'banner_url', 'status'] });
+    sheet['!cols'] = [{ wch: 28 }, { wch: 30 }, { wch: 30 }, { wch: 70 }, { wch: 14 }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Banner');
+    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+};
+exports.buildBannerExport = buildBannerExport;

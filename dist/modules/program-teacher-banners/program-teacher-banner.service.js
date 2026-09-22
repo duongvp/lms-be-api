@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.resolveProgramTeacherBanner = exports.importBanners = exports.getBannerOptions = exports.deleteBanner = exports.updateBanner = exports.createBanner = exports.getBanner = exports.listBanners = void 0;
+exports.resolveProgramTeacherBanner = exports.importBanners = exports.getBannerOptions = exports.deleteBanner = exports.updateBanner = exports.createBanner = exports.getBanner = exports.getBannersForExport = exports.listBanners = void 0;
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
@@ -42,6 +42,23 @@ const listBanners = async (query) => {
     return { data, pagination: { page: query.page, limit: query.limit, total: Number(countRows[0]?.total || 0) } };
 };
 exports.listBanners = listBanners;
+const getBannersForExport = async (search) => {
+    const normalizedSearch = String(search || '').trim();
+    const where = normalizedSearch
+        ? (() => {
+            const value = `%${normalizedSearch}%`;
+            return client_1.Prisma.sql `WHERE banner.program_code LIKE ${value}
+          OR teacher.username LIKE ${value}
+          OR teacher.display_name LIKE ${value}`;
+        })()
+        : client_1.Prisma.empty;
+    const rows = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+    ${rowSelect} ${where}
+    ORDER BY banner.updated_at DESC, banner.id DESC
+  `);
+    return rows.map(normalizeBannerRow);
+};
+exports.getBannersForExport = getBannersForExport;
 const getBanner = async (id) => {
     const rows = await prisma_1.default.$queryRaw(client_1.Prisma.sql `${rowSelect} WHERE banner.id = ${id} LIMIT 1`);
     if (!rows[0])
@@ -58,19 +75,20 @@ const assertTeacher = async (teacherProfileId) => {
 };
 const syncFutureStreams = async (programCode, teacherProfileId, bannerUrl) => prisma_1.default.$executeRaw `
   UPDATE stream stream_row
+  JOIN (
+    SELECT DISTINCT calendar_row.code, calendar_row.learn_number
+    FROM calendar calendar_row
+    JOIN teacher_profiles profile ON profile.id = ${teacherProfileId}
+    WHERE calendar_row.code = ${programCode}
+      AND calendar_row.start_time >= NOW()
+      AND (
+        LOWER(calendar_row.teacher) = LOWER(profile.username)
+        OR LOWER(calendar_row.teacher) = LOWER(profile.display_name)
+      )
+  ) matched_calendar
+    ON matched_calendar.code = stream_row.code
+    AND matched_calendar.learn_number = stream_row.learn_number
   SET stream_row.banner_url = ${bannerUrl}, stream_row.updated_at = NOW()
-  WHERE stream_row.code = ${programCode}
-    AND EXISTS (
-      SELECT 1 FROM calendar calendar_row
-      JOIN teacher_profiles profile ON profile.id = ${teacherProfileId}
-      WHERE calendar_row.code = stream_row.code
-        AND calendar_row.learn_number = stream_row.learn_number
-        AND calendar_row.start_time >= NOW()
-        AND (
-          LOWER(calendar_row.teacher) = LOWER(profile.username)
-          OR LOWER(calendar_row.teacher) = LOWER(profile.display_name)
-        )
-    )
 `;
 const createBanner = async (payload, actor) => {
     await assertTeacher(payload.teacher_profile_id);
@@ -81,7 +99,7 @@ const createBanner = async (payload, actor) => {
       VALUES (${payload.program_code}, ${payload.teacher_profile_id}, ${payload.banner_url}, ${payload.status}, ${actor || null}, ${actor || null})
     `;
         const ids = await prisma_1.default.$queryRaw `SELECT LAST_INSERT_ID() id`;
-        await syncFutureStreams(payload.program_code, payload.teacher_profile_id, payload.banner_url);
+        await syncFutureStreams(payload.program_code, payload.teacher_profile_id, payload.status ? payload.banner_url : null);
         return (0, exports.getBanner)(Number(ids[0].id));
     }
     catch (error) {
@@ -125,30 +143,54 @@ const deleteBanner = async (id) => {
 };
 exports.deleteBanner = deleteBanner;
 const getBannerOptions = async (programCode, teacherProfileId) => {
-    const programFilter = programCode
-        ? client_1.Prisma.sql `AND calendar_row.code = ${programCode}` : client_1.Prisma.empty;
-    const teacherFilter = teacherProfileId
-        ? client_1.Prisma.sql `AND profile.id = ${teacherProfileId}` : client_1.Prisma.empty;
-    const programs = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
-    SELECT calendar_row.code,
-      COALESCE(MAX(lesson.subject_name), MAX(calendar_row.subject), calendar_row.code) subject_name
-    FROM calendar calendar_row
-    LEFT JOIN lessons lesson ON lesson.subject_code = calendar_row.code AND lesson.status <> 0
-    LEFT JOIN teacher_profiles profile ON
-      LOWER(calendar_row.teacher) = LOWER(profile.username)
-      OR LOWER(calendar_row.teacher) = LOWER(profile.display_name)
-    WHERE calendar_row.code IS NOT NULL AND TRIM(calendar_row.code) <> '' ${teacherFilter}
-    GROUP BY calendar_row.code ORDER BY subject_name, calendar_row.code
-  `);
-    const teachersRaw = await prisma_1.default.$queryRaw(client_1.Prisma.sql `
-    SELECT DISTINCT profile.id, profile.username, profile.display_name
-    FROM teacher_profiles profile
-    JOIN calendar calendar_row ON
-      LOWER(calendar_row.teacher) = LOWER(profile.username)
-      OR LOWER(calendar_row.teacher) = LOWER(profile.display_name)
-    WHERE profile.teacher_type = 1 AND profile.status = 1 ${programFilter}
-    ORDER BY profile.display_name, profile.username
-  `);
+    // Tránh JOIN calendar × teacher_profiles khi modal vừa mở. JOIN theo tên
+    // (LOWER + OR) không dùng được index và từng làm endpoint options bị timeout.
+    // Chỉ JOIN calendar khi người dùng đã chọn một vế để lọc vế còn lại.
+    const programs = teacherProfileId
+        ? await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT calendar_row.code,
+          COALESCE(MAX(lesson.subject_name), MAX(calendar_row.subject), calendar_row.code) subject_name
+        FROM calendar calendar_row
+        JOIN teacher_profiles profile ON profile.id = ${teacherProfileId}
+          AND (
+            LOWER(calendar_row.teacher) = LOWER(profile.username)
+            OR LOWER(calendar_row.teacher) = LOWER(profile.display_name)
+          )
+        LEFT JOIN (
+          SELECT subject_code, MAX(subject_name) subject_name
+          FROM lessons WHERE status <> 0 GROUP BY subject_code
+        ) lesson ON lesson.subject_code = calendar_row.code
+        WHERE calendar_row.code IS NOT NULL AND TRIM(calendar_row.code) <> ''
+        GROUP BY calendar_row.code ORDER BY subject_name, calendar_row.code
+      `)
+        : await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT calendar_row.code,
+          COALESCE(MAX(lesson.subject_name), MAX(calendar_row.subject), calendar_row.code) subject_name
+        FROM calendar calendar_row
+        LEFT JOIN (
+          SELECT subject_code, MAX(subject_name) subject_name
+          FROM lessons WHERE status <> 0 GROUP BY subject_code
+        ) lesson ON lesson.subject_code = calendar_row.code
+        WHERE calendar_row.code IS NOT NULL AND TRIM(calendar_row.code) <> ''
+        GROUP BY calendar_row.code ORDER BY subject_name, calendar_row.code
+      `);
+    const teachersRaw = programCode
+        ? await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT DISTINCT profile.id, profile.username, profile.display_name
+        FROM calendar calendar_row
+        JOIN teacher_profiles profile ON
+          LOWER(calendar_row.teacher) = LOWER(profile.username)
+          OR LOWER(calendar_row.teacher) = LOWER(profile.display_name)
+        WHERE profile.teacher_type = 1 AND profile.status = 1
+          AND calendar_row.code = ${programCode}
+        ORDER BY profile.display_name, profile.username
+      `)
+        : await prisma_1.default.$queryRaw(client_1.Prisma.sql `
+        SELECT profile.id, profile.username, profile.display_name
+        FROM teacher_profiles profile
+        WHERE profile.teacher_type = 1 AND profile.status = 1
+        ORDER BY profile.display_name, profile.username
+      `);
     const teachers = teachersRaw.map((teacher) => ({ ...teacher, id: Number(teacher.id) }));
     return { programs, teachers };
 };

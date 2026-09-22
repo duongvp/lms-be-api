@@ -427,7 +427,9 @@ model users {
   created_at   DateTime @default(now()) @db.Timestamp(0)
   updated_at   DateTime @default(now()) @db.Timestamp(0)
 
-  userRoles userRoles[]
+  userRoles          userRoles[]
+  programScopePolicy userProgramScopePolicies?
+  programScopes      userProgramScopes[]
 
   @@unique([username, code, learn_number], map: "uq_users_enroll")
   @@index([code, learn_number], map: "idx_users_code_learn")
@@ -633,6 +635,48 @@ model roleProgramScopes {
   @@id([roleId, subjectCode])
   @@index([subjectCode])
   @@map("role_program_scopes")
+}
+
+/// Program scope belongs to the administrator account, independently of roles.
+model userProgramScopePolicies {
+  userId    Int      @id @db.UnsignedInt
+  mode      String   @db.VarChar(20)
+  createdAt DateTime @default(now()) @db.DateTime(3)
+  updatedAt DateTime @updatedAt @db.DateTime(3)
+
+  user users @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([mode])
+  @@map("user_program_scope_policies")
+}
+
+model userProgramScopes {
+  userId          Int      @db.UnsignedInt
+  scopeResourceId BigInt   @db.UnsignedBigInt
+  createdAt       DateTime @default(now()) @db.DateTime(3)
+
+  user          users          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scopeResource scopeResources @relation(fields: [scopeResourceId], references: [id], onDelete: Cascade)
+
+  @@id([userId, scopeResourceId])
+  @@index([scopeResourceId])
+  @@map("user_program_scopes")
+}
+
+model scopeResources {
+  id           BigInt              @id @default(autoincrement()) @db.UnsignedBigInt
+  scopeType    String              @db.VarChar(30)
+  scopeKey     String              @db.VarChar(100)
+  displayName  String?             @db.VarChar(255)
+  status       String              @default("ACTIVE") @db.VarChar(20)
+  metadata     Json?
+  createdAt    DateTime            @default(now()) @db.DateTime(3)
+  updatedAt    DateTime            @updatedAt @db.DateTime(3)
+  programUsers userProgramScopes[]
+
+  @@unique([scopeType, scopeKey])
+  @@index([scopeType, status])
+  @@map("scope_resources")
 }
 
 /// ===============================================================

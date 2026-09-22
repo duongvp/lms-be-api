@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importFile = exports.template = exports.options = exports.remove = exports.update = exports.create = exports.detail = exports.list = void 0;
+exports.importFile = exports.exportFile = exports.template = exports.options = exports.remove = exports.update = exports.create = exports.detail = exports.list = void 0;
 const apiResponse_1 = require("../../utils/apiResponse");
 const program_teacher_banner_service_1 = require("./program-teacher-banner.service");
 const program_teacher_banner_validation_1 = require("./program-teacher-banner.validation");
@@ -52,6 +52,16 @@ catch (e) {
 exports.options = options;
 const template = async (_req, res) => { res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition', 'attachment; filename="mau-import-banner.xlsx"'); return res.send((0, program_teacher_banner_io_1.buildBannerTemplate)()); };
 exports.template = template;
+const exportFile = async (req, res) => { try {
+    const rows = await (0, program_teacher_banner_service_1.getBannersForExport)(String(req.query.search || ''));
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="banner-chuong-trinh-giao-vien.xlsx"');
+    return res.send((0, program_teacher_banner_io_1.buildBannerExport)(rows));
+}
+catch (e) {
+    return handle(res, e);
+} };
+exports.exportFile = exportFile;
 const importFile = async (req, res) => { try {
     if (!req.file)
         return (0, apiResponse_1.ErrorResponse)(res, 'Vui lòng chọn file', 400);

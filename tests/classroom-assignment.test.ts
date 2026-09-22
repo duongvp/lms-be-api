@@ -10,6 +10,7 @@ import {
 import {
   buildClassroomAssignmentHistoryRows,
   normalizeClassroomAssignmentId,
+  normalizeClassroomAssignmentUpdateMode,
   summarizeTopClassLessonAttendance,
 } from '../src/modules/livestream/classroom-assignment.service';
 
@@ -17,6 +18,16 @@ test('chuẩn hóa users.id BigInt từ raw query trước khi gọi Prisma upda
   assert.equal(normalizeClassroomAssignmentId(1206044n), 1206044);
   assert.equal(normalizeClassroomAssignmentId(3), 3);
   assert.throws(() => normalizeClassroomAssignmentId(0n), /users\.id không hợp lệ/);
+});
+
+test('chuẩn hóa chế độ cập nhật phân lớp và từ chối giá trị lạ', () => {
+  assert.equal(normalizeClassroomAssignmentUpdateMode(undefined), 'all');
+  assert.equal(normalizeClassroomAssignmentUpdateMode('all'), 'all');
+  assert.equal(normalizeClassroomAssignmentUpdateMode('unlearned_only'), 'unlearned_only');
+  assert.throws(
+    () => normalizeClassroomAssignmentUpdateMode('learned_only'),
+    /Chế độ cập nhật phân lớp không hợp lệ/
+  );
 });
 
 test('audit lưu snapshot đầy đủ cho cả học sinh giữ nguyên và học sinh chuyển phòng', () => {
@@ -29,8 +40,8 @@ test('audit lưu snapshot đầy đủ cho cả học sinh giữ nguyên và h�
       start_time: new Date('2026-09-03T10:00:00.000Z'),
     },
     roster: [
-      { id: 1, username: 'student-1', student_hmid: null, name: 'Học sinh 1', room_id: 1, class_id: 'OLD-1' },
-      { id: 2, username: 'student-2', student_hmid: null, name: 'Học sinh 2', room_id: 2, class_id: 'NEW-2' },
+      { id: 1, username: 'student-1', student_hmid: null, name: 'Học sinh 1', room_id: 1, class_id: 'OLD-1', islearn: 0 },
+      { id: 2, username: 'student-2', student_hmid: null, name: 'Học sinh 2', room_id: 2, class_id: 'NEW-2', islearn: 1 },
     ],
     plan: {
       classroomCount: 2,
@@ -45,6 +56,7 @@ test('audit lưu snapshot đầy đủ cho cả học sinh giữ nguyên và h�
     interactionSourceLearnNumber: null,
     interactionSourceScores: [],
     maxStudentsPerClassroom: null,
+    updateMode: 'all',
   }, '11111111-1111-4111-8111-111111111111', { username: 'admin' });
 
   assert.equal(rows.length, 2);
@@ -65,6 +77,40 @@ test('audit lưu snapshot đầy đủ cho cả học sinh giữ nguyên và h�
   });
   assert.equal(rows[1].previous_room_id, rows[1].new_room_id);
   assert.equal(rows[1].previous_class_id, rows[1].new_class_id);
+});
+
+test('chế độ chưa học chỉ ghi audit cho islearn = 0', () => {
+  const context = {
+    calendar: {
+      id: 1415,
+      code: 'toan-6-2027',
+      learn_number: 20,
+      system_type: 'topclass' as const,
+      start_time: new Date('2026-09-03T10:00:00.000Z'),
+    },
+    roster: [
+      { id: 1, username: 'new', student_hmid: null, name: 'Chưa học', room_id: 1, class_id: 'OLD-1', islearn: 0 },
+      { id: 2, username: 'learned', student_hmid: null, name: 'Đã học', room_id: 1, class_id: 'OLD-1', islearn: 1 },
+    ],
+    plan: {
+      systemType: 'topclass' as const,
+      classroomCount: 1,
+      movedCount: 2,
+      summaries: [],
+      assignments: [
+        { id: 1, identity: 'new', currentRoomId: 1, currentClassId: 'OLD-1', targetRoomId: 2, targetClassId: 'NEW-2', classroomIndex: 1, interactionScore: 0 },
+        { id: 2, identity: 'learned', currentRoomId: 1, currentClassId: 'OLD-1', targetRoomId: 2, targetClassId: 'NEW-2', classroomIndex: 1, interactionScore: 0 },
+      ],
+    },
+    topClassAttendance: null,
+    interactionSourceLearnNumber: null,
+    interactionSourceScores: [],
+    maxStudentsPerClassroom: null,
+    updateMode: 'unlearned_only' as const,
+  };
+
+  const rows = buildClassroomAssignmentHistoryRows(context, 'operation');
+  assert.deepEqual(rows.map((row) => row.user_id), [1]);
 });
 
 const classroomTargets = Array.from({ length: 80 }, (_, index) => ({

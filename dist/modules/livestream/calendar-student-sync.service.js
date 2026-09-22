@@ -211,7 +211,7 @@ const isValidCreateRow = (row) => (normalizeText(row.username).length > 0
     && Number.isInteger(Number(row.learn_number)));
 const enrollmentKey = (row) => (`${normalizeText(row.username).toLocaleLowerCase()}\u0000${normalizeText(row.code).toLocaleLowerCase()}\u0000${Number(row.learn_number)}`);
 const loadExistingEnrollments = async (rows) => {
-    const existing = new Map();
+    const existing = new Set();
     for (let index = 0; index < rows.length; index += 200) {
         const batch = rows.slice(index, index + 200);
         const found = await prisma_1.default.users.findMany({
@@ -222,14 +222,9 @@ const loadExistingEnrollments = async (rows) => {
                     learn_number: Number(row.learn_number),
                 })),
             },
-            select: { id: true, username: true, code: true, learn_number: true, class_id: true, room_id: true, islearn: true },
+            select: { username: true, code: true, learn_number: true },
         });
-        found.forEach((row) => existing.set(enrollmentKey(row), {
-            id: row.id,
-            class_id: row.class_id,
-            room_id: row.room_id,
-            islearn: row.islearn,
-        }));
+        found.forEach((row) => existing.add(enrollmentKey(row)));
     }
     return existing;
 };
@@ -313,29 +308,21 @@ const syncCalendarStudents = async (rawIds, rawRegisteredAt, onProgress, prefetc
         onProgress?.(76, `Đang kiểm tra ${uniqueRows.length} enrollment hiện có`);
         const existingByEnrollment = await loadExistingEnrollments(uniqueRows);
         const newRows = [];
-        const updateGroups = new Map();
         uniqueRows.forEach((row) => {
-            const existing = existingByEnrollment.get(enrollmentKey(row));
-            if (!existing) {
+            if (!existingByEnrollment.has(enrollmentKey(row))) {
                 newRows.push(row);
                 return;
             }
-            const classId = normalizeText(row.class_id);
-            if (existing.class_id === classId && existing.room_id === 1 && existing.islearn === 0) {
-                skipped += 1;
-                return;
-            }
-            const group = updateGroups.get(classId) || { classId, ids: [] };
-            group.ids.push(existing.id);
-            updateGroups.set(classId, group);
+            // Enrollment cũ được giữ nguyên toàn bộ theo username + code + learn_number.
+            // Không cập nhật class_id, room_id và đặc biệt không đặt lại islearn.
+            skipped += 1;
         });
         const plannedInserted = newRows.length;
-        const plannedUpdated = [...updateGroups.values()].reduce((total, group) => total + group.ids.length, 0);
+        const plannedUpdated = 0;
         let inserted = 0;
-        let updated = 0;
+        const updated = 0;
         const insertBatches = Math.ceil(newRows.length / 200);
-        const updateBatches = [...updateGroups.values()].reduce((total, group) => total + Math.ceil(group.ids.length / 500), 0);
-        const totalBatches = Math.max(1, insertBatches + updateBatches);
+        const totalBatches = Math.max(1, insertBatches);
         let completedBatches = 0;
         for (let index = 0; index < newRows.length; index += 200) {
             const batch = newRows.slice(index, index + 200);
@@ -344,19 +331,6 @@ const syncCalendarStudents = async (rawIds, rawRegisteredAt, onProgress, prefetc
             skipped += batch.length - write.count;
             completedBatches += 1;
             onProgress?.(Math.round(76 + (23 * completedBatches) / totalBatches), `Đã thêm ${inserted}/${newRows.length} enrollment`);
-        }
-        for (const group of updateGroups.values()) {
-            for (let index = 0; index < group.ids.length; index += 500) {
-                const ids = group.ids.slice(index, index + 500);
-                const write = await prisma_1.default.users.updateMany({
-                    where: { id: { in: ids } },
-                    data: { class_id: group.classId, room_id: 1, islearn: 0 },
-                });
-                updated += write.count;
-                failed += ids.length - write.count;
-                completedBatches += 1;
-                onProgress?.(Math.round(76 + (23 * completedBatches) / totalBatches), `Đã cập nhật ${updated}/${plannedUpdated} enrollment`);
-            }
         }
         const result = {
             preview: false,
@@ -471,7 +445,7 @@ const startCalendarStudentSync = (rawIds, rawRegisteredAt, ownerUserId) => {
                         job.message = `${item.code}: ${message}`;
                     });
                     item.status = item.result.failed ? 'error' : 'success';
-                    item.message = `Thêm ${item.result.inserted}, cập nhật ${item.result.updated}, bỏ qua ${item.result.skipped}${item.result.failed ? `, lỗi ${item.result.failed}` : ''}`;
+                    item.message = `Thêm mới ${item.result.inserted}, giữ nguyên ${item.result.skipped}${item.result.failed ? `, lỗi ${item.result.failed}` : ''}`;
                     const numericKeys = [
                         'uniqueApiUsers', 'mappedRows', 'uniqueEnrollments', 'duplicateRows', 'unmatched',
                         'inserted', 'updated', 'plannedInserted', 'plannedUpdated', 'skipped', 'failed',

@@ -3,6 +3,12 @@ import prisma from '../../lib/prisma';
 import { randomUUID } from 'crypto';
 import ApiError from '../../utils/ApiError';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
+import { invalidateUserAccessCache } from '../../services/authorization.service';
+
+type UserProgramScopeInput = {
+    mode: 'ALL' | 'RESTRICTED' | 'DENY';
+    programs?: string[];
+};
 
 type UserListQuery = {
     page: number;
@@ -16,6 +22,71 @@ type CreateAdminUserInput = {
     email?: string | null;
     phone?: string | null;
     roleIds: number[];
+    programScope?: UserProgramScopeInput;
+};
+
+const normalizeProgramScope = (scope?: UserProgramScopeInput) => {
+    if (scope === undefined) return undefined;
+    if (!scope || !['ALL', 'RESTRICTED', 'DENY'].includes(scope.mode)) {
+        throw new ApiError('Phạm vi chương trình không hợp lệ', 400);
+    }
+    const programs = Array.from(new Set(
+        (scope.programs || []).map((code) => String(code || '').trim()).filter(Boolean)
+    )).sort();
+    if (scope.mode === 'RESTRICTED' && !programs.length) {
+        throw new ApiError('Vui lòng chọn ít nhất một chương trình', 400);
+    }
+    return { mode: scope.mode, programs };
+};
+
+const saveUserProgramScope = async (
+    tx: Prisma.TransactionClient,
+    userId: number,
+    rawScope?: UserProgramScopeInput
+) => {
+    const scope = normalizeProgramScope(rawScope);
+    if (!scope) return;
+
+    if (scope.mode === 'RESTRICTED') {
+        const existing = await tx.lessons.findMany({
+            where: { subject_code: { in: scope.programs }, status: { not: 0 } },
+            select: { subject_code: true },
+            distinct: ['subject_code'],
+        });
+        const existingCodes = new Set(existing.map((row) => row.subject_code));
+        const unknown = scope.programs.filter((code) => !existingCodes.has(code));
+        if (unknown.length) throw new ApiError(`Chương trình không tồn tại: ${unknown.join(', ')}`, 400);
+    }
+
+    await tx.$executeRaw`DELETE FROM user_program_scopes WHERE userId = ${userId}`;
+    await tx.$executeRaw`
+        INSERT INTO user_program_scope_policies (userId, mode, createdAt, updatedAt)
+        VALUES (${userId}, ${scope.mode}, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
+        ON DUPLICATE KEY UPDATE mode = VALUES(mode), updatedAt = CURRENT_TIMESTAMP(3)
+    `;
+    if (scope.programs.length) {
+        await tx.$executeRaw(Prisma.sql`
+            INSERT INTO scope_resources
+                (scopeType, scopeKey, displayName, status, createdAt, updatedAt)
+            SELECT 'PROGRAM', lesson.subject_code, MAX(lesson.subject_name),
+                'ACTIVE', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3)
+            FROM lessons lesson
+            WHERE lesson.status <> 0
+              AND lesson.subject_code IN (${Prisma.join(scope.programs)})
+            GROUP BY lesson.subject_code
+            ON DUPLICATE KEY UPDATE
+                displayName = VALUES(displayName),
+                status = 'ACTIVE',
+                updatedAt = CURRENT_TIMESTAMP(3)
+        `);
+        await tx.$executeRaw(Prisma.sql`
+            INSERT INTO user_program_scopes (userId, scopeResourceId, createdAt)
+            SELECT ${userId}, resource.id, CURRENT_TIMESTAMP(3)
+            FROM scope_resources resource
+            WHERE resource.scopeType = 'PROGRAM'
+              AND resource.scopeKey IN (${Prisma.join(scope.programs)})
+        `);
+    }
 };
 
 const serializeUser = (user: any) => ({
@@ -37,6 +108,15 @@ const serializeUser = (user: any) => ({
         role_code: ur.role.code,
         role_name: ur.role.name,
     })),
+    programScope: user.userRoles.some((ur: any) => ur.role.code === 'admin')
+      ? { mode: 'ALL', programs: [] }
+      : user.programScopePolicy ? {
+        mode: user.programScopePolicy.mode,
+        programs: (user.programScopes || [])
+            .map((scope: any) => scope.scopeResource?.scopeKey)
+            .filter(Boolean)
+            .sort(),
+      } : { mode: 'DENY', programs: [] },
 });
 
 const UserService = {
@@ -110,6 +190,11 @@ const UserService = {
                     })),
                     skipDuplicates: true,
                 });
+                await saveUserProgramScope(
+                    tx,
+                    user.id,
+                    input.programScope || { mode: 'DENY', programs: [] }
+                );
 
                 return user.id;
             });
@@ -124,6 +209,7 @@ const UserService = {
             throw error;
         }
 
+        invalidateUserAccessCache(userId);
         return this.getUserById(userId);
     },
 
@@ -147,6 +233,8 @@ const UserService = {
                     skip: (page - 1) * limit,
                     take: limit,
                     include: {
+                        programScopePolicy: true,
+                        programScopes: { include: { scopeResource: true } },
                         userRoles: {
                             include: {
                                 role: {
@@ -180,6 +268,8 @@ const UserService = {
             const user = await prisma.users.findUnique({
                 where: { id: userId },
                 include: {
+                    programScopePolicy: true,
+                    programScopes: { include: { scopeResource: true } },
                     userRoles: {
                         include: {
                             role: {
@@ -241,35 +331,33 @@ const UserService = {
             // users.updated_at chưa khai báo @updatedAt trong Prisma schema.
             updateData.updated_at = getVietnamWallClockDate();
 
-            // Cập nhật thông tin cơ bản
-            const updatedUser = await prisma.users.update({
-                where: { id: userId },
-                data: updateData,
-            });
+            await prisma.$transaction(async (tx) => {
+                await tx.users.update({ where: { id: userId }, data: updateData });
 
-            // Xử lý roles nếu có
-            if (data.roleIds && Array.isArray(data.roleIds)) {
-                // Kiểm tra role tồn tại
-                const roles = await prisma.roles.findMany({
-                    where: { id: { in: data.roleIds.map((id: number) => BigInt(id)) } },
-                });
-                if (roles.length !== data.roleIds.length) {
-                    throw new ApiError('One or more roles not found', 400);
+                if (data.roleIds !== undefined) {
+                    if (!Array.isArray(data.roleIds)) throw new ApiError('Vai trò không hợp lệ', 400);
+                    const roleIds: number[] = Array.from(new Set<number>(data.roleIds.map(Number)));
+                    if (!roleIds.length || roleIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+                        throw new ApiError('Vui lòng chọn ít nhất một vai trò hợp lệ', 400);
+                    }
+                    const roles = await tx.roles.findMany({
+                        where: { id: { in: roleIds.map((id) => BigInt(id)) }, isActive: true },
+                        select: { id: true },
+                    });
+                    if (roles.length !== roleIds.length) {
+                        throw new ApiError('Có vai trò không tồn tại hoặc đã ngừng hoạt động', 400);
+                    }
+                    await tx.userRoles.deleteMany({ where: { userId } });
+                    await tx.userRoles.createMany({
+                        data: roleIds.map((roleId) => ({ userId, roleId: BigInt(roleId) })),
+                    });
                 }
 
-                // Xóa userRoles cũ
-                await prisma.userRoles.deleteMany({ where: { userId } });
-
-                // Thêm mới
-                await prisma.userRoles.createMany({
-                    data: data.roleIds.map((roleId: number) => ({
-                        userId,
-                        roleId: BigInt(roleId),
-                    })),
-                });
-            }
+                await saveUserProgramScope(tx, userId, data.programScope);
+            });
 
             // Lấy lại user với roles
+            invalidateUserAccessCache(userId);
             return await UserService.getUserById(userId);
         } catch (error: any) {
             if (error instanceof ApiError) throw error;

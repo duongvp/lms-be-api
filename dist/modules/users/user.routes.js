@@ -18,11 +18,11 @@ const authorizeAdmin = (req, res, next) => {
     next();
 };
 const authorizeRoleAssignment = (req, res, next) => {
-    if (req.body?.roleIds !== undefined
+    if ((req.body?.roleIds !== undefined || req.body?.programScope !== undefined)
         && !req.user?.roles?.includes('admin')) {
         return res.status(403).json({
             success: false,
-            message: 'Only admin can assign roles',
+            message: 'Chỉ admin được gán vai trò và phạm vi chương trình',
         });
     }
     next();
@@ -104,6 +104,6 @@ router.get('/:id', authorize(['users.view']), user_controller_1.default.getUserB
  *       200:
  *         description: Cập nhật thành công
  */
-router.put('/:id', authorize(['users.update']), authorizeRoleAssignment, authorizeFields('users', (req) => Object.keys(req.body || {}).filter((field) => field !== 'roleIds')), user_controller_1.default.updateUser);
+router.put('/:id', authorize(['users.update']), authorizeRoleAssignment, authorizeFields('users', (req) => Object.keys(req.body || {}).filter((field) => !['roleIds', 'programScope'].includes(field))), user_controller_1.default.updateUser);
 router.delete('/:id', authorize(['users.delete']), authorizeAdmin, user_controller_1.default.deleteUser);
 exports.default = router;

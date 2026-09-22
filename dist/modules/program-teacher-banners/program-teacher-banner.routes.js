@@ -44,6 +44,7 @@ const router = (0, express_1.Router)();
 router.use(auth_middleware_1.default.authenticate);
 router.get('/', auth_middleware_1.default.authorize(['program_teacher_banner.view']), controller.list);
 router.get('/options', auth_middleware_1.default.authorize(['program_teacher_banner.view']), controller.options);
+router.get('/export', auth_middleware_1.default.authorize(['program_teacher_banner.import']), controller.exportFile);
 router.get('/template', auth_middleware_1.default.authorize(['program_teacher_banner.import']), controller.template);
 router.post('/import', auth_middleware_1.default.authorize(['program_teacher_banner.import']), (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single('file'), controller.importFile);
 router.get('/:id', auth_middleware_1.default.authorize(['program_teacher_banner.view']), controller.detail);

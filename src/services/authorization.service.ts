@@ -25,9 +25,8 @@ const isMissingScopeSchema = (error: unknown) => (
   ))
 );
 
-type RoleScopeRow = {
-  role_id: bigint;
-  mode: string | null;
+type UserScopeRow = {
+  mode: string;
   subject_code: string | null;
 };
 
@@ -81,20 +80,21 @@ const legacyAccessQuery = async (userId: number, preloadedUser?: any) => {
 
 const loadUserAccessUncached = async (userId: number, preloadedUser?: any) => {
   const access = await legacyAccessQuery(userId, preloadedUser);
-  let roleScopeRows: RoleScopeRow[] = [];
+  let userScopeRows: UserScopeRow[] = [];
   try {
-    roleScopeRows = await prisma.$queryRaw<RoleScopeRow[]>(Prisma.sql`
-      SELECT role_row.id AS role_id, policy.mode, binding.subjectCode AS subject_code
-      FROM user_roles AS user_role
-      INNER JOIN roles AS role_row
-        ON role_row.id = user_role.roleId AND role_row.isActive = TRUE
-      LEFT JOIN role_program_scope_policies AS policy ON policy.roleId = role_row.id
-      LEFT JOIN role_program_scopes AS binding ON binding.roleId = role_row.id
-      WHERE user_role.userId = ${userId}
+    userScopeRows = await prisma.$queryRaw<UserScopeRow[]>(Prisma.sql`
+      SELECT policy.mode, resource.scopeKey AS subject_code
+      FROM user_program_scope_policies AS policy
+      LEFT JOIN user_program_scopes AS binding ON binding.userId = policy.userId
+      LEFT JOIN scope_resources AS resource
+        ON resource.id = binding.scopeResourceId
+        AND resource.scopeType = 'PROGRAM'
+        AND resource.status = 'ACTIVE'
+      WHERE policy.userId = ${userId}
     `);
   } catch (error) {
-    // Code can be deployed before this additive migration. Existing RBAC must
-    // remain available, but any other SQL failure must not be silently ignored.
+    // Rolling deploy compatibility. Without the new tables, non-admin users
+    // receive DENY below instead of accidentally gaining every program.
     if (!isMissingScopeSchema(error)) throw error;
   }
 
@@ -106,29 +106,24 @@ const loadUserAccessUncached = async (userId: number, preloadedUser?: any) => {
         role.rolePermissions.map((item: any) => String(item.permission.code))
       ))));
 
-  let programScope: EffectiveProgramScope = { mode: 'ALL', programs: [] };
+  let programScope: EffectiveProgramScope = isAdmin
+    ? { mode: 'ALL', programs: [] }
+    : { mode: 'DENY', programs: [] };
   if (!isAdmin) {
-    let roleMode: ProgramScopeMode = 'DENY';
-    const rolePrograms = new Set<string>();
-    for (const role of roles) {
-      const rows = roleScopeRows.filter((row) => row.role_id === role.id);
-      const policyMode = rows[0]?.mode;
-      // Roles created before the additive migration remain unrestricted.
-      const mode: ProgramScopeMode = policyMode === 'DENY'
+    if (userScopeRows.length) {
+      const rawMode = userScopeRows[0].mode;
+      const mode: ProgramScopeMode = rawMode === 'DENY'
         ? 'DENY'
-        : policyMode === 'RESTRICTED' ? 'RESTRICTED' : 'ALL';
-      if (mode === 'ALL') {
-        roleMode = 'ALL';
-        rolePrograms.clear();
-        break;
-      }
-      if (mode === 'RESTRICTED') {
-        roleMode = 'RESTRICTED';
-        rows.filter((row) => row.subject_code)
-          .forEach((row) => rolePrograms.add(String(row.subject_code)));
-      }
+        : rawMode === 'RESTRICTED' ? 'RESTRICTED' : 'ALL';
+      programScope = {
+        mode,
+        programs: mode === 'RESTRICTED'
+          ? Array.from(new Set(userScopeRows
+              .map((row) => String(row.subject_code || '').trim())
+              .filter(Boolean))).sort()
+          : [],
+      };
     }
-    programScope = { mode: roleMode, programs: [...rolePrograms].sort() };
   }
 
   return { user: access.user, roles, permissionCodes, programScope };
@@ -167,8 +162,8 @@ export const isProgramAllowed = (
   if (user.permissions?.includes('*') || user.roles?.includes('admin')) return true;
   if (!user.permissions?.includes(permissionCode)) return false;
   const scope = user.programScope;
-  // Legacy sessions/role permissions remain unrestricted until configured.
-  if (!scope || scope.mode === 'ALL') return true;
+  if (!scope) return false;
+  if (scope.mode === 'ALL') return true;
   if (scope.mode === 'DENY') return false;
   return scope.programs.includes(String(programCode).trim());
 };
@@ -192,7 +187,8 @@ export const getProgramScopeFilter = (
   if (user.permissions?.includes('*') || user.roles?.includes('admin')) return null;
   if (!user.permissions?.includes(permissionCode)) return [];
   const scope = user.programScope;
-  if (!scope || scope.mode === 'ALL') return null;
+  if (!scope) return [];
+  if (scope.mode === 'ALL') return null;
   return scope.mode === 'RESTRICTED' ? scope.programs : [];
 };
 

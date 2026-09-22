@@ -20,7 +20,10 @@ type AssignmentActor = {
 
 type ClassroomAssignmentOptions = {
   maxStudentsPerClassroom?: unknown;
+  updateMode?: unknown;
 };
+
+export type ClassroomAssignmentUpdateMode = 'all' | 'unlearned_only';
 
 type AssignmentRosterRow = {
   id: number;
@@ -29,6 +32,7 @@ type AssignmentRosterRow = {
   name: string;
   room_id: number | null;
   class_id: string | null;
+  islearn: number;
 };
 
 type RawAssignmentRosterRow = Omit<AssignmentRosterRow, 'id' | 'room_id'> & {
@@ -48,6 +52,7 @@ type PreviousClassroomRow = {
   name: string;
   room_id: number | bigint | null;
   class_id: string | null;
+  islearn: number;
 };
 
 type AttendanceLogRow = {
@@ -91,6 +96,7 @@ type AssignmentContext = {
   interactionSourceLearnNumber: number | null;
   interactionSourceScores: number[];
   maxStudentsPerClassroom: number | null;
+  updateMode: ClassroomAssignmentUpdateMode;
 };
 
 const CLASSROOM_ASSIGNMENT_HISTORY_CHUNK_SIZE = 500;
@@ -103,28 +109,41 @@ export const buildClassroomAssignmentHistoryRows = (
   const rosterById = new Map(context.roster.map((student) => [student.id, student]));
   const createdBy = String(actor.username || '').trim() || null;
 
-  return context.plan.assignments.map((assignment) => {
-    const rosterStudent = rosterById.get(assignment.id);
-    if (!rosterStudent) {
-      throw new Error(`Không tìm thấy users.id ${assignment.id} trong roster phân lớp`);
-    }
+  return context.plan.assignments
+    .filter((assignment) => (
+      context.updateMode !== 'unlearned_only'
+      || rosterById.get(assignment.id)?.islearn === 0
+    ))
+    .map((assignment) => {
+      const rosterStudent = rosterById.get(assignment.id);
+      if (!rosterStudent) {
+        throw new Error(`Không tìm thấy users.id ${assignment.id} trong roster phân lớp`);
+      }
 
-    return {
-      operation_id: operationId,
-      calendar_id: context.calendar.id,
-      user_id: assignment.id,
-      username: rosterStudent.username,
-      code: context.calendar.code,
-      learn_number: context.calendar.learn_number,
-      system_type: context.calendar.system_type,
-      previous_room_id: assignment.currentRoomId,
-      new_room_id: assignment.targetRoomId,
-      previous_class_id: assignment.currentClassId,
-      new_class_id: assignment.targetClassId,
-      interaction_score: Math.max(0, Math.trunc(assignment.interactionScore || 0)),
-      created_by: createdBy,
-    };
-  });
+      return {
+        operation_id: operationId,
+        calendar_id: context.calendar.id,
+        user_id: assignment.id,
+        username: rosterStudent.username,
+        code: context.calendar.code,
+        learn_number: context.calendar.learn_number,
+        system_type: context.calendar.system_type,
+        previous_room_id: assignment.currentRoomId,
+        new_room_id: assignment.targetRoomId,
+        previous_class_id: assignment.currentClassId,
+        new_class_id: assignment.targetClassId,
+        interaction_score: Math.max(0, Math.trunc(assignment.interactionScore || 0)),
+        created_by: createdBy,
+      };
+    });
+};
+
+export const normalizeClassroomAssignmentUpdateMode = (
+  value: unknown
+): ClassroomAssignmentUpdateMode => {
+  if (value === undefined || value === null || value === '' || value === 'all') return 'all';
+  if (value === 'unlearned_only') return 'unlearned_only';
+  throw new Error('Chế độ cập nhật phân lớp không hợp lệ');
 };
 
 const normalizeMaxStudentsPerClassroom = (value: unknown) => {
@@ -374,6 +393,7 @@ const loadAssignmentContext = async (
   }
 
   const systemType = normalizeSystemType(calendar.system_type || 'topclass');
+  const updateMode = normalizeClassroomAssignmentUpdateMode(options.updateMode);
   const hasRequestedMaxStudentsPerClassroom = options.maxStudentsPerClassroom !== undefined
     && options.maxStudentsPerClassroom !== null
     && options.maxStudentsPerClassroom !== '';
@@ -398,7 +418,8 @@ const loadAssignmentContext = async (
       student.student_hmid,
       student.name,
       student.room_id,
-      student.class_id
+      student.class_id,
+      student.islearn
     FROM users AS student
     LEFT JOIN teacher_profiles AS staff
       ON staff.username = student.username
@@ -454,7 +475,8 @@ const loadAssignmentContext = async (
           previous_student.student_hmid,
           previous_student.name,
           previous_student.room_id,
-          previous_student.class_id
+          previous_student.class_id,
+          previous_student.islearn
         FROM users AS previous_student
         LEFT JOIN teacher_profiles AS previous_staff
           ON previous_staff.username = previous_student.username
@@ -611,6 +633,7 @@ const loadAssignmentContext = async (
       (identity) => interactionByHmid.get(identity) || 0
     ),
     maxStudentsPerClassroom,
+    updateMode,
   };
 };
 
@@ -650,12 +673,37 @@ const buildInteractionResponse = (context: AssignmentContext) => {
   };
 };
 
-const toResponse = (context: AssignmentContext, operationId?: string) => ({
+const getEligibleStudentIds = (context: AssignmentContext) => new Set(
+  context.roster
+    .filter((student) => context.updateMode === 'all' || student.islearn === 0)
+    .map((student) => student.id)
+);
+
+const getActionableAssignments = (
+  context: AssignmentContext,
+  eligibleStudentIds = getEligibleStudentIds(context)
+) => (
+  context.plan.assignments.filter((assignment) => (
+    eligibleStudentIds.has(assignment.id)
+    && (assignment.currentRoomId !== assignment.targetRoomId
+      || assignment.currentClassId !== assignment.targetClassId)
+  ))
+);
+
+const toResponse = (context: AssignmentContext, operationId?: string) => {
+  const eligibleStudentIds = getEligibleStudentIds(context);
+  const actionableAssignments = getActionableAssignments(context, eligibleStudentIds);
+  return {
   operation_id: operationId,
   calendar: context.calendar,
+  update_mode: context.updateMode,
   total_students: context.roster.length,
+  eligible_students: eligibleStudentIds.size,
+  protected_learned_students: context.updateMode === 'unlearned_only'
+    ? context.roster.length - eligibleStudentIds.size
+    : 0,
   classroom_count: context.plan.classroomCount,
-  moved_count: context.plan.movedCount,
+  moved_count: actionableAssignments.length,
   max_students_per_classroom: context.maxStudentsPerClassroom,
   attendance: {
     applied: Boolean(context.topClassAttendance),
@@ -710,9 +758,13 @@ const toResponse = (context: AssignmentContext, operationId?: string) => ({
     preferred_room_id: assignment.preferredRoomId,
     recent_attendance_count: assignment.recentAttendanceCount,
     needs_current_lesson: assignment.needsCurrentLesson,
-    changed: assignment.currentClassId !== assignment.targetClassId,
+    eligible_for_update: eligibleStudentIds.has(assignment.id),
+    changed: eligibleStudentIds.has(assignment.id)
+      && (assignment.currentRoomId !== assignment.targetRoomId
+        || assignment.currentClassId !== assignment.targetClassId),
   })),
-});
+  };
+};
 
 export const previewClassroomAssignment = async (
   calendarId: number,
@@ -728,10 +780,8 @@ export const applyClassroomAssignment = async (
 ) => prisma.$transaction(async (tx) => {
   // Rebuild inside the transaction so apply never commits a stale preview.
   const context = await loadAssignmentContext(tx, calendarId, options);
-  const changes = context.plan.assignments.filter(
-    (assignment) => assignment.currentRoomId !== assignment.targetRoomId
-      || assignment.currentClassId !== assignment.targetClassId
-  );
+  const eligibleStudentIds = getEligibleStudentIds(context);
+  const changes = getActionableAssignments(context, eligibleStudentIds);
   const changesByClass = new Map<string, { roomId: number; classId: string; ids: number[] }>();
   changes.forEach((assignment) => {
     const key = `${assignment.targetRoomId}:${assignment.targetClassId}`;
@@ -751,6 +801,7 @@ export const applyClassroomAssignment = async (
         id: { in: ids },
         code: context.calendar.code,
         learn_number: context.calendar.learn_number,
+        ...(context.updateMode === 'unlearned_only' ? { islearn: 0 } : {}),
       },
       data: { room_id: roomId, class_id: classId },
     });
@@ -762,7 +813,7 @@ export const applyClassroomAssignment = async (
     );
   }
 
-  if (!context.plan.assignments.length) return toResponse(context);
+  if (!context.plan.assignments.length || !eligibleStudentIds.size) return toResponse(context);
 
   const operationId = crypto.randomUUID();
   const historyRows = buildClassroomAssignmentHistoryRows(context, operationId, actor);

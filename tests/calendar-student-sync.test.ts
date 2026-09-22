@@ -12,7 +12,7 @@ const waitForJob = async (jobId: string) => {
   throw new Error('Job did not finish');
 };
 
-test('reports program-specific mapping errors and continues updating valid schedules', async () => {
+test('reports mapping errors and preserves existing enrollment without updating islearn', async () => {
   const originals = {
     calendars: prisma.calendar.findMany, mappings: prisma.package_lesson_mapping.findMany,
     users: prisma.users.findMany, update: prisma.users.updateMany, fetch: globalThis.fetch,
@@ -28,14 +28,11 @@ test('reports program-specific mapping errors and continues updating valid sched
     process.env.HOCMAI_LIVE_USER_API_TOKEN = 'test';
     (prisma.calendar.findMany as any) = async (query: any) => calendars.filter((row) => query.where.id.in.includes(row.id));
     (prisma.package_lesson_mapping.findMany as any) = async (query: any) => query.where.key.in.includes('good') ? [{ key: 'good', package_id: '9166' }] : [];
-    (prisma.users.findMany as any) = async () => [{ id: 10, username: 'student', code: 'toan-7-2027', learn_number: 13, class_id: 'old', room_id: 2, islearn: 1 }];
+    (prisma.users.findMany as any) = async () => [{ username: 'student', code: 'toan-7-2027', learn_number: 13 }];
     let updates = 0;
-    (prisma.users.updateMany as any) = async (query: any) => {
+    (prisma.users.updateMany as any) = async () => {
       updates += 1;
-      assert.deepEqual(Object.keys(query.data).sort(), ['class_id', 'islearn', 'room_id']);
-      assert.equal(query.data.room_id, 1);
-      assert.equal(query.data.islearn, 0);
-      return { count: 1 };
+      throw new Error('Enrollment cũ không được phép cập nhật');
     };
     globalThis.fetch = async (url: any) => {
       assert.equal(new URL(String(url)).searchParams.has('registed_at'), false);
@@ -48,8 +45,9 @@ test('reports program-specific mapping errors and continues updating valid sched
     assert.equal(job.items[0].status, 'success');
     assert.equal(job.items[1].status, 'error');
     assert.match(job.items[1].message, /tienganh-7-2027 - Bài 12/);
-    assert.equal(job.result?.updated, 1);
-    assert.equal(updates, 1);
+    assert.equal(job.result?.updated, 0);
+    assert.equal(job.result?.skipped, 1);
+    assert.equal(updates, 0);
   } finally {
     (prisma.calendar.findMany as any) = originals.calendars;
     (prisma.package_lesson_mapping.findMany as any) = originals.mappings;
@@ -97,10 +95,10 @@ test('processes API and database writes sequentially by program', async () => {
       query.where.key.in.flatMap((key: string) => [
         { key, package_id: 'shared' }, { key, package_id: key === 'calendar-1' ? 'first' : 'second' },
       ]);
-    (prisma.users.findMany as any) = async (query: any) => query.where.OR.map((row: any, index: number) => ({
-      ...row, id: index + 1, class_id: 'old', room_id: 2, islearn: 1,
-    }));
-    (prisma.users.updateMany as any) = async (query: any) => ({ count: query.where.id.in.length });
+    (prisma.users.findMany as any) = async (query: any) => query.where.OR;
+    (prisma.users.updateMany as any) = async () => {
+      throw new Error('Enrollment cũ không được phép cập nhật');
+    };
     const requests: string[][] = [];
     globalThis.fetch = async (rawUrl: any) => {
       const url = new URL(String(rawUrl));
@@ -119,7 +117,8 @@ test('processes API and database writes sequentially by program', async () => {
     assert.deepEqual(requests[1], ['shared', 'second']);
     assert.equal(job.result?.apiUsers, 2);
     assert.equal(job.items.reduce((sum, item) => sum + (item.result?.apiUsers || 0), 0), 2);
-    assert.equal(job.result?.updated, 2);
+    assert.equal(job.result?.updated, 0);
+    assert.equal(job.result?.skipped, 2);
   } finally {
     (prisma.calendar.findMany as any) = originals.calendars;
     (prisma.package_lesson_mapping.findMany as any) = originals.mappings;
@@ -225,6 +224,7 @@ test('deduplicates enrollment but keeps one user across multiple lessons', async
     ]);
     assert.equal(job.result?.inserted, 2);
     assert.deepEqual(inserted.map((row) => row.learn_number).sort(), [1, 2]);
+    assert.ok(inserted.every((row) => row.islearn === 0));
   } finally {
     (prisma.calendar.findMany as any) = originals.calendars;
     (prisma.package_lesson_mapping.findMany as any) = originals.mappings;

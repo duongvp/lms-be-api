@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.applyClassroomAssignment = exports.previewClassroomAssignment = exports.summarizeTopClassLessonAttendance = exports.normalizeClassroomAssignmentId = exports.buildClassroomAssignmentHistoryRows = void 0;
+exports.applyClassroomAssignment = exports.previewClassroomAssignment = exports.summarizeTopClassLessonAttendance = exports.normalizeClassroomAssignmentId = exports.normalizeClassroomAssignmentUpdateMode = exports.buildClassroomAssignmentHistoryRows = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
@@ -13,7 +13,10 @@ const CLASSROOM_ASSIGNMENT_HISTORY_CHUNK_SIZE = 500;
 const buildClassroomAssignmentHistoryRows = (context, operationId, actor = {}) => {
     const rosterById = new Map(context.roster.map((student) => [student.id, student]));
     const createdBy = String(actor.username || '').trim() || null;
-    return context.plan.assignments.map((assignment) => {
+    return context.plan.assignments
+        .filter((assignment) => (context.updateMode !== 'unlearned_only'
+        || rosterById.get(assignment.id)?.islearn === 0))
+        .map((assignment) => {
         const rosterStudent = rosterById.get(assignment.id);
         if (!rosterStudent) {
             throw new Error(`Không tìm thấy users.id ${assignment.id} trong roster phân lớp`);
@@ -36,6 +39,14 @@ const buildClassroomAssignmentHistoryRows = (context, operationId, actor = {}) =
     });
 };
 exports.buildClassroomAssignmentHistoryRows = buildClassroomAssignmentHistoryRows;
+const normalizeClassroomAssignmentUpdateMode = (value) => {
+    if (value === undefined || value === null || value === '' || value === 'all')
+        return 'all';
+    if (value === 'unlearned_only')
+        return 'unlearned_only';
+    throw new Error('Chế độ cập nhật phân lớp không hợp lệ');
+};
+exports.normalizeClassroomAssignmentUpdateMode = normalizeClassroomAssignmentUpdateMode;
 const normalizeMaxStudentsPerClassroom = (value) => {
     if (value === undefined || value === null || value === '') {
         return classroom_assignment_algorithm_1.TOPUNI_MAX_STUDENTS_PER_CLASSROOM;
@@ -248,6 +259,7 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
         throw new Error('Lịch học không liên kết với đề cương hợp lệ nên không thể phân lớp');
     }
     const systemType = normalizeSystemType(calendar.system_type || 'topclass');
+    const updateMode = (0, exports.normalizeClassroomAssignmentUpdateMode)(options.updateMode);
     const hasRequestedMaxStudentsPerClassroom = options.maxStudentsPerClassroom !== undefined
         && options.maxStudentsPerClassroom !== null
         && options.maxStudentsPerClassroom !== '';
@@ -269,7 +281,8 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
       student.student_hmid,
       student.name,
       student.room_id,
-      student.class_id
+      student.class_id,
+      student.islearn
     FROM users AS student
     LEFT JOIN teacher_profiles AS staff
       ON staff.username = student.username
@@ -320,7 +333,8 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
           previous_student.student_hmid,
           previous_student.name,
           previous_student.room_id,
-          previous_student.class_id
+          previous_student.class_id,
+          previous_student.islearn
         FROM users AS previous_student
         LEFT JOIN teacher_profiles AS previous_staff
           ON previous_staff.username = previous_student.username
@@ -441,6 +455,7 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
         interactionSourceLearnNumber: previousTopUniLearnNumber,
         interactionSourceScores: previousStudentIdentities.map((identity) => interactionByHmid.get(identity) || 0),
         maxStudentsPerClassroom,
+        updateMode,
     };
 };
 const buildInteractionResponse = (context) => {
@@ -474,70 +489,88 @@ const buildInteractionResponse = (context) => {
             : 0,
     };
 };
-const toResponse = (context, operationId) => ({
-    operation_id: operationId,
-    calendar: context.calendar,
-    total_students: context.roster.length,
-    classroom_count: context.plan.classroomCount,
-    moved_count: context.plan.movedCount,
-    max_students_per_classroom: context.maxStudentsPerClassroom,
-    attendance: {
-        applied: Boolean(context.topClassAttendance),
-        based_on_current_roster: context.roster.length > 0,
-        population_students: context.topClassAttendance?.populationCount || 0,
-        sessions_considered: context.topClassAttendance?.lessonCount || 0,
-        lessons_considered: context.topClassAttendance?.lessonCount || 0,
-        is_repeat_lesson: context.topClassAttendance?.isRepeatLesson || false,
-        prior_occurrence_count: context.topClassAttendance?.priorOccurrenceCount || 0,
-        makeup_signal_applied: context.topClassAttendance?.makeupSignalApplied || false,
-        already_covered_current_lesson: context.topClassAttendance?.alreadyCoveredCount || 0,
-        needs_makeup_current_lesson: context.topClassAttendance?.needsMakeupCount || 0,
-        distribution: context.topClassAttendance && context.topClassAttendance.lessonCount > 0
-            ? context.topClassAttendance.distribution
+const getEligibleStudentIds = (context) => new Set(context.roster
+    .filter((student) => context.updateMode === 'all' || student.islearn === 0)
+    .map((student) => student.id));
+const getActionableAssignments = (context, eligibleStudentIds = getEligibleStudentIds(context)) => (context.plan.assignments.filter((assignment) => (eligibleStudentIds.has(assignment.id)
+    && (assignment.currentRoomId !== assignment.targetRoomId
+        || assignment.currentClassId !== assignment.targetClassId))));
+const toResponse = (context, operationId) => {
+    const eligibleStudentIds = getEligibleStudentIds(context);
+    const actionableAssignments = getActionableAssignments(context, eligibleStudentIds);
+    return {
+        operation_id: operationId,
+        calendar: context.calendar,
+        update_mode: context.updateMode,
+        total_students: context.roster.length,
+        eligible_students: eligibleStudentIds.size,
+        protected_learned_students: context.updateMode === 'unlearned_only'
+            ? context.roster.length - eligibleStudentIds.size
+            : 0,
+        classroom_count: context.plan.classroomCount,
+        moved_count: actionableAssignments.length,
+        max_students_per_classroom: context.maxStudentsPerClassroom,
+        attendance: {
+            applied: Boolean(context.topClassAttendance),
+            based_on_current_roster: context.roster.length > 0,
+            population_students: context.topClassAttendance?.populationCount || 0,
+            sessions_considered: context.topClassAttendance?.lessonCount || 0,
+            lessons_considered: context.topClassAttendance?.lessonCount || 0,
+            is_repeat_lesson: context.topClassAttendance?.isRepeatLesson || false,
+            prior_occurrence_count: context.topClassAttendance?.priorOccurrenceCount || 0,
+            makeup_signal_applied: context.topClassAttendance?.makeupSignalApplied || false,
+            already_covered_current_lesson: context.topClassAttendance?.alreadyCoveredCount || 0,
+            needs_makeup_current_lesson: context.topClassAttendance?.needsMakeupCount || 0,
+            distribution: context.topClassAttendance && context.topClassAttendance.lessonCount > 0
+                ? context.topClassAttendance.distribution
+                : null,
+        },
+        interaction: buildInteractionResponse(context),
+        interaction_source: context.calendar.system_type === 'topuni'
+            ? {
+                learn_number: context.interactionSourceLearnNumber,
+            }
             : null,
-    },
-    interaction: buildInteractionResponse(context),
-    interaction_source: context.calendar.system_type === 'topuni'
-        ? {
-            learn_number: context.interactionSourceLearnNumber,
-        }
-        : null,
-    continuity: context.calendar.system_type === 'topuni'
-        ? (() => {
-            const existingStudents = context.plan.assignments.filter((student) => student.wasInPreviousSession);
-            const retainedStudents = existingStudents.filter((student) => student.targetRoomId === student.preferredRoomId);
-            return {
-                existing_students: existingStudents.length,
-                new_students: context.plan.assignments.length - existingStudents.length,
-                retained_existing_students: retainedStudents.length,
-                moved_existing_students: existingStudents.length - retainedStudents.length,
-            };
-        })()
-        : null,
-    classrooms: context.plan.summaries,
-    assignments: context.plan.assignments.map((assignment) => ({
-        user_id: assignment.id,
-        identity: assignment.identity,
-        previous_room_id: assignment.currentRoomId,
-        new_room_id: assignment.targetRoomId,
-        previous_class_id: assignment.currentClassId,
-        new_class_id: assignment.targetClassId,
-        interaction_score: assignment.interactionScore,
-        interaction_tier: assignment.interactionTier,
-        was_in_previous_session: Boolean(assignment.wasInPreviousSession),
-        preferred_room_id: assignment.preferredRoomId,
-        recent_attendance_count: assignment.recentAttendanceCount,
-        needs_current_lesson: assignment.needsCurrentLesson,
-        changed: assignment.currentClassId !== assignment.targetClassId,
-    })),
-});
+        continuity: context.calendar.system_type === 'topuni'
+            ? (() => {
+                const existingStudents = context.plan.assignments.filter((student) => student.wasInPreviousSession);
+                const retainedStudents = existingStudents.filter((student) => student.targetRoomId === student.preferredRoomId);
+                return {
+                    existing_students: existingStudents.length,
+                    new_students: context.plan.assignments.length - existingStudents.length,
+                    retained_existing_students: retainedStudents.length,
+                    moved_existing_students: existingStudents.length - retainedStudents.length,
+                };
+            })()
+            : null,
+        classrooms: context.plan.summaries,
+        assignments: context.plan.assignments.map((assignment) => ({
+            user_id: assignment.id,
+            identity: assignment.identity,
+            previous_room_id: assignment.currentRoomId,
+            new_room_id: assignment.targetRoomId,
+            previous_class_id: assignment.currentClassId,
+            new_class_id: assignment.targetClassId,
+            interaction_score: assignment.interactionScore,
+            interaction_tier: assignment.interactionTier,
+            was_in_previous_session: Boolean(assignment.wasInPreviousSession),
+            preferred_room_id: assignment.preferredRoomId,
+            recent_attendance_count: assignment.recentAttendanceCount,
+            needs_current_lesson: assignment.needsCurrentLesson,
+            eligible_for_update: eligibleStudentIds.has(assignment.id),
+            changed: eligibleStudentIds.has(assignment.id)
+                && (assignment.currentRoomId !== assignment.targetRoomId
+                    || assignment.currentClassId !== assignment.targetClassId),
+        })),
+    };
+};
 const previewClassroomAssignment = async (calendarId, options = {}) => (toResponse(await loadAssignmentContext(prisma_1.default, calendarId, options)));
 exports.previewClassroomAssignment = previewClassroomAssignment;
 const applyClassroomAssignment = async (calendarId, actor = {}, options = {}) => prisma_1.default.$transaction(async (tx) => {
     // Rebuild inside the transaction so apply never commits a stale preview.
     const context = await loadAssignmentContext(tx, calendarId, options);
-    const changes = context.plan.assignments.filter((assignment) => assignment.currentRoomId !== assignment.targetRoomId
-        || assignment.currentClassId !== assignment.targetClassId);
+    const eligibleStudentIds = getEligibleStudentIds(context);
+    const changes = getActionableAssignments(context, eligibleStudentIds);
     const changesByClass = new Map();
     changes.forEach((assignment) => {
         const key = `${assignment.targetRoomId}:${assignment.targetClassId}`;
@@ -556,6 +589,7 @@ const applyClassroomAssignment = async (calendarId, actor = {}, options = {}) =>
                 id: { in: ids },
                 code: context.calendar.code,
                 learn_number: context.calendar.learn_number,
+                ...(context.updateMode === 'unlearned_only' ? { islearn: 0 } : {}),
             },
             data: { room_id: roomId, class_id: classId },
         });
@@ -564,7 +598,7 @@ const applyClassroomAssignment = async (calendarId, actor = {}, options = {}) =>
     if (updatedCount !== changes.length) {
         throw new Error(`Roster đã thay đổi trong lúc phân lớp: dự kiến ${changes.length}, cập nhật ${updatedCount}`);
     }
-    if (!context.plan.assignments.length)
+    if (!context.plan.assignments.length || !eligibleStudentIds.size)
         return toResponse(context);
     const operationId = crypto_1.default.randomUUID();
     const historyRows = (0, exports.buildClassroomAssignmentHistoryRows)(context, operationId, actor);

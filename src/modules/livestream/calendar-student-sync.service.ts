@@ -319,12 +319,7 @@ const enrollmentKey = (row: Pick<Prisma.usersCreateManyInput, 'username' | 'code
 );
 
 const loadExistingEnrollments = async (rows: Prisma.usersCreateManyInput[]) => {
-  const existing = new Map<string, {
-    id: number;
-    class_id: string | null;
-    room_id: number | null;
-    islearn: number;
-  }>();
+  const existing = new Set<string>();
   for (let index = 0; index < rows.length; index += 200) {
     const batch = rows.slice(index, index + 200);
     const found = await prisma.users.findMany({
@@ -335,14 +330,9 @@ const loadExistingEnrollments = async (rows: Prisma.usersCreateManyInput[]) => {
           learn_number: Number(row.learn_number),
         })),
       },
-      select: { id: true, username: true, code: true, learn_number: true, class_id: true, room_id: true, islearn: true },
+      select: { username: true, code: true, learn_number: true },
     });
-    found.forEach((row) => existing.set(enrollmentKey(row), {
-      id: row.id,
-      class_id: row.class_id,
-      room_id: row.room_id,
-      islearn: row.islearn,
-    }));
+    found.forEach((row) => existing.add(enrollmentKey(row)));
   }
   return existing;
 };
@@ -439,35 +429,22 @@ export const syncCalendarStudents = async (
     onProgress?.(76, `Đang kiểm tra ${uniqueRows.length} enrollment hiện có`);
     const existingByEnrollment = await loadExistingEnrollments(uniqueRows);
     const newRows: Prisma.usersCreateManyInput[] = [];
-    const updateGroups = new Map<string, { classId: string; ids: number[] }>();
     uniqueRows.forEach((row) => {
-      const existing = existingByEnrollment.get(enrollmentKey(row));
-      if (!existing) {
+      if (!existingByEnrollment.has(enrollmentKey(row))) {
         newRows.push(row);
         return;
       }
-      const classId = normalizeText(row.class_id);
-      if (existing.class_id === classId && existing.room_id === 1 && existing.islearn === 0) {
-        skipped += 1;
-        return;
-      }
-      const group = updateGroups.get(classId) || { classId, ids: [] };
-      group.ids.push(existing.id);
-      updateGroups.set(classId, group);
+      // Enrollment cũ được giữ nguyên toàn bộ theo username + code + learn_number.
+      // Không cập nhật class_id, room_id và đặc biệt không đặt lại islearn.
+      skipped += 1;
     });
 
     const plannedInserted = newRows.length;
-    const plannedUpdated = [...updateGroups.values()].reduce(
-      (total, group) => total + group.ids.length,
-      0
-    );
+    const plannedUpdated = 0;
     let inserted = 0;
-    let updated = 0;
+    const updated = 0;
     const insertBatches = Math.ceil(newRows.length / 200);
-    const updateBatches = [...updateGroups.values()].reduce(
-      (total, group) => total + Math.ceil(group.ids.length / 500), 0
-    );
-    const totalBatches = Math.max(1, insertBatches + updateBatches);
+    const totalBatches = Math.max(1, insertBatches);
     let completedBatches = 0;
     for (let index = 0; index < newRows.length; index += 200) {
       const batch = newRows.slice(index, index + 200);
@@ -476,19 +453,6 @@ export const syncCalendarStudents = async (
       skipped += batch.length - write.count;
       completedBatches += 1;
       onProgress?.(Math.round(76 + (23 * completedBatches) / totalBatches), `Đã thêm ${inserted}/${newRows.length} enrollment`);
-    }
-    for (const group of updateGroups.values()) {
-      for (let index = 0; index < group.ids.length; index += 500) {
-        const ids = group.ids.slice(index, index + 500);
-        const write = await prisma.users.updateMany({
-          where: { id: { in: ids } },
-          data: { class_id: group.classId, room_id: 1, islearn: 0 },
-        });
-        updated += write.count;
-        failed += ids.length - write.count;
-        completedBatches += 1;
-        onProgress?.(Math.round(76 + (23 * completedBatches) / totalBatches), `Đã cập nhật ${updated}/${plannedUpdated} enrollment`);
-      }
     }
     const result = {
       preview: false,
@@ -605,7 +569,7 @@ export const startCalendarStudentSync = (
             job.message = `${item.code}: ${message}`;
           });
           item.status = item.result.failed ? 'error' : 'success';
-          item.message = `Thêm ${item.result.inserted}, cập nhật ${item.result.updated}, bỏ qua ${item.result.skipped}${item.result.failed ? `, lỗi ${item.result.failed}` : ''}`;
+          item.message = `Thêm mới ${item.result.inserted}, giữ nguyên ${item.result.skipped}${item.result.failed ? `, lỗi ${item.result.failed}` : ''}`;
           const numericKeys: Array<Exclude<keyof CalendarStudentSyncResult, 'preview' | 'duplicateDetails'>> = [
             'uniqueApiUsers', 'mappedRows', 'uniqueEnrollments', 'duplicateRows', 'unmatched',
             'inserted', 'updated', 'plannedInserted', 'plannedUpdated', 'skipped', 'failed',

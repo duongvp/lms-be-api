@@ -11,6 +11,7 @@ import { teacherProfileRoutes } from "./modules/teacher-profiles";
 import { quizRoutes } from "./modules/quizzes";
 import { dashboardRoutes } from "./modules/dashboard";
 import { roomConfigRoutes } from "./modules/room-config";
+import { programTeacherBannerRoutes } from "./modules/program-teacher-banners";
 import ApiError from "./utils/ApiError";
 
 const app = express();
@@ -52,6 +53,7 @@ app.use("/api/teacher-profiles", teacherProfileRoutes);
 app.use("/api/quizzes", quizRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/room-config", roomConfigRoutes);
+app.use("/api/program-teacher-banners", programTeacherBannerRoutes);
 app.use("/api/livestreams", livestreamRoute);
 app.use("/livestreams", livestreamRoute);
 app.use("/api/auth", authRoutes)

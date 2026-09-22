@@ -1,6 +1,9 @@
 import crypto from 'crypto';
+import { calendarTimeNotification } from './calendar-time-notification';
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
+import { resolveCalendarExportSystem } from './calendar-export-system';
+import { assistantExportNames, uniqueExportIds } from './calendar-export-fields';
 import { resolvePackagesByCourseId } from '../../integrations/package-course-sheet.service';
 import { fetchHocmaiCourseOutlines } from '../../integrations/hocmai-course-outline.service';
 import {
@@ -23,6 +26,7 @@ import {
   resolveCalendarTeacherProfile,
   syncCalendarTeachingUsers,
 } from './calendar-user-sync.service';
+import { resolveProgramTeacherBanner } from '../program-teacher-banners/program-teacher-banner.service';
 export { provisionCalendarEvgStream, provisionCalendarsEvgBulk } from './evg-stream.service';
 
 export type HocmaiSectionOption = {
@@ -322,6 +326,13 @@ const createCalendarRecord = async (
   const skipTeacherUserSync = data.skip_teacher_user_sync === true;
   const prismaData = { ...data };
   delete prismaData.skip_teacher_user_sync;
+  // Banner được quản lý tập trung theo chương trình + giáo viên. Cột trên
+  // calendar chỉ là snapshot để giữ tương thích với API/export hiện có.
+  prismaData.evg_banner = await resolveProgramTeacherBanner(
+    client,
+    prismaData.code,
+    prismaData.teacher
+  );
   // Hai cột này đã có trong Prisma schema, vì vậy ghi ngay trong INSERT.
   // Trước đây mỗi calendar phải UPDATE hai lần rồi SELECT lại, khiến bulk
   // create phát sinh thêm tới 3 round-trip DB cho từng buổi.
@@ -351,7 +362,19 @@ const updateCalendarRecord = async (
   delete prismaData.assistant_teacher;
   delete prismaData.session_id;
   delete prismaData.skip_teacher_user_sync;
+  const nextCode = prismaData.code ?? before.code;
+  const nextTeacher = prismaData.teacher ?? before.teacher;
+  const bannerIdentityChanged = nextCode !== before.code || nextTeacher !== before.teacher;
+  if (bannerIdentityChanged) {
+    prismaData.evg_banner = await resolveProgramTeacherBanner(client, nextCode, nextTeacher);
+  }
   const updated = await client.calendar.update({ where: { id }, data: prismaData });
+  if (bannerIdentityChanged) {
+    await client.stream.updateMany({
+      where: { code: before.code, learn_number: before.learn_number },
+      data: { banner_url: prismaData.evg_banner, updated_at: new Date() },
+    });
+  }
   if (hasAssistants) {
     await client.$executeRaw`
       UPDATE calendar
@@ -391,6 +414,15 @@ const normalizeRoom = (data: any) => {
   return data;
 };
 
+const calendarSubjectName = (subject: unknown, grade: unknown, systemType: unknown) => {
+  if (systemType !== 'topclass') return subject;
+  const name = typeof subject === 'string' ? subject.trim() : '';
+  const block = Number(grade);
+  if (!name || !Number.isInteger(block) || block < 1 || block > 12) return subject;
+  // Một số dữ liệu cũ đã có khối trong tên môn; không thêm lần thứ hai.
+  return name.endsWith(` ${block}`) ? name : `${name} ${block}`;
+};
+
 const hydrateLessonData = async (
   tx: any,
   input: any,
@@ -418,6 +450,7 @@ const hydrateLessonData = async (
   // Các client cũ chưa gửi session_id vẫn tiếp tục dùng payload calendar hiện tại.
   if (sessionId === undefined || sessionId === null || sessionId === '') {
     delete data.session_id;
+    data.subject = calendarSubjectName(data.subject, input.grade, data.system_type || 'topclass');
     return data;
   }
 
@@ -444,7 +477,7 @@ const hydrateLessonData = async (
     ...data,
     session_id: parsedSessionId,
     learn_number: lesson.learn_number,
-    subject: lesson.subject_name,
+    subject: calendarSubjectName(lesson.subject_name, lesson.grade, lesson.system_type),
     lesson_name: customLessonName || lesson.lesson_name,
   };
 };
@@ -1770,7 +1803,7 @@ export const createValidatedInternalCalendarImport = async (
         Number(item.max_count ?? -1) + 1,
       ]));
 
-      const prepared = rows.map((row) => {
+      const prepared = await Promise.all(rows.map(async (row) => {
         const calendar = row.calendar;
         const startTime = new Date(calendar.start_time);
         const endTime = new Date(calendar.end_time);
@@ -1787,6 +1820,7 @@ export const createValidatedInternalCalendarImport = async (
           start_time: startTime,
           end_time: endTime,
           lesson_count: lessonCount,
+          evg_banner: await resolveProgramTeacherBanner(tx, calendar.code, calendar.teacher),
           key: generateKey(
             calendar.system_type,
             startTime,
@@ -1795,7 +1829,7 @@ export const createValidatedInternalCalendarImport = async (
             lessonCount
           ),
         };
-      });
+      }));
 
       const placeholders = prepared.map(() => (
         '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
@@ -2452,6 +2486,7 @@ export const updateSchedule = async (
 
   const rawMappingUpdate = data?.package_lesson_mappings;
   const auditReason = data?.reason ?? data?.change_reason;
+  const sendTimeNotification = data?.send_notification;
   const hasMappingUpdate = Array.isArray(rawMappingUpdate);
   const resolvedMappingUpdate = hasMappingUpdate
     ? await normalizePackageLessonMappingsForUpdate(rawMappingUpdate)
@@ -2477,12 +2512,19 @@ export const updateSchedule = async (
   delete data.new_session;
   delete data.reason;
   delete data.change_reason;
+  delete data.send_notification;
   delete data.code;
   delete data.learn_number;
   delete data.allow_past;
 
   if (data.start_time) data.start_time = new Date(data.start_time);
   if (data.end_time) data.end_time = new Date(data.end_time);
+
+  if (data.start_time || data.end_time) {
+    ensureValidTimeRange(data.start_time ?? current.start_time, data.end_time ?? current.end_time);
+  }
+  const timeNotification = calendarTimeNotification(current, data, sendTimeNotification, auditReason);
+  if (timeNotification !== undefined) data.lesson_noti = timeNotification;
 
   if (
     data.start_time
@@ -2986,6 +3028,25 @@ export const getCalendarRowsForExport = async (
     where: conditions.length ? { AND: conditions } : {},
     orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
   });
+  const exportProgramCodes = [...new Set(calendars.map((row) => row.code))];
+  const exportLessonIds = calendars.flatMap((row) => row.session_id == null ? [] : [BigInt(row.session_id)]);
+  const exportLessons = await prisma.lessons.findMany({
+    where: { status: { not: 0 }, OR: [{ subject_code: { in: exportProgramCodes } }, { id: { in: exportLessonIds } }] },
+    select: { id: true, subject_code: true, system_type: true, subject_name: true, learn_number: true },
+  });
+  const exportLessonById = new Map(exportLessons.map((row) => [String(row.id), row]));
+  const exportPrograms = new Map<string, typeof exportLessons>();
+  for (const lesson of exportLessons) exportPrograms.set(lesson.subject_code, [...(exportPrograms.get(lesson.subject_code) || []), lesson]);
+  const exportCourseMappings = exportLessons.length ? await prisma.lesson_course_mapping.findMany({
+    where: { lesson_id: { in: exportLessons.map((lesson) => lesson.id) } },
+    select: { lesson_id: true, course_id: true, package_id: true },
+    orderBy: [{ course_id: 'asc' }, { package_id: 'asc' }],
+  }) : [];
+  const exportCoursesByLesson = new Map<string, typeof exportCourseMappings>();
+  for (const mapping of exportCourseMappings) {
+    const id = String(mapping.lesson_id);
+    exportCoursesByLesson.set(id, [...(exportCoursesByLesson.get(id) || []), mapping]);
+  }
   await hydrateAssistantTeachers(prisma, calendars);
   const keys = calendars
     .map((calendar) => calendar.key)
@@ -3012,7 +3073,7 @@ export const getCalendarRowsForExport = async (
   const displayNameByUsername = new Map(
     teachingProfiles.map((profile) => [
       profile.username,
-      profile.display_name || profile.username,
+      profile.display_name || '',
     ])
   );
 
@@ -3024,8 +3085,10 @@ export const getCalendarRowsForExport = async (
     mappingsByKey.set(mapping.key, current);
   });
 
-  const formatVietnamDateTime = (value: Date) => {
-    const local = new Date(value.getTime() + 7 * 60 * 60 * 1000);
+  // Calendar stores Vietnam wall-clock components in UTC. Do not add UTC+7
+  // again: that would shift evening sessions to the next day in the export.
+  const formatCalendarDateTime = (value: Date) => {
+    const local = value;
     const date = [
       String(local.getUTCDate()).padStart(2, '0'),
       String(local.getUTCMonth() + 1).padStart(2, '0'),
@@ -3072,9 +3135,14 @@ export const getCalendarRowsForExport = async (
   )).join(',');
 
   return calendars.map((calendar) => {
-    const start = formatVietnamDateTime(calendar.start_time);
-    const end = formatVietnamDateTime(calendar.end_time);
+    const linkedProgram = calendar.session_id == null ? undefined : exportLessonById.get(String(calendar.session_id));
+    const programCandidates = exportPrograms.get(calendar.code) || [];
+    const exportSystem = resolveCalendarExportSystem(calendar, linkedProgram, programCandidates);
+    const start = formatCalendarDateTime(calendar.start_time);
+    const end = formatCalendarDateTime(calendar.end_time);
     const calendarMappings = mappingsByKey.get(calendar.key || '') ?? [];
+    const courseSourceLessons = linkedProgram ? [linkedProgram] : programCandidates.filter((lesson) => lesson.learn_number === calendar.learn_number);
+    const lessonMappings = courseSourceLessons.flatMap((lesson) => exportCoursesByLesson.get(String(lesson.id)) || []);
     const assistants = parseAssistantTeachers((calendar as any).assistant_teacher);
     const weekday = start.weekday === 0 ? 'Chủ Nhật' : `Thứ ${start.weekday + 1}`;
 
@@ -3087,8 +3155,9 @@ export const getCalendarRowsForExport = async (
       evg_banner: calendar.evg_banner || '',
       evg_stream: calendar.evg_stream || '',
       lesson_count: calendar.lesson_count ?? '',
-      system_type: calendar.system_type || 'topclass',
+      system_type: exportSystem,
       subject: calendar.subject || '',
+      lesson_status: calendar.lesson_status,
       code: calendar.code,
       lesson_name: calendar.lesson_name || '',
       teacher_name: displayNameByUsername.get(String(calendar.teacher || ''))
@@ -3101,13 +3170,11 @@ export const getCalendarRowsForExport = async (
       lesson_baitap: calendar.lesson_baitap || '',
       archive_document: calendar.lesson_link || '',
       content_homework: '',
-      assistant_name: assistants
-        .map((username) => displayNameByUsername.get(username) || username)
-        .join(', '),
+      assistant_name: assistantExportNames(assistants, displayNameByUsername),
       sharepoint_link: calendar.lesson_link || '',
-      course_ids: uniqueMappingValues(calendarMappings, 'course_id'),
+      course_ids: uniqueMappingValues(calendarMappings, 'course_id') || uniqueExportIds(lessonMappings.map((mapping) => mapping.course_id)),
       lesson_ids: uniqueMappingValues(calendarMappings, 'lesson_id'),
-      package_ids: uniqueMappingValues(calendarMappings, 'package_id'),
+      package_ids: uniqueMappingValues(calendarMappings, 'package_id') || uniqueExportIds(lessonMappings.map((mapping) => mapping.package_id)),
       teacher_email: calendar.teacher || '',
       assistant_email: assistants.join(','),
     };
@@ -3793,6 +3860,6 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
     created,
     updated,
     failed: errors.length,
-    errors: errors.slice(0, 100),
+    errors,
   };
 };

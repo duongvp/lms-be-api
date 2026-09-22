@@ -36,11 +36,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.provisionEvgStreamsBulk = exports.provisionEvgStream = exports.swapSessionTimes = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.getStudentSyncProgress = exports.syncStudents = exports.resendToHocmai = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
+exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.exportGoogleSheetProgress = exports.exportGoogleSheet = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.provisionEvgStreamsBulk = exports.provisionEvgStream = exports.swapSessionTimes = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.getStudentSyncProgress = exports.syncStudents = exports.resendToHocmai = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
+const calendar_sheet_export_service_1 = require("./calendar-sheet-export.service");
 const livestream_io_1 = require("./livestream.io");
 const google_sheet_csv_1 = require("../../integrations/google-sheet-csv");
+const google_sheet_export_job_1 = require("../../integrations/google-sheet-export-job");
 const auto_schedule_service_1 = require("./auto-schedule.service");
 const calendar_import_service_1 = require("./calendar-import.service");
 const authorization_service_1 = require("../../services/authorization.service");
@@ -150,7 +152,7 @@ exports.updateBulk = updateBulk;
 const backfillMissingTeachingUsers = async (req, res) => {
     try {
         const { ids } = req.body;
-        const result = await livestreamService.backfillMissingCalendarTeachingUsers(ids);
+        const result = await livestreamService.backfillMissingCalendarTeachingUsers(ids, req.body.additionalUsers);
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
@@ -327,6 +329,26 @@ const getCalendar = async (req, res, next) => {
     }
 };
 exports.getCalendar = getCalendar;
+const exportGoogleSheet = async (req, res) => {
+    try {
+        const { targets, task } = (0, calendar_sheet_export_service_1.calendarSheetExportTask)({ sheetUrl: req.body.sheetUrl, topuniSheetUrl: req.body.topuniSheetUrl, scope: (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.export'), roleIds: req.user?.roleIds || [] });
+        const job = (0, google_sheet_export_job_1.startSheetExportJob)(Number(req.user?.userId), targets, task);
+        res.status(202).json({ success: true, data: job });
+    }
+    catch (err) {
+        res.status(err.statusCode || 400).json({ success: false, message: err.message });
+    }
+};
+exports.exportGoogleSheet = exportGoogleSheet;
+const exportGoogleSheetProgress = async (req, res) => {
+    try {
+        res.json({ success: true, data: (0, google_sheet_export_job_1.getSheetExportJob)(String(req.params.jobId), Number(req.user?.userId)) });
+    }
+    catch (err) {
+        res.status(err.statusCode || 400).json({ success: false, message: err.message });
+    }
+};
+exports.exportGoogleSheetProgress = exportGoogleSheetProgress;
 const exportFile = async (req, res) => {
     try {
         const format = req.query.format === 'csv' ? 'csv' : 'xlsx';

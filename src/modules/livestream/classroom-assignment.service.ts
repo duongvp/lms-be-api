@@ -391,20 +391,6 @@ const loadAssignmentContext = async (
     );
   }
 
-  const roomOneClassId = buildCalendarClassId(
-    calendar.code,
-    calendar.start_time,
-    calendar.learn_number
-  );
-  const classIdPrefix = roomOneClassId.slice(0, -1);
-  const rosterClassFilter = systemType === 'topclass'
-    ? Prisma.empty
-    : Prisma.sql`
-        AND student.room_id IS NOT NULL
-        AND CAST(student.class_id AS BINARY) = CAST(
-          CONCAT(${classIdPrefix}, CAST(student.room_id AS CHAR)) AS BINARY
-        )
-      `;
   const rawRoster = await client.$queryRaw(Prisma.sql`
     SELECT
       student.id,
@@ -419,9 +405,11 @@ const loadAssignmentContext = async (
     WHERE student.code = ${calendar.code}
       AND student.learn_number = ${calendar.learn_number}
       AND staff.id IS NULL
-      ${rosterClassFilter}
     ORDER BY student.id ASC
   `) as RawAssignmentRosterRow[];
+  // Một enrollment được dùng lại khi cùng bài được dạy lại vào ngày khác.
+  // Không lọc theo class_id của lịch hiện tại: class_id cũ phải được đưa vào
+  // plan để bước apply đổi Excel date sang ngày của calendar đang xử lý.
   // MySQL raw query có thể trả cột INT UNSIGNED dưới dạng BigInt. Prisma
   // users.updateMany lại yêu cầu number cho trường Int, nên chuẩn hóa một lần
   // trước khi lập plan/history và tuyệt đối không truyền BigInt vào `id.in`.

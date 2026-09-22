@@ -20,12 +20,29 @@ type HocmaiUser = {
   product_id?: unknown;
 };
 
+export type CalendarStudentSyncDuplicate = {
+  studentHmid: string;
+  username: string;
+  code: string;
+  learnNumber: number;
+  classId: string;
+  productId: string;
+  duplicateOfProductId: string;
+};
+
 export type CalendarStudentSyncResult = {
+  preview: boolean;
   apiUsers: number;
+  uniqueApiUsers: number;
   mappedRows: number;
+  uniqueEnrollments: number;
+  duplicateRows: number;
+  duplicateDetails: CalendarStudentSyncDuplicate[];
   unmatched: number;
   inserted: number;
   updated: number;
+  plannedInserted: number;
+  plannedUpdated: number;
   skipped: number;
   failed: number;
 };
@@ -34,6 +51,9 @@ export type CalendarStudentSyncProgress = (progress: number, message: string) =>
 
 export type CalendarStudentSyncItem = {
   calendarId: number;
+  calendarIds: number[];
+  calendarCount: number;
+  lessonCount: number;
   code: string;
   learnNumber: number;
   lessonName: string;
@@ -59,9 +79,19 @@ export type CalendarStudentSyncJob = {
 const MAX_CALENDARS_PER_SYNC = 500;
 let syncRunning = false;
 let jobRunning = false;
+let activeJobId: string | null = null;
 const syncJobs = new Map<string, CalendarStudentSyncJob>();
 
 const normalizeText = (value: unknown) => String(value ?? '').trim();
+
+const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const networkErrorDetail = (error: any) => {
+  const cause = error?.cause;
+  const code = normalizeText(cause?.code || error?.code);
+  const message = normalizeText(cause?.message || error?.message) || 'Lỗi không xác định';
+  return code && !message.includes(code) ? `${code}: ${message}` : message;
+};
 
 const maskPhone = (value: unknown) => `****${normalizeText(value).slice(-4)}`;
 
@@ -139,30 +169,43 @@ const fetchApiPage = async (
   productIds.forEach((productId, index) => {
     url.searchParams.append(`packages[${index}]`, productId);
   });
+  // Không log token; chỉ log URL/query để đối chiếu tham số gọi HOCMAI.
+  console.info('[calendar-student-sync][HOCMAI API]', url.toString());
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      headers: { token: config.token, Accept: 'application/json' },
-      signal: AbortSignal.timeout(config.timeoutMs),
-    });
-  } catch (error: any) {
-    throw new ApiError(
-      error?.name === 'TimeoutError'
-        ? 'API HOCMAI bị timeout'
-        : `Không thể kết nối API HOCMAI: ${error?.message || 'Lỗi không xác định'}`,
-      502
-    );
+  const maximumAttempts = 5;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: { token: config.token, Accept: 'application/json' },
+        signal: AbortSignal.timeout(config.timeoutMs),
+      });
+      const payload: any = await response.json().catch(() => null);
+      if (!response.ok) {
+        if ((response.status === 429 || response.status >= 500) && attempt < maximumAttempts) {
+          await wait(Math.min(8_000, 1_000 * (2 ** (attempt - 1))));
+          continue;
+        }
+        throw new ApiError(`API HOCMAI trả lỗi HTTP ${response.status} ở trang ${page}`, 502);
+      }
+      if (!payload || payload.status !== 'success' || !Array.isArray(payload.data)) {
+        throw new ApiError(`API HOCMAI trả dữ liệu không hợp lệ ở trang ${page}`, 502);
+      }
+      return payload;
+    } catch (error: any) {
+      if (error instanceof ApiError) throw error;
+      if (attempt < maximumAttempts) {
+        await wait(Math.min(8_000, 1_000 * (2 ** (attempt - 1))));
+        continue;
+      }
+      throw new ApiError(
+        error?.name === 'TimeoutError'
+          ? `API HOCMAI bị timeout ở trang ${page} sau ${maximumAttempts} lần thử`
+          : `Không thể kết nối API HOCMAI ở trang ${page} sau ${maximumAttempts} lần thử: ${networkErrorDetail(error)}`,
+        502
+      );
+    }
   }
-
-  const payload: any = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new ApiError(`API HOCMAI trả lỗi HTTP ${response.status}`, 502);
-  }
-  if (!payload || payload.status !== 'success' || !Array.isArray(payload.data)) {
-    throw new ApiError('API HOCMAI trả dữ liệu không hợp lệ', 502);
-  }
-  return payload;
+  throw new ApiError(`Không thể tải trang ${page} từ API HOCMAI`, 502);
 };
 
 const fetchAllUsers = async (
@@ -172,7 +215,10 @@ const fetchAllUsers = async (
 ) => {
   const config = loadApiConfig();
   const firstPage = await fetchApiPage(config, productIds, registeredAt, 1);
-  const total = Number(firstPage.total || 0);
+  const total = Number(firstPage.total ?? 0);
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new ApiError('API HOCMAI trả tổng học viên không hợp lệ', 502);
+  }
   const perPage = Number(firstPage.per_page || config.limit);
   const calculatedLastPage = perPage > 0 ? Math.max(1, Math.ceil(total / perPage)) : 1;
   const lastPage = Math.max(1, Number(firstPage.last_page || calculatedLastPage));
@@ -186,7 +232,7 @@ const fetchAllUsers = async (
       `Đã quét trang ${page}/${lastPage} từ API HOCMAI`
     );
   }
-  return users;
+  return { users, total };
 };
 
 const loadMappings = async (calendarIds: number[]) => {
@@ -304,7 +350,8 @@ const loadExistingEnrollments = async (rows: Prisma.usersCreateManyInput[]) => {
 export const syncCalendarStudents = async (
   rawIds: unknown,
   rawRegisteredAt: unknown,
-  onProgress?: CalendarStudentSyncProgress
+  onProgress?: CalendarStudentSyncProgress,
+  prefetchedApiUsers?: HocmaiUser[]
 ): Promise<CalendarStudentSyncResult> => {
   if (syncRunning) throw new ApiError('Đang có một lượt đồng bộ học viên khác', 409);
   const ids = Array.from(new Set(
@@ -328,12 +375,14 @@ export const syncCalendarStudents = async (
       mappingsByProductId.set(mapping.productId, current);
     });
     onProgress?.(8, `Đã tìm thấy ${mappingsByProductId.size} package, đang gọi API HOCMAI`);
-    const apiUsers = await fetchAllUsers(
-      [...mappingsByProductId.keys()],
-      registeredAt,
-      onProgress
-    );
-    const rows: Prisma.usersCreateManyInput[] = [];
+    const fetched = prefetchedApiUsers
+      ? { users: prefetchedApiUsers, total: prefetchedApiUsers.length }
+      : await fetchAllUsers([...mappingsByProductId.keys()], registeredAt, onProgress);
+    const apiUsers = fetched.users;
+    const rowContexts: Array<{
+      row: Prisma.usersCreateManyInput;
+      productId: string;
+    }> = [];
     let unmatched = 0;
 
     apiUsers.forEach((user) => {
@@ -342,31 +391,51 @@ export const syncCalendarStudents = async (
         unmatched += 1;
         return;
       }
-      userMappings.forEach((mapping) => rows.push({
-        student_hmid: normalizeText(user.userid),
-        username: normalizeText(user.username),
-        email: normalizeText(user.email),
-        name: buildStudentDisplayName(user),
-        phone: normalizeText(user.phone),
-        code: mapping.code,
-        learn_number: mapping.learnNumber,
-        islearn: 0,
-        room_id: 1,
-        class_id: buildCalendarClassId(mapping.code, mapping.startTime, mapping.learnNumber),
+      userMappings.forEach((mapping) => rowContexts.push({
+        productId: normalizeText(user.product_id),
+        row: {
+          student_hmid: normalizeText(user.userid),
+          username: normalizeText(user.username),
+          email: normalizeText(user.email),
+          name: buildStudentDisplayName(user),
+          phone: normalizeText(user.phone),
+          code: mapping.code,
+          learn_number: mapping.learnNumber,
+          islearn: 0,
+          room_id: 1,
+          class_id: buildCalendarClassId(mapping.code, mapping.startTime, mapping.learnNumber),
+        },
       }));
     });
 
+    const rows = rowContexts.map(({ row }) => row);
+
     onProgress?.(72, `Đã mapping ${rows.length} dòng học viên`);
 
-    const validRows = rows.filter(isValidCreateRow);
-    let failed = rows.length - validRows.length;
-    const uniqueRowsByEnrollment = new Map<string, Prisma.usersCreateManyInput>();
-    validRows.forEach((row) => {
-      const key = enrollmentKey(row);
-      if (!uniqueRowsByEnrollment.has(key)) uniqueRowsByEnrollment.set(key, row);
+    const validRowContexts = rowContexts.filter(({ row }) => isValidCreateRow(row));
+    let failed = rows.length - validRowContexts.length;
+    const uniqueRowsByEnrollment = new Map<string, typeof validRowContexts[number]>();
+    const duplicateDetails: CalendarStudentSyncDuplicate[] = [];
+    validRowContexts.forEach((context) => {
+      const key = enrollmentKey(context.row);
+      const kept = uniqueRowsByEnrollment.get(key);
+      if (!kept) {
+        uniqueRowsByEnrollment.set(key, context);
+        return;
+      }
+      duplicateDetails.push({
+        studentHmid: normalizeText(context.row.student_hmid),
+        username: normalizeText(context.row.username),
+        code: normalizeText(context.row.code),
+        learnNumber: Number(context.row.learn_number),
+        classId: normalizeText(context.row.class_id),
+        productId: context.productId,
+        duplicateOfProductId: kept.productId,
+      });
     });
-    const uniqueRows = [...uniqueRowsByEnrollment.values()];
-    let skipped = validRows.length - uniqueRows.length;
+    const uniqueRows = [...uniqueRowsByEnrollment.values()].map(({ row }) => row);
+    const duplicateRows = duplicateDetails.length;
+    let skipped = 0;
     onProgress?.(76, `Đang kiểm tra ${uniqueRows.length} enrollment hiện có`);
     const existingByEnrollment = await loadExistingEnrollments(uniqueRows);
     const newRows: Prisma.usersCreateManyInput[] = [];
@@ -387,54 +456,53 @@ export const syncCalendarStudents = async (
       updateGroups.set(classId, group);
     });
 
+    const plannedInserted = newRows.length;
+    const plannedUpdated = [...updateGroups.values()].reduce(
+      (total, group) => total + group.ids.length,
+      0
+    );
     let inserted = 0;
     let updated = 0;
     const insertBatches = Math.ceil(newRows.length / 200);
     const updateBatches = [...updateGroups.values()].reduce(
-      (total, group) => total + Math.ceil(group.ids.length / 500),
-      0
+      (total, group) => total + Math.ceil(group.ids.length / 500), 0
     );
     const totalBatches = Math.max(1, insertBatches + updateBatches);
     let completedBatches = 0;
     for (let index = 0; index < newRows.length; index += 200) {
-      const result = await prisma.users.createMany({
-        data: newRows.slice(index, index + 200),
-        skipDuplicates: true,
-      });
-      inserted += result.count;
-      skipped += newRows.slice(index, index + 200).length - result.count;
+      const batch = newRows.slice(index, index + 200);
+      const write = await prisma.users.createMany({ data: batch, skipDuplicates: true });
+      inserted += write.count;
+      skipped += batch.length - write.count;
       completedBatches += 1;
-      onProgress?.(
-        Math.round(76 + (23 * completedBatches) / totalBatches),
-        `Đã thêm ${inserted}/${newRows.length} học viên mới`
-      );
+      onProgress?.(Math.round(76 + (23 * completedBatches) / totalBatches), `Đã thêm ${inserted}/${newRows.length} enrollment`);
     }
     for (const group of updateGroups.values()) {
       for (let index = 0; index < group.ids.length; index += 500) {
         const ids = group.ids.slice(index, index + 500);
-        const result = await prisma.users.updateMany({
+        const write = await prisma.users.updateMany({
           where: { id: { in: ids } },
-          data: {
-            class_id: group.classId,
-            room_id: 1,
-            islearn: 0,
-          },
+          data: { class_id: group.classId, room_id: 1, islearn: 0 },
         });
-        updated += result.count;
-        failed += ids.length - result.count;
+        updated += write.count;
+        failed += ids.length - write.count;
         completedBatches += 1;
-        onProgress?.(
-          Math.round(76 + (23 * completedBatches) / totalBatches),
-          `Đã cập nhật lớp cho ${updated} học viên hiện có`
-        );
+        onProgress?.(Math.round(76 + (23 * completedBatches) / totalBatches), `Đã cập nhật ${updated}/${plannedUpdated} enrollment`);
       }
     }
     const result = {
-      apiUsers: apiUsers.length,
+      preview: false,
+      apiUsers: fetched.total,
+      uniqueApiUsers: new Set(apiUsers.map((user) => normalizeText(user.username).toLowerCase()).filter(Boolean)).size,
       mappedRows: rows.length,
+      uniqueEnrollments: uniqueRows.length,
+      duplicateRows,
+      duplicateDetails,
       unmatched,
       inserted,
       updated,
+      plannedInserted,
+      plannedUpdated,
       skipped,
       failed,
     };
@@ -450,7 +518,18 @@ export const startCalendarStudentSync = (
   rawRegisteredAt: unknown,
   ownerUserId: number
 ) => {
-  if (jobRunning || syncRunning) throw new ApiError('Đang có một lượt đồng bộ học viên khác', 409);
+  if (jobRunning || syncRunning) {
+    const activeJob = activeJobId ? syncJobs.get(activeJobId) : undefined;
+    if (activeJob && activeJob.ownerUserId === ownerUserId) {
+      return {
+        jobId: activeJob.jobId,
+        status: activeJob.status,
+        progress: activeJob.progress,
+        resumed: true,
+      };
+    }
+    throw new ApiError('Đang có một lượt đồng bộ học viên khác', 409);
+  }
   const ids = [...new Set((Array.isArray(rawIds) ? rawIds : []).map(Number)
     .filter((id) => Number.isInteger(id) && id > 0))];
   if (!ids.length) throw new ApiError('Vui lòng chọn ít nhất một lịch học', 400);
@@ -467,24 +546,40 @@ export const startCalendarStudentSync = (
     items: [],
   };
   syncJobs.set(jobId, job);
+  activeJobId = jobId;
 
   void (async () => {
     job.status = 'running';
     try {
       const calendars = await prisma.calendar.findMany({
         where: { id: { in: ids } },
-        select: { id: true, code: true, learn_number: true, lesson_name: true, start_time: true, system_type: true },
+        select: { id: true, key: true, code: true, learn_number: true, lesson_name: true, start_time: true, system_type: true },
       });
-      const byId = new Map(calendars.map((calendar) => [calendar.id, calendar]));
-      job.items = ids.map((id) => {
-        const calendar = byId.get(id);
-        return {
-          calendarId: id, code: calendar?.code || 'Lịch không còn tồn tại',
-          learnNumber: calendar?.learn_number || 0, lessonName: calendar?.lesson_name || '',
-          startTime: calendar?.start_time || null, systemType: calendar?.system_type || null,
-          status: 'pending', progress: 0, message: 'Chờ xử lý',
-        };
+      if (calendars.length !== ids.length) {
+        const found = new Set(calendars.map((calendar) => calendar.id));
+        throw new ApiError(`Không tìm thấy lịch học: ${ids.filter((id) => !found.has(id)).join(', ')}`, 404);
+      }
+      const calendarsByProgram = new Map<string, typeof calendars>();
+      ids.forEach((id) => {
+        const calendar = calendars.find((row) => row.id === id)!;
+        const group = calendarsByProgram.get(calendar.code) || [];
+        group.push(calendar);
+        calendarsByProgram.set(calendar.code, group);
       });
+      job.items = [...calendarsByProgram.entries()].map(([code, programCalendars]) => ({
+        calendarId: programCalendars[0].id,
+        calendarIds: programCalendars.map((calendar) => calendar.id),
+        calendarCount: programCalendars.length,
+        lessonCount: new Set(programCalendars.map((calendar) => calendar.learn_number)).size,
+        code,
+        learnNumber: 0,
+        lessonName: `${programCalendars.length} lịch đã chọn`,
+        startTime: null,
+        systemType: programCalendars[0].system_type,
+        status: 'pending' as const,
+        progress: 0,
+        message: 'Chờ xử lý chương trình',
+      }));
       // Không cho hai lịch ghi đè cùng enrollment sang hai class_id khác nhau.
       const targets = new Map<string, string>();
       for (const calendar of calendars) {
@@ -496,25 +591,33 @@ export const startCalendarStudentSync = (
         targets.set(key, classId);
       }
       const totals: CalendarStudentSyncResult = {
-        apiUsers: 0, mappedRows: 0, unmatched: 0, inserted: 0, updated: 0, skipped: 0, failed: 0,
+        preview: false, apiUsers: 0, uniqueApiUsers: 0, mappedRows: 0,
+        uniqueEnrollments: 0, duplicateRows: 0, duplicateDetails: [], unmatched: 0, inserted: 0, updated: 0,
+        plannedInserted: 0, plannedUpdated: 0, skipped: 0, failed: 0,
       };
       for (const [index, item] of job.items.entries()) {
         item.status = 'running';
         try {
-          item.result = await syncCalendarStudents([item.calendarId], rawRegisteredAt, (progress, message) => {
+          item.result = await syncCalendarStudents(item.calendarIds, rawRegisteredAt, (progress, message) => {
             item.progress = progress;
             item.message = message;
-            job.progress = Math.round((index * 100 + progress) / ids.length);
-            job.message = `${item.code} - Bài ${item.learnNumber}: ${message}`;
+            job.progress = Math.round((index * 100 + progress) / job.items.length);
+            job.message = `${item.code}: ${message}`;
           });
           item.status = item.result.failed ? 'error' : 'success';
-          item.message = `Thêm mới ${item.result.inserted}, cập nhật lớp ${item.result.updated}, bỏ qua ${item.result.skipped}${item.result.failed ? `, thất bại ${item.result.failed}` : ''}`;
-          for (const key of Object.keys(totals) as Array<keyof CalendarStudentSyncResult>) {
+          item.message = `Thêm ${item.result.inserted}, cập nhật ${item.result.updated}, bỏ qua ${item.result.skipped}${item.result.failed ? `, lỗi ${item.result.failed}` : ''}`;
+          const numericKeys: Array<Exclude<keyof CalendarStudentSyncResult, 'preview' | 'duplicateDetails'>> = [
+            'uniqueApiUsers', 'mappedRows', 'uniqueEnrollments', 'duplicateRows', 'unmatched',
+            'inserted', 'updated', 'plannedInserted', 'plannedUpdated', 'skipped', 'failed',
+          ];
+          for (const key of numericKeys) {
             totals[key] += item.result[key];
           }
+          totals.duplicateDetails.push(...item.result.duplicateDetails);
+          totals.apiUsers += item.result.apiUsers;
         } catch (error: any) {
           item.status = 'error';
-          item.message = String(error?.message || 'Không thể đồng bộ lịch này');
+          item.message = String(error?.message || 'Không thể đồng bộ chương trình này');
         }
         item.progress = 100;
         job.progress = Math.round(((index + 1) * 100) / ids.length);
@@ -523,13 +626,14 @@ export const startCalendarStudentSync = (
       job.status = 'completed';
       job.progress = 100;
       const errors = job.items.filter((item) => item.status === 'error').length;
-      job.message = `Đã xử lý ${ids.length} lịch${errors ? `, ${errors} lịch có lỗi` : ''}`;
+      job.message = `Đã xử lý ${job.items.length} chương trình${errors ? `, ${errors} chương trình có lỗi` : ''}`;
     } catch (error: any) {
       job.status = 'failed';
       job.error = String(error?.message || 'Không thể đồng bộ học viên');
       job.message = 'Đồng bộ học viên thất bại';
     } finally {
       jobRunning = false;
+      if (activeJobId === jobId) activeJobId = null;
       const cleanupTimer = setTimeout(() => syncJobs.delete(jobId), 30 * 60 * 1000);
       cleanupTimer.unref?.();
     }

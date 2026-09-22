@@ -7,6 +7,7 @@ exports.provisionCalendarsEvgBulk = exports.provisionCalendarEvgStream = exports
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const evg_live_stream_service_1 = require("../../integrations/evg-live-stream.service");
 const calendar_user_sync_service_1 = require("./calendar-user-sync.service");
+const program_teacher_banner_service_1 = require("../program-teacher-banners/program-teacher-banner.service");
 const EVG_ROOM_COUNT = 25;
 const EVG_PLAYBACK_BASE_URL = 'https://evg-stream.hocmai.net/live';
 const buildEvgPlaybackUrl = (streamAlias) => {
@@ -58,6 +59,10 @@ const provisionCalendarEvgStream = async (calendarId, actorUsername, mode = 'ski
     if (calendar.evg_stream && mode === 'skip_existing') {
         return { skipped: true, operation: 'skipped', reason: 'Lịch học đã có EVG', calendar };
     }
+    const configuredBanner = await (0, program_teacher_banner_service_1.resolveProgramTeacherBanner)(prisma_1.default, calendar.code, calendar.teacher);
+    if (!configuredBanner) {
+        throw new Error(`Chưa cấu hình banner cho chương trình ${calendar.code} và giáo viên ${calendar.teacher || '(trống)'}`);
+    }
     const requestName = (0, exports.buildEvgStreamName)(calendar.code, calendar.learn_number, calendar.start_time);
     // EVG hiện chỉ cung cấp API create. Chế độ ghi đè vì vậy luôn tạo stream
     // mới; chế độ bỏ qua chỉ gọi create khi calendar chưa có evg_stream.
@@ -70,12 +75,19 @@ const provisionCalendarEvgStream = async (calendarId, actorUsername, mode = 'ski
         if (mode === 'skip_existing' && latest.evg_stream) {
             throw new Error('Lịch học vừa được tạo EVG bởi một yêu cầu khác');
         }
+        const bannerUrl = await (0, program_teacher_banner_service_1.resolveProgramTeacherBanner)(tx, latest.code, latest.teacher);
+        if (!bannerUrl) {
+            throw new Error(`Chưa cấu hình banner cho chương trình ${latest.code} và giáo viên ${latest.teacher || '(trống)'}`);
+        }
         const updatedCalendar = await tx.calendar.update({
             where: { id: calendarId },
             data: {
                 channel_name: evg.name,
                 evg_stream: evg.id,
                 lesson_link: evg.streamKey,
+                // Giữ snapshot để tương thích các API/export cũ; nguồn chuẩn vẫn là
+                // program_teacher_banners và stream luôn nhận trực tiếp từ nguồn đó.
+                evg_banner: bannerUrl,
                 updated_at: new Date(),
             },
         });
@@ -102,13 +114,13 @@ const provisionCalendarEvgStream = async (calendarId, actorUsername, mode = 'ski
                     learn_number: latest.learn_number,
                     room_id: roomId,
                     stream_key: evgPlaybackUrl,
-                    banner_url: latest.evg_banner,
+                    banner_url: bannerUrl,
                     type: 1,
                     class_id: (0, calendar_user_sync_service_1.buildCalendarRoomClassId)(latest.code, latest.start_time, latest.learn_number, roomId),
                 },
                 update: {
                     stream_key: evgPlaybackUrl,
-                    banner_url: latest.evg_banner,
+                    banner_url: bannerUrl,
                     type: 1,
                     class_id: (0, calendar_user_sync_service_1.buildCalendarRoomClassId)(latest.code, latest.start_time, latest.learn_number, roomId),
                     updated_at: new Date(),

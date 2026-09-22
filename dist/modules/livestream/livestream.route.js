@@ -171,6 +171,8 @@ const normalizeCalendarFields = (fields) => Array.from(new Set(fields
 router.use(authenticate);
 router.get('/', authorize(['calendar.view']), authorizeCalendarList, livestreamController.getCalendar);
 router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
+router.post('/export/google-sheet', authorize(['calendar.export']), livestreamController.exportGoogleSheet);
+router.get('/export/google-sheet/:jobId', authorize(['calendar.export']), livestreamController.exportGoogleSheetProgress);
 router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
 router.get('/programs', authorize(['calendar.view']), livestreamController.getPrograms);
 router.get('/programs/:code/lessons', authorize(['calendar.view']), authorizeProgram('calendar.view', (req) => String(req.params.code)), livestreamController.getProgramLessons);

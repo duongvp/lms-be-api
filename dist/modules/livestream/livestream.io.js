@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.buildCalendarTemplate = exports.getCalendarFileContentType = exports.buildCalendarUpdateFile = exports.buildOperationalCalendarWorkbook = exports.buildCalendarFile = exports.validateCalendarImportRows = exports.parseCalendarMappingImportFile = exports.parseCalendarImportFile = exports.CALENDAR_UPDATE_FILE_COLUMNS = exports.CALENDAR_FILE_COLUMNS = exports.CALENDAR_IMPORT_FILE_COLUMNS = void 0;
+exports.buildCalendarTemplate = exports.getCalendarFileContentType = exports.buildCalendarUpdateFile = exports.googleCalendarTabTitles = exports.buildOperationalCalendarWorkbook = exports.buildCalendarFile = exports.validateCalendarImportRows = exports.parseCalendarMappingImportFile = exports.parseCalendarImportFile = exports.CALENDAR_UPDATE_FILE_COLUMNS = exports.CALENDAR_FILE_COLUMNS = exports.CALENDAR_IMPORT_FILE_COLUMNS = void 0;
 const XLSX = __importStar(require("xlsx"));
 exports.CALENDAR_IMPORT_FILE_COLUMNS = [
     'Môn',
@@ -774,7 +774,7 @@ const prepareOperationalRows = (items, code) => {
             : String(occurrence).padStart(2, '0');
         return {
             ...row,
-            operational_subject: subject,
+            operational_subject: Number(row.lesson_status) === 1 ? 'Nghỉ' : subject,
             operational_lesson_code: `${operationalSubjectPrefix(subject, grade)}_L${occurrence}_${paddedLesson}`,
         };
     });
@@ -804,6 +804,20 @@ const buildOperationalCalendarWorkbook = (rows) => {
     return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 };
 exports.buildOperationalCalendarWorkbook = buildOperationalCalendarWorkbook;
+const googleCalendarTabTitles = (rows) => {
+    const groups = new Map();
+    for (const row of rows) {
+        const code = String(row.code || 'Chương trình').trim();
+        if (!groups.has(code))
+            groups.set(code, row);
+    }
+    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b, 'vi')).map(([code, row]) => {
+        const subject = String(row.subject || code).trim();
+        const title = `${subject} - ${code}`;
+        return (title.length <= 100 ? title : code).replace(/[\\/?*\[\]:]/g, ' ').slice(0, 100);
+    });
+};
+exports.googleCalendarTabTitles = googleCalendarTabTitles;
 const buildCalendarUpdateFile = (rows) => {
     const worksheet = XLSX.utils.json_to_sheet(rows.map((row) => Object.fromEntries(exports.CALENDAR_UPDATE_FILE_COLUMNS.map((column) => [column.header, row[column.key] ?? '']))), {
         header: exports.CALENDAR_UPDATE_FILE_COLUMNS.map((column) => column.header),

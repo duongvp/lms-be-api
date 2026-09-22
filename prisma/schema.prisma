@@ -349,6 +349,22 @@ model teacher_profiles {
   @@index([hmid_sync_status], map: "idx_teacher_hmid_sync_status")
 }
 
+model program_teacher_banners {
+  id                 Int       @id @default(autoincrement()) @db.UnsignedInt
+  program_code       String    @db.VarChar(50)
+  teacher_profile_id Int       @db.UnsignedInt
+  banner_url         String    @db.VarChar(500)
+  status             Int       @default(1) @db.TinyInt
+  created_by         String?   @db.VarChar(100)
+  updated_by         String?   @db.VarChar(100)
+  created_at         DateTime  @default(now()) @db.Timestamp(0)
+  updated_at         DateTime  @default(now()) @updatedAt @db.Timestamp(0)
+
+  @@unique([program_code, teacher_profile_id], map: "uq_program_teacher_banner")
+  @@index([teacher_profile_id], map: "idx_program_teacher_banner_teacher")
+  @@index([status], map: "idx_program_teacher_banner_status")
+}
+
 model team_notify_history {
   id             BigInt    @id @default(autoincrement())
   notify_type    String    @db.VarChar(50)

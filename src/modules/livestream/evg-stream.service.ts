@@ -5,6 +5,7 @@ import {
   buildCalendarRoomClassId,
   excelDateSerialFromCalendarDate,
 } from './calendar-user-sync.service';
+import { resolveProgramTeacherBanner } from '../program-teacher-banners/program-teacher-banner.service';
 
 const EVG_ROOM_COUNT = 25;
 const EVG_PLAYBACK_BASE_URL = 'https://evg-stream.hocmai.net/live';
@@ -62,6 +63,12 @@ export const provisionCalendarEvgStream = async (
   if (calendar.evg_stream && mode === 'skip_existing') {
     return { skipped: true, operation: 'skipped', reason: 'Lịch học đã có EVG', calendar };
   }
+  const configuredBanner = await resolveProgramTeacherBanner(prisma, calendar.code, calendar.teacher);
+  if (!configuredBanner) {
+    throw new Error(
+      `Chưa cấu hình banner cho chương trình ${calendar.code} và giáo viên ${calendar.teacher || '(trống)'}`
+    );
+  }
   const requestName = buildEvgStreamName(calendar.code, calendar.learn_number, calendar.start_time);
   // EVG hiện chỉ cung cấp API create. Chế độ ghi đè vì vậy luôn tạo stream
   // mới; chế độ bỏ qua chỉ gọi create khi calendar chưa có evg_stream.
@@ -75,12 +82,22 @@ export const provisionCalendarEvgStream = async (
       throw new Error('Lịch học vừa được tạo EVG bởi một yêu cầu khác');
     }
 
+    const bannerUrl = await resolveProgramTeacherBanner(tx, latest.code, latest.teacher);
+    if (!bannerUrl) {
+      throw new Error(
+        `Chưa cấu hình banner cho chương trình ${latest.code} và giáo viên ${latest.teacher || '(trống)'}`
+      );
+    }
+
     const updatedCalendar = await tx.calendar.update({
       where: { id: calendarId },
       data: {
         channel_name: evg.name,
         evg_stream: evg.id,
         lesson_link: evg.streamKey,
+        // Giữ snapshot để tương thích các API/export cũ; nguồn chuẩn vẫn là
+        // program_teacher_banners và stream luôn nhận trực tiếp từ nguồn đó.
+        evg_banner: bannerUrl,
         updated_at: new Date(),
       },
     });
@@ -108,13 +125,13 @@ export const provisionCalendarEvgStream = async (
           learn_number: latest.learn_number,
           room_id: roomId,
           stream_key: evgPlaybackUrl,
-          banner_url: latest.evg_banner,
+          banner_url: bannerUrl,
           type: 1,
           class_id: buildCalendarRoomClassId(latest.code, latest.start_time, latest.learn_number, roomId),
         },
         update: {
           stream_key: evgPlaybackUrl,
-          banner_url: latest.evg_banner,
+          banner_url: bannerUrl,
           type: 1,
           class_id: buildCalendarRoomClassId(latest.code, latest.start_time, latest.learn_number, roomId),
           updated_at: new Date(),

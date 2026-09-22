@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.syncCalendarTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarRoomClassId = exports.buildCalendarClassId = exports.calendarDateAtMidnight = exports.excelDateSerialFromCalendarDate = exports.buildTeachingUserName = void 0;
+exports.syncCalendarTeachingUsers = exports.ensureCalendarScanTeachingUsers = exports.normalizeScanTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarRoomClassId = exports.buildCalendarClassId = exports.calendarDateAtMidnight = exports.excelDateSerialFromCalendarDate = exports.buildTeachingUserName = void 0;
 const client_1 = require("@prisma/client");
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -240,7 +240,7 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
  * trước khi cơ chế tự đồng bộ được bật. Với enrollment đã có, hàm chỉ vá
  * student_hmid còn thiếu và chuẩn hóa tên nhân sự; không xóa user.
  */
-const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
+const ensureCalendarTeachingUsers = async (client, calendar, profileCache, additionalProfiles = []) => {
     if (!isActiveSchedule(calendar))
         return { created: 0, updated: 0 };
     const profileCacheKey = [
@@ -252,6 +252,7 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
         profiles = await resolveTeachingProfiles(client, calendar);
         profileCache?.set(profileCacheKey, profiles);
     }
+    profiles = Array.from(new Map([...profiles, ...additionalProfiles].map((profile) => [normalizeText(profile.username), profile])).values());
     if (!profiles.length)
         return { created: 0, updated: 0 };
     const classId = (0, exports.buildCalendarClassId)(calendar.code, calendar.start_time, calendar.learn_number);
@@ -330,6 +331,41 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache) => {
     return { created, updated };
 };
 exports.ensureCalendarTeachingUsers = ensureCalendarTeachingUsers;
+const normalizeScanTeachingUsers = (value) => {
+    if (value === undefined)
+        return [{ username: 'loandtt3@hocmai.vn', role: 'assistant' }];
+    if (!Array.isArray(value))
+        throw new Error('Danh sách tài khoản bổ sung không hợp lệ');
+    const users = new Map();
+    for (const item of value) {
+        const username = normalizeText(item?.username);
+        if (!username || username.length > 100 || !['teacher', 'assistant'].includes(item?.role)) {
+            throw new Error('Tài khoản hoặc vai trò nhân sự bổ sung không hợp lệ');
+        }
+        users.set(username, { username, role: item.role });
+    }
+    return Array.from(users.values());
+};
+exports.normalizeScanTeachingUsers = normalizeScanTeachingUsers;
+/** Bổ sung các tài khoản được chọn riêng khi chạy Quét user nhân sự. */
+const ensureCalendarScanTeachingUsers = async (client, calendar, additionalUsers = (0, exports.normalizeScanTeachingUsers)(undefined)) => {
+    if (!isActiveSchedule(calendar))
+        return { created: 0, updated: 0 };
+    const profiles = additionalUsers.length
+        ? await client.teacher_profiles.findMany({
+            where: { username: { in: additionalUsers.map((user) => user.username) } },
+            select: { username: true, display_name: true, student_hmid: true },
+        })
+        : [];
+    const profilesByUsername = new Map(profiles.map((profile) => [profile.username, profile]));
+    return (0, exports.ensureCalendarTeachingUsers)(client, calendar, undefined, additionalUsers.map((user) => ({
+        ...profilesByUsername.get(user.username),
+        username: user.username,
+        display_name: profilesByUsername.get(user.username)?.display_name ?? null,
+        role: user.role,
+    })));
+};
+exports.ensureCalendarScanTeachingUsers = ensureCalendarScanTeachingUsers;
 const isStillAssigned = async (client, calendar, profile) => {
     const rows = await client.$queryRaw(client_1.Prisma.sql `
     SELECT teacher, assistant_teacher

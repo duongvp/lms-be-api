@@ -7,6 +7,7 @@ exports.getDashboardOverview = exports.getLatestHmoLessonSyncIssues = void 0;
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const dateTime_1 = require("../../utils/dateTime");
+const calendar_teaching_user_sync_worker_1 = require("../livestream/calendar-teaching-user-sync.worker");
 const numberValue = (value) => Number(value ?? 0);
 const runQueriesWithConcurrency = async (tasks, concurrency = 3) => {
     const results = new Array(tasks.length);
@@ -254,8 +255,10 @@ const getDashboardOverview = async (filter = {}, allowedPrograms = null) => {
             throw error;
         hmoLessonSyncAvailable = false;
     }
+    const calendarTeachingUserSyncCron = await (0, calendar_teaching_user_sync_worker_1.getCalendarTeachingUserSyncStatus)();
     return {
         generatedAt: new Date().toISOString(),
+        calendarTeachingUserSyncCron,
         hmoLessonSyncCron: {
             enabled: String(process.env.HMO_LESSON_SYNC_ENABLED || '').toLowerCase() === 'true',
             hour: Math.min(23, Math.max(0, Number(process.env.HMO_LESSON_SYNC_HOUR || 6))),

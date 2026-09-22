@@ -828,7 +828,7 @@ const prepareOperationalRows = (items: any[], code: string) => {
       : String(occurrence).padStart(2, '0');
     return {
       ...row,
-      operational_subject: subject,
+      operational_subject: Number(row.lesson_status) === 1 ? 'Nghỉ' : subject,
       operational_lesson_code: `${operationalSubjectPrefix(subject, grade)}_L${occurrence}_${paddedLesson}`,
     };
   });
@@ -856,6 +856,19 @@ export const buildOperationalCalendarWorkbook = (rows: any[]) => {
   });
   if (!workbook.SheetNames.length) XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([]), 'Lịch học');
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+};
+
+export const googleCalendarTabTitles = (rows: any[]) => {
+  const groups = new Map<string, any>();
+  for (const row of rows) {
+    const code = String(row.code || 'Chương trình').trim();
+    if (!groups.has(code)) groups.set(code, row);
+  }
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b, 'vi')).map(([code, row]) => {
+    const subject = String(row.subject || code).trim();
+    const title = `${subject} - ${code}`;
+    return (title.length <= 100 ? title : code).replace(/[\\/?*\[\]:]/g, ' ').slice(0, 100);
+  });
 };
 
 export const buildCalendarUpdateFile = (rows: any[]) => {

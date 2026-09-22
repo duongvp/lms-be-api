@@ -5,14 +5,18 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.resendCalendarsToHocmai = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.getCalendarImportProgramContext = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.swapSessionTimes = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getHocmaiSectionsForProgramLessons = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.validateBulkFinalStateConflicts = exports.isSessionModifiable = exports.provisionCalendarsEvgBulk = exports.provisionCalendarEvgStream = void 0;
 const crypto_1 = __importDefault(require("crypto"));
+const calendar_time_notification_1 = require("./calendar-time-notification");
 const client_1 = require("@prisma/client");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
+const calendar_export_system_1 = require("./calendar-export-system");
+const calendar_export_fields_1 = require("./calendar-export-fields");
 const package_course_sheet_service_1 = require("../../integrations/package-course-sheet.service");
 const hocmai_course_outline_service_1 = require("../../integrations/hocmai-course-outline.service");
 const hocmai_sync_queue_service_1 = require("./hocmai-sync-queue.service");
 const teams_notifications_1 = require("../teams-notifications");
 const dateTime_1 = require("../../utils/dateTime");
 const calendar_user_sync_service_1 = require("./calendar-user-sync.service");
+const program_teacher_banner_service_1 = require("../program-teacher-banners/program-teacher-banner.service");
 var evg_stream_service_1 = require("./evg-stream.service");
 Object.defineProperty(exports, "provisionCalendarEvgStream", { enumerable: true, get: function () { return evg_stream_service_1.provisionCalendarEvgStream; } });
 Object.defineProperty(exports, "provisionCalendarsEvgBulk", { enumerable: true, get: function () { return evg_stream_service_1.provisionCalendarsEvgBulk; } });
@@ -227,6 +231,9 @@ const createCalendarRecord = async (client, data, previousTeachingCalendar = nul
     const skipTeacherUserSync = data.skip_teacher_user_sync === true;
     const prismaData = { ...data };
     delete prismaData.skip_teacher_user_sync;
+    // Banner được quản lý tập trung theo chương trình + giáo viên. Cột trên
+    // calendar chỉ là snapshot để giữ tương thích với API/export hiện có.
+    prismaData.evg_banner = await (0, program_teacher_banner_service_1.resolveProgramTeacherBanner)(client, prismaData.code, prismaData.teacher);
     // Hai cột này đã có trong Prisma schema, vì vậy ghi ngay trong INSERT.
     // Trước đây mỗi calendar phải UPDATE hai lần rồi SELECT lại, khiến bulk
     // create phát sinh thêm tới 3 round-trip DB cho từng buổi.
@@ -252,7 +259,19 @@ const updateCalendarRecord = async (client, id, data, preloadedBefore) => {
     delete prismaData.assistant_teacher;
     delete prismaData.session_id;
     delete prismaData.skip_teacher_user_sync;
+    const nextCode = prismaData.code ?? before.code;
+    const nextTeacher = prismaData.teacher ?? before.teacher;
+    const bannerIdentityChanged = nextCode !== before.code || nextTeacher !== before.teacher;
+    if (bannerIdentityChanged) {
+        prismaData.evg_banner = await (0, program_teacher_banner_service_1.resolveProgramTeacherBanner)(client, nextCode, nextTeacher);
+    }
     const updated = await client.calendar.update({ where: { id }, data: prismaData });
+    if (bannerIdentityChanged) {
+        await client.stream.updateMany({
+            where: { code: before.code, learn_number: before.learn_number },
+            data: { banner_url: prismaData.evg_banner, updated_at: new Date() },
+        });
+    }
     if (hasAssistants) {
         await client.$executeRaw `
       UPDATE calendar
@@ -290,6 +309,16 @@ const normalizeRoom = (data) => {
     delete data.room;
     return data;
 };
+const calendarSubjectName = (subject, grade, systemType) => {
+    if (systemType !== 'topclass')
+        return subject;
+    const name = typeof subject === 'string' ? subject.trim() : '';
+    const block = Number(grade);
+    if (!name || !Number.isInteger(block) || block < 1 || block > 12)
+        return subject;
+    // Một số dữ liệu cũ đã có khối trong tên môn; không thêm lần thứ hai.
+    return name.endsWith(` ${block}`) ? name : `${name} ${block}`;
+};
 const hydrateLessonData = async (tx, input, lessonCache) => {
     const data = { ...input };
     // session_id references the internal `lessons.id`. External HMO lesson_id
@@ -310,6 +339,7 @@ const hydrateLessonData = async (tx, input, lessonCache) => {
     // Các client cũ chưa gửi session_id vẫn tiếp tục dùng payload calendar hiện tại.
     if (sessionId === undefined || sessionId === null || sessionId === '') {
         delete data.session_id;
+        data.subject = calendarSubjectName(data.subject, input.grade, data.system_type || 'topclass');
         return data;
     }
     let parsedSessionId;
@@ -330,7 +360,7 @@ const hydrateLessonData = async (tx, input, lessonCache) => {
         ...data,
         session_id: parsedSessionId,
         learn_number: lesson.learn_number,
-        subject: lesson.subject_name,
+        subject: calendarSubjectName(lesson.subject_name, lesson.grade, lesson.system_type),
         lesson_name: customLessonName || lesson.lesson_name,
     };
 };
@@ -1333,7 +1363,7 @@ const createValidatedInternalCalendarImport = async (rows, changeActor) => {
             lessonIdentityKey(item.code, item.system_type, item.learn_number),
             Number(item.max_count ?? -1) + 1,
         ]));
-        const prepared = rows.map((row) => {
+        const prepared = await Promise.all(rows.map(async (row) => {
             const calendar = row.calendar;
             const startTime = new Date(calendar.start_time);
             const endTime = new Date(calendar.end_time);
@@ -1346,9 +1376,10 @@ const createValidatedInternalCalendarImport = async (rows, changeActor) => {
                 start_time: startTime,
                 end_time: endTime,
                 lesson_count: lessonCount,
+                evg_banner: await (0, program_teacher_banner_service_1.resolveProgramTeacherBanner)(tx, calendar.code, calendar.teacher),
                 key: generateKey(calendar.system_type, startTime, calendar.code, calendar.learn_number, lessonCount),
             };
-        });
+        }));
         const placeholders = prepared.map(() => ('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')).join(', ');
         const values = prepared.flatMap((calendar) => [
             calendar.session_id ?? null,
@@ -1899,6 +1930,7 @@ const updateSchedule = async (id, data, updateMode, changeActor) => {
     }
     const rawMappingUpdate = data?.package_lesson_mappings;
     const auditReason = data?.reason ?? data?.change_reason;
+    const sendTimeNotification = data?.send_notification;
     const hasMappingUpdate = Array.isArray(rawMappingUpdate);
     const resolvedMappingUpdate = hasMappingUpdate
         ? await normalizePackageLessonMappingsForUpdate(rawMappingUpdate)
@@ -1919,6 +1951,7 @@ const updateSchedule = async (id, data, updateMode, changeActor) => {
     delete data.new_session;
     delete data.reason;
     delete data.change_reason;
+    delete data.send_notification;
     delete data.code;
     delete data.learn_number;
     delete data.allow_past;
@@ -1926,6 +1959,12 @@ const updateSchedule = async (id, data, updateMode, changeActor) => {
         data.start_time = new Date(data.start_time);
     if (data.end_time)
         data.end_time = new Date(data.end_time);
+    if (data.start_time || data.end_time) {
+        ensureValidTimeRange(data.start_time ?? current.start_time, data.end_time ?? current.end_time);
+    }
+    const timeNotification = (0, calendar_time_notification_1.calendarTimeNotification)(current, data, sendTimeNotification, auditReason);
+    if (timeNotification !== undefined)
+        data.lesson_noti = timeNotification;
     if (data.start_time
         || data.end_time
         || data.teacher
@@ -2375,6 +2414,26 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null, programC
         where: conditions.length ? { AND: conditions } : {},
         orderBy: [{ start_time: 'asc' }, { id: 'asc' }],
     });
+    const exportProgramCodes = [...new Set(calendars.map((row) => row.code))];
+    const exportLessonIds = calendars.flatMap((row) => row.session_id == null ? [] : [BigInt(row.session_id)]);
+    const exportLessons = await prisma_1.default.lessons.findMany({
+        where: { status: { not: 0 }, OR: [{ subject_code: { in: exportProgramCodes } }, { id: { in: exportLessonIds } }] },
+        select: { id: true, subject_code: true, system_type: true, subject_name: true, learn_number: true },
+    });
+    const exportLessonById = new Map(exportLessons.map((row) => [String(row.id), row]));
+    const exportPrograms = new Map();
+    for (const lesson of exportLessons)
+        exportPrograms.set(lesson.subject_code, [...(exportPrograms.get(lesson.subject_code) || []), lesson]);
+    const exportCourseMappings = exportLessons.length ? await prisma_1.default.lesson_course_mapping.findMany({
+        where: { lesson_id: { in: exportLessons.map((lesson) => lesson.id) } },
+        select: { lesson_id: true, course_id: true, package_id: true },
+        orderBy: [{ course_id: 'asc' }, { package_id: 'asc' }],
+    }) : [];
+    const exportCoursesByLesson = new Map();
+    for (const mapping of exportCourseMappings) {
+        const id = String(mapping.lesson_id);
+        exportCoursesByLesson.set(id, [...(exportCoursesByLesson.get(id) || []), mapping]);
+    }
     await hydrateAssistantTeachers(prisma_1.default, calendars);
     const keys = calendars
         .map((calendar) => calendar.key)
@@ -2397,7 +2456,7 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null, programC
         : [];
     const displayNameByUsername = new Map(teachingProfiles.map((profile) => [
         profile.username,
-        profile.display_name || profile.username,
+        profile.display_name || '',
     ]));
     const mappingsByKey = new Map();
     mappings.forEach((mapping) => {
@@ -2407,8 +2466,10 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null, programC
         current.push(mapping);
         mappingsByKey.set(mapping.key, current);
     });
-    const formatVietnamDateTime = (value) => {
-        const local = new Date(value.getTime() + 7 * 60 * 60 * 1000);
+    // Calendar stores Vietnam wall-clock components in UTC. Do not add UTC+7
+    // again: that would shift evening sessions to the next day in the export.
+    const formatCalendarDateTime = (value) => {
+        const local = value;
         const date = [
             String(local.getUTCDate()).padStart(2, '0'),
             String(local.getUTCMonth() + 1).padStart(2, '0'),
@@ -2447,9 +2508,14 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null, programC
         .map((mapping) => String(mapping[field] || '').trim())
         .filter(Boolean))).join(',');
     return calendars.map((calendar) => {
-        const start = formatVietnamDateTime(calendar.start_time);
-        const end = formatVietnamDateTime(calendar.end_time);
+        const linkedProgram = calendar.session_id == null ? undefined : exportLessonById.get(String(calendar.session_id));
+        const programCandidates = exportPrograms.get(calendar.code) || [];
+        const exportSystem = (0, calendar_export_system_1.resolveCalendarExportSystem)(calendar, linkedProgram, programCandidates);
+        const start = formatCalendarDateTime(calendar.start_time);
+        const end = formatCalendarDateTime(calendar.end_time);
         const calendarMappings = mappingsByKey.get(calendar.key || '') ?? [];
+        const courseSourceLessons = linkedProgram ? [linkedProgram] : programCandidates.filter((lesson) => lesson.learn_number === calendar.learn_number);
+        const lessonMappings = courseSourceLessons.flatMap((lesson) => exportCoursesByLesson.get(String(lesson.id)) || []);
         const assistants = parseAssistantTeachers(calendar.assistant_teacher);
         const weekday = start.weekday === 0 ? 'Chủ Nhật' : `Thứ ${start.weekday + 1}`;
         return {
@@ -2461,8 +2527,9 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null, programC
             evg_banner: calendar.evg_banner || '',
             evg_stream: calendar.evg_stream || '',
             lesson_count: calendar.lesson_count ?? '',
-            system_type: calendar.system_type || 'topclass',
+            system_type: exportSystem,
             subject: calendar.subject || '',
+            lesson_status: calendar.lesson_status,
             code: calendar.code,
             lesson_name: calendar.lesson_name || '',
             teacher_name: displayNameByUsername.get(String(calendar.teacher || ''))
@@ -2475,13 +2542,11 @@ const getCalendarRowsForExport = async (rawIds, allowedPrograms = null, programC
             lesson_baitap: calendar.lesson_baitap || '',
             archive_document: calendar.lesson_link || '',
             content_homework: '',
-            assistant_name: assistants
-                .map((username) => displayNameByUsername.get(username) || username)
-                .join(', '),
+            assistant_name: (0, calendar_export_fields_1.assistantExportNames)(assistants, displayNameByUsername),
             sharepoint_link: calendar.lesson_link || '',
-            course_ids: uniqueMappingValues(calendarMappings, 'course_id'),
+            course_ids: uniqueMappingValues(calendarMappings, 'course_id') || (0, calendar_export_fields_1.uniqueExportIds)(lessonMappings.map((mapping) => mapping.course_id)),
             lesson_ids: uniqueMappingValues(calendarMappings, 'lesson_id'),
-            package_ids: uniqueMappingValues(calendarMappings, 'package_id'),
+            package_ids: uniqueMappingValues(calendarMappings, 'package_id') || (0, calendar_export_fields_1.uniqueExportIds)(lessonMappings.map((mapping) => mapping.package_id)),
             teacher_email: calendar.teacher || '',
             assistant_email: assistants.join(','),
         };
@@ -3006,7 +3071,8 @@ exports.updateBulk = updateBulk;
  * trợ giảng dùng "student_hmid - Giáo viên". Xử lý theo lô để không giữ
  * transaction quá lâu.
  */
-const backfillMissingCalendarTeachingUsers = async (ids) => {
+const backfillMissingCalendarTeachingUsers = async (ids, additionalUsers) => {
+    const scanUsers = (0, calendar_user_sync_service_1.normalizeScanTeachingUsers)(additionalUsers);
     const batchSize = 100;
     let scanned = 0;
     let created = 0;
@@ -3028,7 +3094,7 @@ const backfillMissingCalendarTeachingUsers = async (ids) => {
                 const batchErrors = [];
                 for (const calendar of calendars) {
                     try {
-                        const result = await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, calendar);
+                        const result = await (0, calendar_user_sync_service_1.ensureCalendarScanTeachingUsers)(tx, calendar, scanUsers);
                         batchCreated += result.created;
                         batchUpdated += result.updated;
                     }
@@ -3075,7 +3141,7 @@ const backfillMissingCalendarTeachingUsers = async (ids) => {
                 const batchErrors = [];
                 for (const calendar of calendars) {
                     try {
-                        const result = await (0, calendar_user_sync_service_1.ensureCalendarTeachingUsers)(tx, calendar);
+                        const result = await (0, calendar_user_sync_service_1.ensureCalendarScanTeachingUsers)(tx, calendar, scanUsers);
                         batchCreated += result.created;
                         batchUpdated += result.updated;
                     }
@@ -3108,7 +3174,7 @@ const backfillMissingCalendarTeachingUsers = async (ids) => {
         created,
         updated,
         failed: errors.length,
-        errors: errors.slice(0, 100),
+        errors,
     };
 };
 exports.backfillMissingCalendarTeachingUsers = backfillMissingCalendarTeachingUsers;

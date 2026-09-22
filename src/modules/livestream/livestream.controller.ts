@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import * as livestreamService from './livestream.service';
 import FieldPermissionService from '../roles/field-permission.service';
+import { calendarSheetExportTask } from './calendar-sheet-export.service';
 import {
   buildCalendarFile,
   buildOperationalCalendarWorkbook,
@@ -12,6 +13,7 @@ import {
   validateCalendarImportRows,
 } from './livestream.io';
 import { getPublicGoogleSheetCsv } from '../../integrations/google-sheet-csv';
+import { getSheetExportJob, startSheetExportJob } from '../../integrations/google-sheet-export-job';
 import { previewAutoSchedule as buildAutoSchedulePreview } from './auto-schedule.service';
 import {
   importCalendarFromSheet,
@@ -336,6 +338,24 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
     });
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+export const exportGoogleSheet = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { targets, task } = calendarSheetExportTask({ sheetUrl: req.body.sheetUrl, topuniSheetUrl: req.body.topuniSheetUrl, scope: getProgramScopeFilter(req.user, 'calendar.export'), roleIds: req.user?.roleIds || [] });
+    const job = startSheetExportJob(Number(req.user?.userId), targets, task);
+    res.status(202).json({ success: true, data: job });
+  } catch (err: any) {
+    res.status(err.statusCode || 400).json({ success: false, message: err.message });
+  }
+};
+
+export const exportGoogleSheetProgress = async (req: Request, res: Response): Promise<void> => {
+  try {
+    res.json({ success: true, data: getSheetExportJob(String(req.params.jobId), Number(req.user?.userId)) });
+  } catch (err: any) {
+    res.status(err.statusCode || 400).json({ success: false, message: err.message });
   }
 };
 

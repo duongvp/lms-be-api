@@ -1,0 +1,16 @@
+import { Request, Response } from 'express';
+import { ErrorResponse, SuccessResponse } from '../../utils/apiResponse';
+import { createBanner, deleteBanner, getBanner, getBannerOptions, importBanners, listBanners, updateBanner } from './program-teacher-banner.service';
+import { validateId, validatePayload, validateQuery } from './program-teacher-banner.validation';
+import { buildBannerTemplate, parseBannerFile } from './program-teacher-banner.io';
+
+const actor = (req: Request) => String((req.user as any)?.username || 'system');
+const handle = (res: Response, error: any) => ErrorResponse(res, error.message, error.statusCode || 400);
+export const list = async (req: Request, res: Response) => { try { return SuccessResponse(res, 'Lấy danh sách banner thành công', await listBanners(validateQuery(req.query))); } catch (e) { return handle(res, e); } };
+export const detail = async (req: Request, res: Response) => { try { return SuccessResponse(res, 'Lấy banner thành công', await getBanner(validateId(req.params.id))); } catch (e) { return handle(res, e); } };
+export const create = async (req: Request, res: Response) => { try { return res.status(201).json({ success: true, message: 'Đã thêm banner', data: await createBanner(validatePayload(req.body), actor(req)) }); } catch (e) { return handle(res, e); } };
+export const update = async (req: Request, res: Response) => { try { return SuccessResponse(res, 'Đã cập nhật banner', await updateBanner(validateId(req.params.id), validatePayload(req.body), actor(req))); } catch (e) { return handle(res, e); } };
+export const remove = async (req: Request, res: Response) => { try { return SuccessResponse(res, 'Đã xóa banner', await deleteBanner(validateId(req.params.id))); } catch (e) { return handle(res, e); } };
+export const options = async (req: Request, res: Response) => { try { const teacherId = req.query.teacher_profile_id ? validateId(req.query.teacher_profile_id) : undefined; return SuccessResponse(res, 'Lấy lựa chọn thành công', await getBannerOptions(String(req.query.program_code || '').trim() || undefined, teacherId)); } catch (e) { return handle(res, e); } };
+export const template = async (_req: Request, res: Response) => { res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition', 'attachment; filename="mau-import-banner.xlsx"'); return res.send(buildBannerTemplate()); };
+export const importFile = async (req: Request, res: Response) => { try { if (!req.file) return ErrorResponse(res, 'Vui lòng chọn file', 400); const result = await importBanners(parseBannerFile(req.file.buffer, req.file.originalname), req.body?.mode === 'overwrite' ? 'overwrite' : 'skip', actor(req)); if (!result.imported) return res.status(400).json({ success: false, message: 'File có dữ liệu không hợp lệ', errors: result.errors }); return SuccessResponse(res, 'Import banner thành công', result); } catch (e) { return handle(res, e); } };

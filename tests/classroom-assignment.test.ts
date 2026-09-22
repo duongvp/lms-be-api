@@ -420,6 +420,28 @@ test('TopUni giữ học sinh cũ ở room buổi trước và chỉ phân bổ 
   assert.equal(result.assignments.filter((student) => !student.wasInPreviousSession).length, 4);
 });
 
+test('TopUni cập nhật class_id ngày mới cho học sinh của buổi dạy lại dù vẫn giữ nguyên room', () => {
+  const students = buildStudents(4, () => 0, (index) => index + 1)
+    .map((student) => ({
+      ...student,
+      currentClassId: `OLD-DATE-${student.currentRoomId}`,
+      preferredRoomId: student.currentRoomId,
+      wasInPreviousSession: true,
+    }));
+  const targets = [1, 2, 3, 4].map((roomId) => ({
+    roomId,
+    classId: `NEW-DATE-${roomId}`,
+  }));
+
+  const result = assignTopUniStudents(students, targets, 1, 4);
+
+  assert.equal(result.movedCount, 4);
+  assert.ok(result.assignments.every((student) => (
+    student.targetRoomId === student.currentRoomId
+    && student.targetClassId === `NEW-DATE-${student.targetRoomId}`
+  )));
+});
+
 test('TopUni chỉ chuyển học sinh cũ khi room trước vượt quota nhóm tương tác', () => {
   const students = buildStudents(
     40,

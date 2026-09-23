@@ -2856,20 +2856,11 @@ export const getCalendar = async (
   }
   if (subject) where.subject = { contains: subject };
   if (classroom) where.channel_name = { contains: classroom };
-  if (learnNumbers.length) {
-    where.AND = [
-      ...(Array.isArray(where.AND) ? where.AND : []),
-      { learn_number: { in: learnNumbers } },
-    ];
-  }
   if (fromLearnNumber !== undefined || toLearnNumber !== undefined) {
-    where.AND = [
-      ...(Array.isArray(where.AND) ? where.AND : []),
-      { learn_number: {
-        ...(fromLearnNumber !== undefined ? { gte: fromLearnNumber } : {}),
-        ...(toLearnNumber !== undefined ? { lte: toLearnNumber } : {}),
-      } },
-    ];
+    where.learn_number = {
+      ...(fromLearnNumber !== undefined ? { gte: fromLearnNumber } : {}),
+      ...(toLearnNumber !== undefined ? { lte: toLearnNumber } : {}),
+    };
   }
   // Chọn cả Topclass và Topuni tương đương không lọc hệ thống.
   if (systemTypes.length === 1) where.system_type = systemTypes[0] as any;

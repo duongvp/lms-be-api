@@ -206,7 +206,13 @@ export const validateQuizPayload = (body: unknown, isUpdate = false): QuizCreate
     payload.score_type = parseEnumNumber(source.score_type, 'score_type', QUIZ_SCORE_TYPES);
   }
   if (!isUpdate || source.ans_duration !== undefined) payload.ans_duration = parseDuration(source.ans_duration);
-  if (!isUpdate || source.quiz_status !== undefined) payload.quiz_status = parseStatus(source.quiz_status, !isUpdate);
+  if (!isUpdate) {
+    payload.quiz_status = source.quiz_status === undefined
+      ? 'done'
+      : parseStatus(source.quiz_status, true);
+  } else if (source.quiz_status !== undefined) {
+    payload.quiz_status = parseStatus(source.quiz_status);
+  }
   if (!isUpdate || source.quiz_index !== undefined) payload.quiz_index = parseIndex(source.quiz_index);
 
   if (!isUpdate) {

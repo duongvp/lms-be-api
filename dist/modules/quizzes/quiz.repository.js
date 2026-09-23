@@ -33,11 +33,32 @@ const findQuizzes = async (query, allowedPrograms = null) => {
     const where = buildQuizWhere(query, allowedPrograms);
     const sortBy = query.sort_by ?? 'updated_at';
     const sortOrder = query.sort_order ?? 'desc';
+    const orderBy = sortBy === 'learn_number'
+        ? [
+            { learn_number: sortOrder },
+            // Hai cột có chiều sắp xếp độc lập: đổi chiều Bài học không được
+            // làm đảo thứ tự câu hỏi bên trong từng bài.
+            { quiz_index: 'asc' },
+            { id: 'asc' },
+        ]
+        : sortBy === 'quiz_index'
+            ? [
+                // Thứ tự câu hỏi thuộc từng bài học, vì vậy vẫn giữ các bài liền nhau.
+                { learn_number: 'asc' },
+                { quiz_index: sortOrder },
+                { id: 'asc' },
+            ]
+            : [
+                { [sortBy]: sortOrder },
+                { id: 'asc' },
+            ];
     const [total, data] = await prisma_1.default.$transaction([
         prisma_1.default.quiz_content.count({ where: where }),
         prisma_1.default.quiz_content.findMany({
             where: where,
-            orderBy: [{ [sortBy]: sortOrder }, { id: 'asc' }],
+            // Khi xếp theo bài học, luôn xếp tiếp theo thứ tự câu hỏi để các câu
+            // trong cùng một bài không bị đảo lộn giữa các trang.
+            orderBy: orderBy,
             skip: (page - 1) * limit,
             take: limit,
         }),

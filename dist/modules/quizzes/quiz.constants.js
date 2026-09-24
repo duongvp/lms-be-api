@@ -7,7 +7,7 @@ exports.QUIZ_STATUSES = ['done', 'disable'];
 exports.QUIZ_TYPE_OPTIONS = [
     { value: 1, label: 'Trắc nghiệm' },
     { value: 2, label: 'Điền từ' },
-    { value: 3, label: 'Trả lời ngắn' },
+    { value: 3, label: 'Tự luận' },
 ];
 exports.QUIZ_SCORE_TYPE_OPTIONS = [
     { value: 1, label: 'Tính điểm toàn câu' },

@@ -105,7 +105,7 @@ const HEADER_ALIASES = {
     'goi y o trong': 'fill_placeholder',
     'đáp án điền từ': 'fill_answers',
     'dap an dien tu': 'fill_answers',
-    'đáp án trả lời ngắn': 'short_answer',
+    'đáp án tự luận': 'short_answer',
     'dap an tra loi ngan': 'short_answer',
 };
 const normalizeHeader = (value) => String(value ?? '').trim().toLocaleLowerCase('vi-VN');
@@ -115,7 +115,7 @@ const normalizeFriendlyQuizType = (value) => {
         return 1;
     if (['2', 'điền từ', 'dien tu'].includes(text))
         return 2;
-    if (['3', 'trả lời ngắn', 'tra loi ngan'].includes(text))
+    if (['3', 'tự luận', 'tu luan', 'trả lời ngắn', 'tra loi ngan'].includes(text))
         return 3;
     return value;
 };
@@ -191,7 +191,7 @@ const serializeAnswer = (value) => {
 const quizTypeLabel = (value) => ({
     1: 'Trắc nghiệm',
     2: 'Điền từ',
-    3: 'Trả lời ngắn',
+    3: 'Tự luận',
 }[Number(value)] ?? value);
 const scoreTypeLabel = (value) => ({
     1: 'Toàn câu',
@@ -250,7 +250,7 @@ const TEMPLATE_ANSWER_HEADERS = Array.from({ length: 8 }, (_, index) => `Lựa c
 const TEMPLATE_HEADERS = [
     'Mã quiz', 'Bài học', 'Thứ tự', 'Câu hỏi', 'Loại câu hỏi',
     ...TEMPLATE_ANSWER_HEADERS, 'Đáp án đúng (VD: B hoặc A;C;F)',
-    'Gợi ý ô trống', 'Đáp án điền từ', 'Đáp án trả lời ngắn',
+    'Gợi ý ô trống', 'Đáp án điền từ', 'Đáp án tự luận',
     'Cách tính điểm', 'Thời gian (giây)', 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)',
     'Hướng dẫn theo loại (không nhập)',
 ];
@@ -261,7 +261,7 @@ const templateRows = [
         'Lựa chọn A': '3', 'Lựa chọn B': '4', 'Lựa chọn C': '5', 'Lựa chọn D': '',
         'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
         'Đáp án đúng (VD: B hoặc A;C;F)': 'B', 'Gợi ý ô trống': '', 'Đáp án điền từ': '',
-        'Đáp án trả lời ngắn': '', 'Cách tính điểm': 'Toàn câu',
+        'Đáp án tự luận': '', 'Cách tính điểm': 'Toàn câu',
         'Thời gian (giây)': 60, 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)': 1,
         'Hướng dẫn theo loại (không nhập)': 'Nhập từ A đến đáp án cuối. Một đáp án đúng: B. Nhiều đáp án đúng: A;C;F.',
     },
@@ -271,19 +271,19 @@ const templateRows = [
         'Lựa chọn A': '', 'Lựa chọn B': '', 'Lựa chọn C': '', 'Lựa chọn D': '',
         'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
         'Đáp án đúng (VD: B hoặc A;C;F)': '', 'Gợi ý ô trống': 'Tên thủ đô', 'Đáp án điền từ': 'Hà Nội; Ha Noi',
-        'Đáp án trả lời ngắn': '', 'Cách tính điểm': 'Toàn câu',
+        'Đáp án tự luận': '', 'Cách tính điểm': 'Toàn câu',
         'Thời gian (giây)': 60, 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)': 1,
         'Hướng dẫn theo loại (không nhập)': 'Nhập gợi ý và các cách viết được chấp nhận; phân tách đáp án bằng dấu ;',
     },
     {
         'Mã quiz': '', 'Bài học': 10, 'Thứ tự': 3,
-        'Câu hỏi': 'Em hãy nêu công thức tính diện tích hình chữ nhật.', 'Loại câu hỏi': 'Trả lời ngắn',
+        'Câu hỏi': 'Em hãy nêu công thức tính diện tích hình chữ nhật.', 'Loại câu hỏi': 'Tự luận',
         'Lựa chọn A': '', 'Lựa chọn B': '', 'Lựa chọn C': '', 'Lựa chọn D': '',
         'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
         'Đáp án đúng (VD: B hoặc A;C;F)': '', 'Gợi ý ô trống': '', 'Đáp án điền từ': '',
-        'Đáp án trả lời ngắn': 'Chiều dài nhân chiều rộng', 'Cách tính điểm': 'Toàn câu',
+        'Đáp án tự luận': 'Chiều dài nhân chiều rộng', 'Cách tính điểm': 'Toàn câu',
         'Thời gian (giây)': 120, 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)': 1,
-        'Hướng dẫn theo loại (không nhập)': 'Chỉ nhập nội dung vào cột Đáp án trả lời ngắn.',
+        'Hướng dẫn theo loại (không nhập)': 'Chỉ nhập nội dung vào cột Đáp án tự luận.',
     },
 ];
 const buildFriendlyTemplateCsv = () => {
@@ -296,7 +296,7 @@ const buildFriendlyTemplateCsv = () => {
 const buildFriendlyTemplateWorkbook = () => {
     const dataSheet = XLSX.utils.json_to_sheet(templateRows, { header: TEMPLATE_HEADERS });
     dataSheet['!cols'] = TEMPLATE_HEADERS.map((header) => ({
-        wch: ['Câu hỏi', 'Đáp án điền từ', 'Đáp án trả lời ngắn'].includes(header) ? 42 : Math.max(14, header.length + 2),
+        wch: ['Câu hỏi', 'Đáp án điền từ', 'Đáp án tự luận'].includes(header) ? 42 : Math.max(14, header.length + 2),
     }));
     const lastTemplateColumn = XLSX.utils.encode_col(TEMPLATE_HEADERS.length - 1);
     dataSheet['!autofilter'] = { ref: `A1:${lastTemplateColumn}${templateRows.length + 1}` };
@@ -305,11 +305,11 @@ const buildFriendlyTemplateWorkbook = () => {
         ['Cột / nội dung', 'Cách nhập', 'Ví dụ'],
         ['Mỗi dòng', 'Một dòng tương ứng một câu hỏi. Sửa hoặc xóa 3 dòng mẫu trước khi nhập dữ liệu thật.', ''],
         ['Mã quiz', 'Tạo mới: để trống. Cập nhật: giữ đúng mã lấy từ file xuất.', 'Để trống'],
-        ['Loại câu hỏi', 'Chỉ nhập một trong ba giá trị.', 'Trắc nghiệm / Điền từ / Trả lời ngắn'],
+        ['Loại câu hỏi', 'Chỉ nhập một trong ba giá trị.', 'Trắc nghiệm / Điền từ / Tự luận'],
         ['Trắc nghiệm', 'Nhập liên tục từ Lựa chọn A. Có sẵn A-H; có thể thêm cột Lựa chọn I... đến Z.', 'A, B, C, D, E...'],
         ['Đáp án đúng', 'Một đáp án nhập một chữ cái. Nhiều đáp án phân tách bằng dấu chấm phẩy (;).', 'B hoặc A;C;F'],
         ['Điền từ', 'Nhập Gợi ý ô trống và Đáp án điền từ. Nhiều cách viết chấp nhận được phân tách bằng dấu ;', 'Hà Nội; Ha Noi'],
-        ['Trả lời ngắn', 'Nhập nội dung vào cột Đáp án trả lời ngắn.', 'Chiều dài nhân chiều rộng'],
+        ['Tự luận', 'Nhập nội dung vào cột Đáp án tự luận.', 'Chiều dài nhân chiều rộng'],
         ['Cách tính điểm', 'Chỉ nhập Toàn câu hoặc Theo ý.', 'Toàn câu'],
         ['Thời gian', 'Nhập số giây từ 1 đến 3600.', '60'],
         ['Status', 'Nhập 1 nếu hoạt động, nhập 0 nếu ngừng hoạt động.', '1'],

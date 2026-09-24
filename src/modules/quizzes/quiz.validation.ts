@@ -148,7 +148,7 @@ export const validateQuizAnswers = (quizType: QuizType, value: unknown): QuizAns
   }
 
   if (answers.length !== 1 || !isPlainObject(answers[0])) {
-    throw new ApiError('Câu trả lời ngắn phải có đúng một đáp án mẫu', 400);
+    throw new ApiError('Câu tự luận phải có đúng một đáp án mẫu', 400);
   }
   return [{ A: true, text: requiredString(answers[0].text, 'ans[0].text', 2000) }];
 };

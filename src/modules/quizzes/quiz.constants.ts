@@ -5,7 +5,7 @@ export const QUIZ_STATUSES = ['done', 'disable'] as const;
 export const QUIZ_TYPE_OPTIONS = [
   { value: 1, label: 'Trắc nghiệm' },
   { value: 2, label: 'Điền từ' },
-  { value: 3, label: 'Trả lời ngắn' },
+  { value: 3, label: 'Tự luận' },
 ];
 
 export const QUIZ_SCORE_TYPE_OPTIONS = [

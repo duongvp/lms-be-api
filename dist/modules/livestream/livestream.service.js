@@ -2174,6 +2174,11 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
         .map((weekday) => weekday.trim())
         .filter(Boolean);
     const weekdays = Array.from(new Set(weekdayTokens.map(Number)));
+    const learnNumberTokens = String(query.learn_numbers ?? '')
+        .split(',')
+        .map((learnNumber) => learnNumber.trim())
+        .filter(Boolean);
+    const learnNumbers = Array.from(new Set(learnNumberTokens.map(Number)));
     const fromLearnNumber = normalizeNumber(query.from_learn_number, 'from_learn_number');
     const toLearnNumber = normalizeNumber(query.to_learn_number, 'to_learn_number');
     const startTime = normalizeDate(query.start_time, 'start_time');
@@ -2208,6 +2213,9 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
     }
     if (weekdays.some((weekday) => !Number.isInteger(weekday) || weekday < 1 || weekday > 7)) {
         throw new Error('weekdays chỉ nhận giá trị từ 1 (Thứ 2) đến 7 (Chủ nhật)');
+    }
+    if (learnNumbers.some((learnNumber) => !Number.isInteger(learnNumber) || learnNumber < 1)) {
+        throw new Error('learn_numbers chỉ nhận danh sách buổi học là số nguyên dương');
     }
     if ((fromLearnNumber !== undefined && fromLearnNumber < 1)
         || (toLearnNumber !== undefined && toLearnNumber < 1)) {
@@ -2256,11 +2264,20 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
         where.subject = { contains: subject };
     if (classroom)
         where.channel_name = { contains: classroom };
+    if (learnNumbers.length) {
+        where.AND = [
+            ...(Array.isArray(where.AND) ? where.AND : []),
+            { learn_number: { in: learnNumbers } },
+        ];
+    }
     if (fromLearnNumber !== undefined || toLearnNumber !== undefined) {
-        where.learn_number = {
-            ...(fromLearnNumber !== undefined ? { gte: fromLearnNumber } : {}),
-            ...(toLearnNumber !== undefined ? { lte: toLearnNumber } : {}),
-        };
+        where.AND = [
+            ...(Array.isArray(where.AND) ? where.AND : []),
+            { learn_number: {
+                    ...(fromLearnNumber !== undefined ? { gte: fromLearnNumber } : {}),
+                    ...(toLearnNumber !== undefined ? { lte: toLearnNumber } : {}),
+                } },
+        ];
     }
     // Chọn cả Topclass và Topuni tương đương không lọc hệ thống.
     if (systemTypes.length === 1)

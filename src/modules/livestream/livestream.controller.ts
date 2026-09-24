@@ -308,6 +308,46 @@ export const deleteSession = async (req: Request, res: Response, next: NextFunct
   }
 };
 
+export const syncCalendarAttendance = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.syncCalendarAttendance(req.body?.ids, req.body?.preview === true);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+export const getCalendarAttendanceResetStudents = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.getCalendarAttendanceResetStudents(req.params.id);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const resetCalendarAttendance = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.resetCalendarAttendance(req.params.id, req.body?.studentIds);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCalendarTeacherFilterOptions = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.getCalendarTeacherFilterOptions(
+      String(req.query.code || ''),
+      getProgramScopeFilter(req.user, 'calendar.view')
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getCalendar = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const result = await livestreamService.getCalendar(

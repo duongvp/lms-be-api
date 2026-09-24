@@ -132,6 +132,12 @@ const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
 router.use(authenticate);
 
 router.get(
+  '/filter-options/teachers',
+  authorize(['calendar.view']),
+  authorizeCalendarList,
+  livestreamController.getCalendarTeacherFilterOptions
+);
+router.get(
   '/',
   authorize(['calendar.view']),
   authorizeCalendarList,
@@ -257,6 +263,24 @@ router.post(
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),
   livestreamController.syncStudents
+);
+router.get(
+  '/:id/attendance-reset-students',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', calendarCodeById),
+  livestreamController.getCalendarAttendanceResetStudents
+);
+router.post(
+  '/:id/reset-attendance',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', calendarCodeById),
+  livestreamController.resetCalendarAttendance
+);
+router.post(
+  '/students/sync-attendance',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),
+  livestreamController.syncCalendarAttendance
 );
 router.get(
   '/students/sync/:jobId',

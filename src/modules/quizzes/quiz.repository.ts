@@ -267,6 +267,27 @@ export const importQuizzes = async (
   let skipped = 0;
 
   await prisma.$transaction(async (tx) => {
+    // A blank/new quiz id must never reuse a position from the spreadsheet.
+    // Keep a per lesson counter so all newly created questions append in their
+    // file order, including when one import contains several lessons.
+    const nextIndexByLesson = new Map<string, number>();
+    const nextQuizIndex = async (row: QuizImportRow) => {
+      const groupKey = `${row.code}\u0000${row.learn_number}`;
+      const cached = nextIndexByLesson.get(groupKey);
+      if (cached !== undefined) {
+        nextIndexByLesson.set(groupKey, cached + 1);
+        return cached;
+      }
+      const latest = await tx.quiz_content.findFirst({
+        where: { code: row.code, learn_number: row.learn_number },
+        orderBy: [{ quiz_index: 'desc' }, { id: 'desc' }],
+        select: { quiz_index: true },
+      });
+      const nextIndex = Number(latest?.quiz_index ?? 0) + 1;
+      nextIndexByLesson.set(groupKey, nextIndex + 1);
+      return nextIndex;
+    };
+
     for (const row of rows) {
       const existing = await tx.quiz_content.findUnique({ where: { quiz_id: row.quiz_id as string } });
       const data = {
@@ -291,7 +312,12 @@ export const importQuizzes = async (
         continue;
       }
       await tx.quiz_content.create({
-        data: { ...data, quiz_id: row.quiz_id as string, creator: (row as any).creator },
+        data: {
+          ...data,
+          quiz_index: await nextQuizIndex(row),
+          quiz_id: row.quiz_id as string,
+          creator: (row as any).creator,
+        },
       });
       created += 1;
     }

@@ -101,7 +101,10 @@ test('friendly template can be imported without JSON knowledge', () => {
     { C: false, text: '5' },
   ]);
   assert.equal(rows[1].quiz_type, 2);
-  assert.deepEqual(rows[1].ans, [{ placeholder: 'Tên thủ đô', text: 'Hà Nội; Ha Noi', A: true }]);
+  assert.deepEqual(rows[1].ans, [
+    { placeholder: 'Tên thủ đô', text: 'Hà Nội; Ha Noi', A: true },
+    { placeholder: 'Tên châu lục', text: 'Á; Châu Á; Asia', A: true },
+  ]);
   assert.equal(rows[2].quiz_type, 3);
   assert.equal(rows[2].quiz_status, 'done');
   // Controller gắn code của Chương trình đã chọn trước khi validate file import.
@@ -111,6 +114,40 @@ test('friendly template can be imported without JSON knowledge', () => {
   })));
   assert.equal(validated.errors.length, 0);
   assert.equal(validated.validRows.length, 3);
+});
+
+test('Excel template provides dropdown validation for enum columns', () => {
+  const XLSX = require('xlsx');
+  const cfb = XLSX.CFB.read(buildQuizTemplateBuffer('xlsx'), { type: 'buffer' });
+  const sheet = XLSX.CFB.find(cfb, 'Root Entry/xl/worksheets/sheet1.xml');
+  const xml = Buffer.from(sheet.content).toString('utf8');
+  assert.match(xml, /<dataValidations count="3">/);
+  assert.match(xml, /<formula1>"Toàn câu,Theo ý"<\/formula1>/);
+});
+
+test('friendly import supports up to six numbered fill-in blanks', () => {
+  const csv = [
+    'Bài học,Thứ tự,Câu hỏi,Loại câu hỏi,Gợi ý ô trống 1,Đáp án điền từ 1,Gợi ý ô trống 2,Đáp án điền từ 2,Gợi ý ô trống 6,Đáp án điền từ 6,Cách tính điểm,Thời gian (giây),Trạng thái',
+    '10,4,Hoàn thành câu,Điền từ,Ô một,A; a,Ô hai,B,Ô sáu,F,Theo ý,60,1',
+  ].join('\n');
+  const [row] = parseQuizImportFile(Buffer.from(`\uFEFF${csv}`, 'utf8'), 'quiz.csv');
+  assert.deepEqual(row.ans, [
+    { placeholder: 'Ô một', text: 'A; a', A: true },
+    { placeholder: 'Ô hai', text: 'B', A: true },
+    { placeholder: 'Ô sáu', text: 'F', A: true },
+  ]);
+  assert.equal(row.score_type, 2);
+  assert.equal(validateQuizImportRows([{ ...row, code: 'toan-7-2027' }]).errors.length, 0);
+});
+
+test('friendly import identifies incomplete numbered fill-in blank pairs', () => {
+  const csv = [
+    'Bài học,Thứ tự,Câu hỏi,Loại câu hỏi,Gợi ý ô trống 1,Đáp án điền từ 1,Cách tính điểm,Thời gian (giây),Trạng thái',
+    '10,4,Hoàn thành câu,Điền từ,Ô một,,Toàn câu,60,1',
+  ].join('\n');
+  const [row] = parseQuizImportFile(Buffer.from(`\uFEFF${csv}`, 'utf8'), 'quiz.csv');
+  const result = validateQuizImportRows([{ ...row, code: 'toan-7-2027' }]);
+  assert.match(result.errors[0].message, /Ô trống 1 thiếu đáp án điền từ/);
 });
 
 test('friendly import supports multiple-choice columns through Z', () => {

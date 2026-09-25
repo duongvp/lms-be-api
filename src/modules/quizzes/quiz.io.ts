@@ -3,6 +3,9 @@ import { QuizExportFormat } from './quiz.types';
 
 type Column = { key: string; header: string };
 
+// The import sheet is capped at six blanks to keep it practical to edit.
+const FILL_BLANK_IMPORT_MAX_OPTIONS = 6;
+
 export const QUIZ_EXPORT_COLUMNS: Column[] = [
   { key: 'quiz_id', header: 'Mã quiz' },
   { key: 'learn_number', header: 'Bài học' },
@@ -123,11 +126,23 @@ const buildFriendlyAnswers = (row: Record<string, unknown>, quizType: unknown) =
       .map((item) => ({ [item.letter]: correct.has(item.letter), text: item.text }));
   }
   if (quizType === 2) {
-    return [{
-      placeholder: String(row.fill_placeholder ?? '').trim(),
-      text: String(row.fill_answers ?? '').trim(),
-      A: true,
-    }];
+    return Array.from({ length: FILL_BLANK_IMPORT_MAX_OPTIONS }, (_, index) => {
+      const option = index + 1;
+      // Option 1 falls back to old, unnumbered headers for backward compatibility.
+      const placeholder = String(row[`fill_placeholder_${option}`]
+        ?? (option === 1 ? row.fill_placeholder : '')
+        ?? '').trim();
+      const text = String(row[`fill_answers_${option}`]
+        ?? (option === 1 ? row.fill_answers : '')
+        ?? '').trim();
+      if (!placeholder && !text) return null;
+      if (!placeholder || !text) {
+        const missing = !placeholder ? 'gợi ý ô trống' : 'đáp án điền từ';
+        const errors = row.fill_blank_errors as string[] | undefined;
+        row.fill_blank_errors = [...(errors ?? []), `Ô trống ${option} thiếu ${missing}`];
+      }
+      return { placeholder, text, A: true };
+    }).filter((answer): answer is { placeholder: string; text: string; A: true } => !!answer);
   }
   if (quizType === 3) {
     return [{ A: true, text: String(row.short_answer ?? '').trim() }];
@@ -140,8 +155,12 @@ const normalizeRows = (rows: Record<string, unknown>[]) => rows.map((row) => {
   Object.entries(row).forEach(([header, value]) => {
     const normalizedHeader = normalizeHeader(header);
     const dynamicAnswerColumn = normalizedHeader.match(/^(?:lựa chọn|lua chon) ([a-z])$/);
+    const fillPlaceholderColumn = normalizedHeader.match(/^(?:gợi ý ô trống|goi y o trong) ([1-6])$/);
+    const fillAnswerColumn = normalizedHeader.match(/^(?:đáp án điền từ|dap an dien tu) ([1-6])$/);
     const key = HEADER_ALIASES[normalizedHeader]
-      ?? (dynamicAnswerColumn ? `answer_${dynamicAnswerColumn[1]}` : undefined);
+      ?? (dynamicAnswerColumn ? `answer_${dynamicAnswerColumn[1]}` : undefined)
+      ?? (fillPlaceholderColumn ? `fill_placeholder_${fillPlaceholderColumn[1]}` : undefined)
+      ?? (fillAnswerColumn ? `fill_answers_${fillAnswerColumn[1]}` : undefined);
     if (key) normalized[key] = value;
   });
   normalized.quiz_type = normalizeFriendlyQuizType(normalized.quiz_type);
@@ -231,10 +250,15 @@ const TEMPLATE_ANSWER_HEADERS = Array.from(
   (_, index) => `Lựa chọn ${String.fromCharCode(65 + index)}`
 );
 
+const TEMPLATE_FILL_HEADERS = Array.from(
+  { length: FILL_BLANK_IMPORT_MAX_OPTIONS },
+  (_, index) => [`Gợi ý ô trống ${index + 1}`, `Đáp án điền từ ${index + 1}`]
+).flat();
+
 const TEMPLATE_HEADERS = [
   'Mã quiz', 'Bài học', 'Thứ tự', 'Câu hỏi', 'Loại câu hỏi',
   ...TEMPLATE_ANSWER_HEADERS, 'Đáp án đúng (VD: B hoặc A;C;F)',
-  'Gợi ý ô trống', 'Đáp án điền từ', 'Đáp án tự luận',
+  ...TEMPLATE_FILL_HEADERS, 'Đáp án tự luận',
   'Cách tính điểm', 'Thời gian (giây)', 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)',
   'Hướng dẫn theo loại (không nhập)',
 ];
@@ -245,17 +269,24 @@ const templateRows = [
     'Câu hỏi': 'Kết quả của 2 + 2 là?', 'Loại câu hỏi': 'Trắc nghiệm',
     'Lựa chọn A': '3', 'Lựa chọn B': '4', 'Lựa chọn C': '5', 'Lựa chọn D': '',
     'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
-    'Đáp án đúng (VD: B hoặc A;C;F)': 'B', 'Gợi ý ô trống': '', 'Đáp án điền từ': '',
+    'Đáp án đúng (VD: B hoặc A;C;F)': 'B',
+    'Gợi ý ô trống 1': '', 'Đáp án điền từ 1': '', 'Gợi ý ô trống 2': '', 'Đáp án điền từ 2': '',
+    'Gợi ý ô trống 3': '', 'Đáp án điền từ 3': '', 'Gợi ý ô trống 4': '', 'Đáp án điền từ 4': '',
+    'Gợi ý ô trống 5': '', 'Đáp án điền từ 5': '', 'Gợi ý ô trống 6': '', 'Đáp án điền từ 6': '',
     'Đáp án tự luận': '', 'Cách tính điểm': 'Toàn câu',
     'Thời gian (giây)': 60, 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)': 1,
     'Hướng dẫn theo loại (không nhập)': 'Nhập từ A đến đáp án cuối. Một đáp án đúng: B. Nhiều đáp án đúng: A;C;F.',
   },
   {
     'Mã quiz': '', 'Bài học': 10, 'Thứ tự': 2,
-    'Câu hỏi': 'Thủ đô Việt Nam là _____.', 'Loại câu hỏi': 'Điền từ',
+    'Câu hỏi': 'Thủ đô của Việt Nam là _____; quốc gia này thuộc châu _____.', 'Loại câu hỏi': 'Điền từ',
     'Lựa chọn A': '', 'Lựa chọn B': '', 'Lựa chọn C': '', 'Lựa chọn D': '',
     'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
-    'Đáp án đúng (VD: B hoặc A;C;F)': '', 'Gợi ý ô trống': 'Tên thủ đô', 'Đáp án điền từ': 'Hà Nội; Ha Noi',
+    'Đáp án đúng (VD: B hoặc A;C;F)': '',
+    'Gợi ý ô trống 1': 'Tên thủ đô', 'Đáp án điền từ 1': 'Hà Nội; Ha Noi',
+    'Gợi ý ô trống 2': 'Tên châu lục', 'Đáp án điền từ 2': 'Á; Châu Á; Asia',
+    'Gợi ý ô trống 3': '', 'Đáp án điền từ 3': '', 'Gợi ý ô trống 4': '', 'Đáp án điền từ 4': '',
+    'Gợi ý ô trống 5': '', 'Đáp án điền từ 5': '', 'Gợi ý ô trống 6': '', 'Đáp án điền từ 6': '',
     'Đáp án tự luận': '', 'Cách tính điểm': 'Toàn câu',
     'Thời gian (giây)': 60, 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)': 1,
     'Hướng dẫn theo loại (không nhập)': 'Nhập gợi ý và các cách viết được chấp nhận; phân tách đáp án bằng dấu ;',
@@ -265,7 +296,10 @@ const templateRows = [
     'Câu hỏi': 'Em hãy nêu công thức tính diện tích hình chữ nhật.', 'Loại câu hỏi': 'Tự luận',
     'Lựa chọn A': '', 'Lựa chọn B': '', 'Lựa chọn C': '', 'Lựa chọn D': '',
     'Lựa chọn E': '', 'Lựa chọn F': '', 'Lựa chọn G': '', 'Lựa chọn H': '',
-    'Đáp án đúng (VD: B hoặc A;C;F)': '', 'Gợi ý ô trống': '', 'Đáp án điền từ': '',
+    'Đáp án đúng (VD: B hoặc A;C;F)': '',
+    'Gợi ý ô trống 1': '', 'Đáp án điền từ 1': '', 'Gợi ý ô trống 2': '', 'Đáp án điền từ 2': '',
+    'Gợi ý ô trống 3': '', 'Đáp án điền từ 3': '', 'Gợi ý ô trống 4': '', 'Đáp án điền từ 4': '',
+    'Gợi ý ô trống 5': '', 'Đáp án điền từ 5': '', 'Gợi ý ô trống 6': '', 'Đáp án điền từ 6': '',
     'Đáp án tự luận': 'Chiều dài nhân chiều rộng', 'Cách tính điểm': 'Toàn câu',
     'Thời gian (giây)': 120, 'Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)': 1,
     'Hướng dẫn theo loại (không nhập)': 'Chỉ nhập nội dung vào cột Đáp án tự luận.',
@@ -283,7 +317,7 @@ const buildFriendlyTemplateCsv = () => {
 const buildFriendlyTemplateWorkbook = () => {
   const dataSheet = XLSX.utils.json_to_sheet(templateRows, { header: TEMPLATE_HEADERS });
   dataSheet['!cols'] = TEMPLATE_HEADERS.map((header) => ({
-    wch: ['Câu hỏi', 'Đáp án điền từ', 'Đáp án tự luận'].includes(header) ? 42 : Math.max(14, header.length + 2),
+    wch: ['Câu hỏi', 'Đáp án tự luận', ...TEMPLATE_FILL_HEADERS.filter((header) => header.startsWith('Đáp án điền từ'))].includes(header) ? 42 : Math.max(14, header.length + 2),
   }));
   const lastTemplateColumn = XLSX.utils.encode_col(TEMPLATE_HEADERS.length - 1);
   dataSheet['!autofilter'] = { ref: `A1:${lastTemplateColumn}${templateRows.length + 1}` };
@@ -296,12 +330,12 @@ const buildFriendlyTemplateWorkbook = () => {
     ['Loại câu hỏi', 'Chỉ nhập một trong ba giá trị.', 'Trắc nghiệm / Điền từ / Tự luận'],
     ['Trắc nghiệm', 'Nhập liên tục từ Lựa chọn A. Có sẵn A-H; có thể thêm cột Lựa chọn I... đến Z.', 'A, B, C, D, E...'],
     ['Đáp án đúng', 'Một đáp án nhập một chữ cái. Nhiều đáp án phân tách bằng dấu chấm phẩy (;).', 'B hoặc A;C;F'],
-    ['Điền từ', 'Nhập Gợi ý ô trống và Đáp án điền từ. Nhiều cách viết chấp nhận được phân tách bằng dấu ;', 'Hà Nội; Ha Noi'],
+    ['Điền từ', 'Có tối đa 6 ô. Mỗi ô dùng một cặp Gợi ý ô trống N / Đáp án điền từ N. Hai cột trong một cặp phải cùng có dữ liệu; các cách viết chấp nhận được phân tách bằng dấu ;', 'Ô 1: Hà Nội; Ha Noi'],
     ['Tự luận', 'Nhập nội dung vào cột Đáp án tự luận.', 'Chiều dài nhân chiều rộng'],
-    ['Cách tính điểm', 'Chỉ nhập Toàn câu hoặc Theo ý.', 'Toàn câu'],
+    ['Cách tính điểm', 'Chỉ nhập Toàn câu hoặc Theo ý. Giá trị khác sẽ được báo lỗi theo dòng khi import.', 'Toàn câu'],
     ['Thời gian', 'Nhập số giây từ 1 đến 3600.', '60'],
     ['Status', 'Nhập 1 nếu hoạt động, nhập 0 nếu ngừng hoạt động.', '1'],
-    ['Thứ tự', 'Hệ thống tự xếp khi tạo mới; chỉ thay đổi bằng chức năng Sắp xếp.', '1, 2, 3...'],
+    ['Thứ tự', 'Khi tạo mới, hệ thống tự nối tiếp ở cuối từng Bài học và bỏ qua giá trị cột này để tránh trùng. Khi cập nhật bằng Mã quiz, giữ giá trị thứ tự trong file.', '1, 2, 3...'],
     ['Kiểm tra file', 'Nếu có một dòng lỗi thì hệ thống chưa lưu bất kỳ dòng nào.', 'Sửa lỗi rồi nhập lại'],
   ];
   const guideSheet = XLSX.utils.aoa_to_sheet(guideRows);
@@ -310,7 +344,32 @@ const buildFriendlyTemplateWorkbook = () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, dataSheet, 'Nhập câu hỏi');
   XLSX.utils.book_append_sheet(workbook, guideSheet, 'Hướng dẫn');
-  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+  // SheetJS Community Edition preserves validations when reading but does not
+  // write them. Add the standard worksheet XML nodes after generation so users
+  // get a real Excel dropdown rather than having to type these enum values.
+  const workbookBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  const cfb = XLSX.CFB.read(workbookBuffer, { type: 'buffer' });
+  const dataSheetXml = XLSX.CFB.find(cfb, 'Root Entry/xl/worksheets/sheet1.xml');
+  if (!dataSheetXml?.content) return workbookBuffer;
+
+  const cellRangeFor = (header: string) => {
+    const column = XLSX.utils.encode_col(TEMPLATE_HEADERS.indexOf(header));
+    return `${column}2:${column}5001`;
+  };
+  const validations = [
+    { range: cellRangeFor('Loại câu hỏi'), values: 'Trắc nghiệm,Điền từ,Tự luận' },
+    { range: cellRangeFor('Cách tính điểm'), values: 'Toàn câu,Theo ý' },
+    { range: cellRangeFor('Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)'), values: '1,0' },
+  ].map(({ range, values }) => (
+    `<dataValidation type="list" allowBlank="1" showErrorMessage="1" errorStyle="stop" sqref="${range}"><formula1>"${values}"</formula1></dataValidation>`
+  )).join('');
+  const xml = Buffer.from(dataSheetXml.content).toString('utf8');
+  dataSheetXml.content = Buffer.from(xml.replace(
+    '</worksheet>',
+    `<dataValidations count="3">${validations}</dataValidations></worksheet>`
+  ));
+  return XLSX.CFB.write(cfb, { type: 'buffer', fileType: 'zip' }) as Buffer;
 };
 
 export const buildQuizTemplateBuffer = (format: QuizExportFormat) => (

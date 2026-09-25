@@ -324,6 +324,8 @@ export const validateQuizImportRows = (rows: Record<string, unknown>[]) => {
   rows.forEach((row, index) => {
     const rowNumber = index + 2;
     try {
+      const fillBlankErrors = Array.isArray(row.fill_blank_errors) ? row.fill_blank_errors : [];
+      if (fillBlankErrors.length) throw new ApiError(fillBlankErrors.join('; '), 400);
       const payload = validateQuizPayload({
         quiz_id: stringValue(row.quiz_id),
         code: row.code,

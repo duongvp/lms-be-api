@@ -28,6 +28,7 @@ import {
   QuizExportQuery,
   QuizImportMode,
   QuizImportRow,
+  QuizImportValidationError,
   QuizIndexSuggestionQuery,
   QuizListQuery,
   QuizPayload,
@@ -177,6 +178,30 @@ export const getQuizImportTemplate = (format: 'csv' | 'xlsx') => ({
   contentType: getQuizExportContentType(format),
   filename: `quizzes-import-template.${format}`,
 });
+
+export const validateQuizImportLessons = async (rows: QuizImportRow[]): Promise<QuizImportValidationError[]> => {
+  const rowsByProgram = new Map<string, QuizImportRow[]>();
+  rows.forEach((row) => {
+    const group = rowsByProgram.get(row.code) ?? [];
+    group.push(row);
+    rowsByProgram.set(row.code, group);
+  });
+
+  const errors = await Promise.all(Array.from(rowsByProgram.entries()).map(async ([code, programRows]) => {
+    // Use the same lesson source as the Quiz screen's lesson selector, so an
+    // imported question can only target a lesson the user could select in UI.
+    const lessons = await findQuizLessonOptions(code);
+    const existingLessonNumbers = new Set(lessons.map((lesson) => Number(lesson.learn_number)));
+    return programRows
+      .filter((row) => !existingLessonNumbers.has(Number(row.learn_number)))
+      .map((row) => ({
+        row: row.row_number,
+        field: 'learn_number',
+        message: `Bài học ${row.learn_number} không tồn tại trong Chương trình đã chọn`,
+      }));
+  }));
+  return errors.flat();
+};
 
 export const importQuizRows = async (rows: QuizImportRow[], mode: QuizImportMode, creator: string) => {
   const normalized = rows.map((row) => ({

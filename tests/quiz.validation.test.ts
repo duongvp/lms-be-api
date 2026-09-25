@@ -43,7 +43,7 @@ test('rejects multiple-choice questions without a correct answer', () => {
 
 test('normalizes fill-in answers and default placeholders', () => {
   assert.deepEqual(validateQuizAnswers(2, [{ text: 'Hà Nội' }]), [
-    { placeholder: 'Chỗ trống 1', text: 'Hà Nội', A: true },
+    { placeholder: 'Đáp án', text: 'Hà Nội', A: true },
   ]);
 });
 
@@ -116,13 +116,10 @@ test('friendly template can be imported without JSON knowledge', () => {
   assert.equal(validated.validRows.length, 3);
 });
 
-test('Excel template provides dropdown validation for enum columns', () => {
-  const XLSX = require('xlsx');
-  const cfb = XLSX.CFB.read(buildQuizTemplateBuffer('xlsx'), { type: 'buffer' });
-  const sheet = XLSX.CFB.find(cfb, 'Root Entry/xl/worksheets/sheet1.xml');
-  const xml = Buffer.from(sheet.content).toString('utf8');
-  assert.match(xml, /<dataValidations count="3">/);
-  assert.match(xml, /<formula1>"Toàn câu,Theo ý"<\/formula1>/);
+test('Excel template can be read back without repair', () => {
+  const rows = parseQuizImportFile(buildQuizTemplateBuffer('xlsx'), 'mau-import-cau-hoi.xlsx');
+  assert.equal(rows.length, 3);
+  assert.equal((rows[1].ans as any[]).length, 2);
 });
 
 test('friendly import supports up to six numbered fill-in blanks', () => {
@@ -140,14 +137,16 @@ test('friendly import supports up to six numbered fill-in blanks', () => {
   assert.equal(validateQuizImportRows([{ ...row, code: 'toan-7-2027' }]).errors.length, 0);
 });
 
-test('friendly import identifies incomplete numbered fill-in blank pairs', () => {
+test('friendly import defaults a missing numbered fill-in label to Đáp án', () => {
   const csv = [
     'Bài học,Thứ tự,Câu hỏi,Loại câu hỏi,Gợi ý ô trống 1,Đáp án điền từ 1,Cách tính điểm,Thời gian (giây),Trạng thái',
-    '10,4,Hoàn thành câu,Điền từ,Ô một,,Toàn câu,60,1',
+    '10,4,Hoàn thành câu,Điền từ,,Đúng,Toàn câu,60,1',
   ].join('\n');
   const [row] = parseQuizImportFile(Buffer.from(`\uFEFF${csv}`, 'utf8'), 'quiz.csv');
-  const result = validateQuizImportRows([{ ...row, code: 'toan-7-2027' }]);
-  assert.match(result.errors[0].message, /Ô trống 1 thiếu đáp án điền từ/);
+  assert.deepEqual(row.ans, [{ placeholder: 'Đáp án', text: 'Đúng', A: true }]);
+  // The CSV row intentionally leaves the label blank, but the answer remains
+  // valid and gets the friendly default instead of being rejected.
+  assert.equal(validateQuizImportRows([{ ...row, code: 'toan-7-2027' }]).errors.length, 0);
 });
 
 test('friendly import supports multiple-choice columns through Z', () => {

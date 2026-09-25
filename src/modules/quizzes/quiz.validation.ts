@@ -139,8 +139,12 @@ export const validateQuizAnswers = (quizType: QuizType, value: unknown): QuizAns
   if (quizType === 2) {
     return answers.map((answer, index) => {
       if (!isPlainObject(answer)) throw new ApiError(`ans[${index}] không hợp lệ`, 400);
+      const placeholder = stringValue(answer.placeholder) ?? 'Đáp án';
+      if (placeholder.length > 200) {
+        throw new ApiError(`ans[${index}].placeholder không được vượt quá 200 ký tự`, 400);
+      }
       return {
-        placeholder: requiredString(answer.placeholder ?? `Chỗ trống ${index + 1}`, `ans[${index}].placeholder`, 200),
+        placeholder,
         text: requiredString(answer.text, `ans[${index}].text`, 1000),
         A: true,
       };

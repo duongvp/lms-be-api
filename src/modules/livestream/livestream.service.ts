@@ -21,7 +21,7 @@ import {
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 import {
   ensureCalendarTeachingUsers,
-  ensureCalendarScanTeachingUsers,
+  ensureCalendarScanTeachingUsers,  
   normalizeScanTeachingUsers,
   resolveCalendarTeacherProfile,
   syncCalendarTeachingUsers,

@@ -14,6 +14,7 @@ import {
   getQuizOptions,
   getQuizzes,
   importQuizRows,
+  validateQuizImportLessons,
   reorderExistingQuizzes,
   restoreExistingQuiz,
   updateExistingQuiz,
@@ -207,8 +208,10 @@ const importFile = async (req: Request, res: Response) => {
     const rawRows = parseQuizImportFile(req.file.buffer, req.file.originalname).map((row) => ({ ...row, code }));
     if (!rawRows.length) return ErrorResponse(res, 'File import không có dữ liệu', 400);
     const { validRows, errors } = validateQuizImportRows(rawRows);
-    if (errors.length) {
-      return res.status(400).json({ success: false, message: 'File import có dữ liệu không hợp lệ', errors });
+    const lessonErrors = errors.length ? [] : await validateQuizImportLessons(validRows);
+    const importErrors = [...errors, ...lessonErrors];
+    if (importErrors.length) {
+      return res.status(400).json({ success: false, message: 'File import có dữ liệu không hợp lệ', errors: importErrors });
     }
     const result = await importQuizRows(
       validRows,

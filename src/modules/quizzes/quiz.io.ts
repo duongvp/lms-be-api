@@ -129,15 +129,18 @@ const buildFriendlyAnswers = (row: Record<string, unknown>, quizType: unknown) =
     return Array.from({ length: FILL_BLANK_IMPORT_MAX_OPTIONS }, (_, index) => {
       const option = index + 1;
       // Option 1 falls back to old, unnumbered headers for backward compatibility.
-      const placeholder = String(row[`fill_placeholder_${option}`]
+      let placeholder = String(row[`fill_placeholder_${option}`]
         ?? (option === 1 ? row.fill_placeholder : '')
         ?? '').trim();
       const text = String(row[`fill_answers_${option}`]
         ?? (option === 1 ? row.fill_answers : '')
         ?? '').trim();
       if (!placeholder && !text) return null;
-      if (!placeholder || !text) {
-        const missing = !placeholder ? 'gợi ý ô trống' : 'đáp án điền từ';
+      // A label is helpful in the learner UI but should not make imports
+      // verbose. The answer text remains mandatory; the label defaults here.
+      if (!placeholder && text) placeholder = 'Đáp án';
+      if (!text) {
+        const missing = 'đáp án điền từ';
         const errors = row.fill_blank_errors as string[] | undefined;
         row.fill_blank_errors = [...(errors ?? []), `Ô trống ${option} thiếu ${missing}`];
       }
@@ -330,7 +333,7 @@ const buildFriendlyTemplateWorkbook = () => {
     ['Loại câu hỏi', 'Chỉ nhập một trong ba giá trị.', 'Trắc nghiệm / Điền từ / Tự luận'],
     ['Trắc nghiệm', 'Nhập liên tục từ Lựa chọn A. Có sẵn A-H; có thể thêm cột Lựa chọn I... đến Z.', 'A, B, C, D, E...'],
     ['Đáp án đúng', 'Một đáp án nhập một chữ cái. Nhiều đáp án phân tách bằng dấu chấm phẩy (;).', 'B hoặc A;C;F'],
-    ['Điền từ', 'Có tối đa 6 ô. Mỗi ô dùng một cặp Gợi ý ô trống N / Đáp án điền từ N. Hai cột trong một cặp phải cùng có dữ liệu; các cách viết chấp nhận được phân tách bằng dấu ;', 'Ô 1: Hà Nội; Ha Noi'],
+    ['Điền từ', 'Có tối đa 6 ô. Mỗi ô dùng một cặp Gợi ý ô trống N / Đáp án điền từ N. Đáp án điền từ là bắt buộc; nếu bỏ trống Gợi ý ô trống, hệ thống tự dùng “Đáp án”. Các cách viết chấp nhận được phân tách bằng dấu ;', 'Ô 1: Hà Nội; Ha Noi'],
     ['Tự luận', 'Nhập nội dung vào cột Đáp án tự luận.', 'Chiều dài nhân chiều rộng'],
     ['Cách tính điểm', 'Chỉ nhập Toàn câu hoặc Theo ý. Giá trị khác sẽ được báo lỗi theo dòng khi import.', 'Toàn câu'],
     ['Thời gian', 'Nhập số giây từ 1 đến 3600.', '60'],
@@ -344,32 +347,7 @@ const buildFriendlyTemplateWorkbook = () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, dataSheet, 'Nhập câu hỏi');
   XLSX.utils.book_append_sheet(workbook, guideSheet, 'Hướng dẫn');
-
-  // SheetJS Community Edition preserves validations when reading but does not
-  // write them. Add the standard worksheet XML nodes after generation so users
-  // get a real Excel dropdown rather than having to type these enum values.
-  const workbookBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-  const cfb = XLSX.CFB.read(workbookBuffer, { type: 'buffer' });
-  const dataSheetXml = XLSX.CFB.find(cfb, 'Root Entry/xl/worksheets/sheet1.xml');
-  if (!dataSheetXml?.content) return workbookBuffer;
-
-  const cellRangeFor = (header: string) => {
-    const column = XLSX.utils.encode_col(TEMPLATE_HEADERS.indexOf(header));
-    return `${column}2:${column}5001`;
-  };
-  const validations = [
-    { range: cellRangeFor('Loại câu hỏi'), values: 'Trắc nghiệm,Điền từ,Tự luận' },
-    { range: cellRangeFor('Cách tính điểm'), values: 'Toàn câu,Theo ý' },
-    { range: cellRangeFor('Trạng thái (1: Đã hoàn thiện, 0: Đã vô hiệu hóa)'), values: '1,0' },
-  ].map(({ range, values }) => (
-    `<dataValidation type="list" allowBlank="1" showErrorMessage="1" errorStyle="stop" sqref="${range}"><formula1>"${values}"</formula1></dataValidation>`
-  )).join('');
-  const xml = Buffer.from(dataSheetXml.content).toString('utf8');
-  dataSheetXml.content = Buffer.from(xml.replace(
-    '</worksheet>',
-    `<dataValidations count="3">${validations}</dataValidations></worksheet>`
-  ));
-  return XLSX.CFB.write(cfb, { type: 'buffer', fileType: 'zip' }) as Buffer;
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 };
 
 export const buildQuizTemplateBuffer = (format: QuizExportFormat) => (

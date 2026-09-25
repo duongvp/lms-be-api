@@ -12,6 +12,7 @@
     "test:auto-schedule": "tsx --test tests/auto-schedule.test.ts",
     "test:calendar-user-sync": "tsx --test tests/calendar-user-sync.test.ts",
     "test:calendar-user-sync-cron": "tsx --test tests/calendar-teaching-user-sync-worker.test.ts",
+    "test:calendar-attendance-cron": "tsx --test tests/calendar-attendance-sync-worker.test.ts",
     "test:lesson-calendar-sync": "tsx --test tests/lesson-calendar-sync.test.ts",
     "test:google-sheet": "tsx --test tests/google-sheet-csv.test.ts tests/google-sheet-write.test.ts",
     "test:classroom-assignment": "tsx --test tests/classroom-assignment.test.ts",

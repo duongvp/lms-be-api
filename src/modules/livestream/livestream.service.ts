@@ -1922,6 +1922,12 @@ const cancelWithMakeup = async (
     where: { key: sourceKey },
     orderBy: [{ id: 'asc' }],
   });
+  // Giữ nguyên trigger: tạm tách mapping trong transaction để các thao tác
+  // UPDATE/INSERT calendar bên dưới không tự tạo queue CRUD dư thừa.
+  if (sourceMappings.length) {
+    await tx.package_lesson_mapping.deleteMany({ where: { key: sourceKey } });
+  }
+
   const lessonNameOptions = getRescheduleLessonNameOptions(payload);
   const lessonNotification = shouldSendChangeNotification(payload) ? reason : null;
   const newSessionInput = normalizeRoom({ ...(payload.new_session || payload) });
@@ -1974,6 +1980,7 @@ const cancelWithMakeup = async (
       });
   await copyPackageLessonMappingsForCalendar(tx, updatedCurrent, sourceMappings);
   const createdSession = await createCalendarRecord(tx, newSessionData, current);
+  await copyPackageLessonMappingsForCalendar(tx, createdSession, sourceMappings);
 
   return { canceled_session: updatedCurrent, created_session: createdSession };
 };
@@ -1989,10 +1996,6 @@ const rescheduleFollowing = async (
   // ghi nghỉ _huy cần một bản copy mapping để queue HMO không bỏ qua nó.
   const sourceKey = String(current.key || '').trim();
   if (!sourceKey) throw new Error('Lịch học không có key để dời lịch');
-  const sourceMappings = await tx.package_lesson_mapping.findMany({
-    where: { key: sourceKey },
-    orderBy: [{ id: 'asc' }],
-  });
   const lessonNameOptions = getRescheduleLessonNameOptions(payload);
   const lessonNotification = shouldSendChangeNotification(payload) ? reason : null;
   const newSessionInput = normalizeRoom({ ...(payload.new_session || {}) });
@@ -2037,6 +2040,27 @@ const rescheduleFollowing = async (
   const sourceSession = canceledSource || current;
   const allSessions = [sourceSession, ...followings];
   const lastSource = allSessions[allSessions.length - 1];
+  // Không đổi trigger: tạm tách mapping của toàn bộ key sẽ xuất hiện trong các
+  // UPDATE/INSERT calendar. Sau cùng mapping được khôi phục đúng theo từng key.
+  const activeKeys = Array.from(new Set(allSessions
+    .map((session: any) => String(session.key || '').trim())
+    .filter(Boolean)));
+  const activeMappings = activeKeys.length
+    ? await tx.package_lesson_mapping.findMany({
+        where: { key: { in: activeKeys } },
+        orderBy: [{ id: 'asc' }],
+      })
+    : [];
+  const mappingsByKey = new Map<string, any[]>();
+  activeMappings.forEach((mapping: any) => {
+    const key = String(mapping.key || '');
+    mappingsByKey.set(key, [...(mappingsByKey.get(key) || []), mapping]);
+  });
+  const sourceMappings = mappingsByKey.get(sourceKey) || [];
+  if (activeKeys.length) {
+    await tx.package_lesson_mapping.deleteMany({ where: { key: { in: activeKeys } } });
+  }
+
   await checkConflict({
     teacher: newSessionInput.teacher ?? lastSource.teacher,
     assistant_teacher: newSessionInput.assistant_teacher ?? (lastSource as any).assistant_teacher,
@@ -2085,6 +2109,7 @@ const rescheduleFollowing = async (
     shiftedSessions.push(shiftedSession);
   }
 
+
   if (!lastSource.key) {
     throw new Error("Buổi cuối chuỗi không có key");
   }
@@ -2101,6 +2126,11 @@ const rescheduleFollowing = async (
   };
 
   const createdSession = await createCalendarRecord(tx, newSessionData);
+
+  for (const source of allSessions) {
+    const key = String(source.key || '').trim();
+    if (key) await copyPackageLessonMappingsForCalendar(tx, source, mappingsByKey.get(key) || []);
+  }
 
   return {
     canceled_session: updatedCurrent,

@@ -148,7 +148,8 @@ const enqueueCalendar = async (
   operationId: string,
   sequenceNo: number,
   action: 'update' | 'create',
-  session: any
+  session: any,
+  payloadOverrides: Record<string, unknown> = {}
 ) => {
   const calendar = await loadCalendarForSync(tx, Number(session.id));
   const key = String(calendar.key || '');
@@ -163,7 +164,7 @@ const enqueueCalendar = async (
     sequenceNo,
     key,
     action,
-    payload: buildCalendarPayload(calendar, mappings, action),
+    payload: buildCalendarPayload({ ...calendar, ...payloadOverrides }, mappings, action),
   });
   return true;
 };
@@ -411,39 +412,34 @@ export const enqueueRescheduleSync = async (
     throw new Error('Thiếu lịch nghỉ để tạo queue dời lịch HMO');
   }
 
-  if (action === 'following' || action === 'makeup') {
-    // K1 được chuyển sang slot sau/lịch bù; row nghỉ dùng K1_huy là một key
-    // hoàn toàn mới trên HMO, nên create bản ghi nghỉ rồi update lại K1.
+  if (action === 'makeup') {
+    // Key _huy chưa tồn tại ở HMO: tạo trước ở trạng thái học, sau đó mới
+    // chuyển nghỉ để API change-status có bản ghi đích hợp lệ.
     await enqueueCalendar(
-      tx,
-      operationId,
-      sequenceNo++,
-      'create',
-      canceledSession
+      tx, operationId, sequenceNo++, 'create', canceledSession,
+      { lesson_status: 0, lesson_noti: '' }
     );
-
-    if (action === 'following') {
-      for (const shiftedSession of result.shifted_sessions || []) {
-        await enqueueCalendar(
-          tx,
-          operationId,
-          sequenceNo++,
-          'update',
-          shiftedSession
-        );
-      }
-    }
-
+    await enqueueStatus(tx, operationId, sequenceNo++, canceledSession);
     if (!result.created_session) {
       throw new Error('Thiếu lịch mới để tạo queue dời lịch HMO');
     }
+    await enqueueCalendar(tx, operationId, sequenceNo, 'update', result.created_session);
+    return operationId;
+  }
+
+  if (action === 'following') {
     await enqueueCalendar(
-      tx,
-      operationId,
-      sequenceNo,
-      'update',
-      result.created_session
+      tx, operationId, sequenceNo++, 'create', canceledSession,
+      { lesson_status: 0, lesson_noti: '' }
     );
+    await enqueueStatus(tx, operationId, sequenceNo++, canceledSession);
+    for (const shiftedSession of result.shifted_sessions || []) {
+      await enqueueCalendar(tx, operationId, sequenceNo++, 'update', shiftedSession);
+    }
+    if (!result.created_session) {
+      throw new Error('Thiếu lịch mới để tạo queue dời lịch HMO');
+    }
+    await enqueueCalendar(tx, operationId, sequenceNo, 'update', result.created_session);
     return operationId;
   }
 

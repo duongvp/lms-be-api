@@ -70,6 +70,26 @@ model calendar_change_logs {
   @@index([created_at], map: "idx_calendar_change_created")
 }
 
+model calendar_attendance_sync_runs {
+  id                  BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  status              String    @default("running") @db.VarChar(30)
+  active_key          String?   @unique(map: "uq_calendar_attendance_sync_active_key") @db.VarChar(30)
+  window_start        DateTime  @db.DateTime(3)
+  window_end          DateTime  @db.DateTime(3)
+  calendars_total     Int       @default(0)
+  calendars_processed Int       @default(0)
+  students_updated    Int       @default(0)
+  hocmai_updated      Int       @default(0)
+  calendars_failed    Int       @default(0)
+  errors_json         String?   @db.LongText
+  heartbeat_at        DateTime  @default(now()) @db.DateTime(3)
+  started_at          DateTime  @default(now()) @db.DateTime(3)
+  finished_at         DateTime? @db.DateTime(3)
+
+  @@index([started_at], map: "idx_calendar_attendance_sync_started_at")
+  @@index([window_start], map: "idx_calendar_attendance_sync_window_start")
+}
+
 model teams_notification_outbox {
   id              BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
   event_key       String    @db.VarChar(191)

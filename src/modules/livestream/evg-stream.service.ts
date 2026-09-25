@@ -7,7 +7,7 @@ import {
 } from './calendar-user-sync.service';
 import { resolveProgramTeacherBanner } from '../program-teacher-banners/program-teacher-banner.service';
 
-const EVG_ROOM_COUNT = 25;
+const EVG_MIN_ROOM_COUNT = 25;
 const EVG_PLAYBACK_BASE_URL = 'https://evg-stream.hocmai.net/live';
 export type EvgProvisionMode = 'skip_existing' | 'overwrite';
 
@@ -33,6 +33,17 @@ const normalizeEvgNamePart = (value: unknown) => String(value ?? '')
   .toLowerCase()
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-+|-+$/g, '');
+
+/**
+ * Luôn tạo tối thiểu 25 room để tương thích luồng hiện tại; những room lớn hơn
+ * được lấy theo phân lớp thực tế và các stream đã tồn tại.
+ */
+export const resolveEvgRoomIds = (roomIds: unknown[]) => Array.from(new Set([
+  ...Array.from({ length: EVG_MIN_ROOM_COUNT }, (_, index) => index + 1),
+  ...roomIds
+    .map((value) => Number(value))
+    .filter((roomId) => Number.isInteger(roomId) && roomId > 0),
+])).sort((left, right) => left - right);
 
 export const buildEvgStreamName = (code: string, learnNumber: number, startTime: Date | string) => {
   const normalizedCode = normalizeEvgNamePart(code);
@@ -102,18 +113,28 @@ export const provisionCalendarEvgStream = async (
       },
     });
 
-    const existingRooms = await tx.stream.findMany({
-      where: {
-        code: latest.code,
-        learn_number: latest.learn_number,
-        room_id: { in: Array.from({ length: EVG_ROOM_COUNT }, (_, index) => index + 1) },
-      },
-      select: { room_id: true },
-    });
+    const [existingRooms, assignedRooms] = await Promise.all([
+      tx.stream.findMany({
+        where: { code: latest.code, learn_number: latest.learn_number },
+        select: { room_id: true },
+      }),
+      tx.users.findMany({
+        where: {
+          code: latest.code,
+          learn_number: latest.learn_number,
+          room_id: { not: null },
+        },
+        select: { room_id: true },
+      }),
+    ]);
     const existingRoomIds = new Set(existingRooms.map((item) => item.room_id));
+    const roomIds = resolveEvgRoomIds([
+      ...existingRooms.map((item) => item.room_id),
+      ...assignedRooms.map((item) => item.room_id),
+    ]);
     let created = 0;
     let updated = 0;
-    for (let roomId = 1; roomId <= EVG_ROOM_COUNT; roomId += 1) {
+    for (const roomId of roomIds) {
       await tx.stream.upsert({
         where: { code_learn_number_room_id: {
           code: latest.code,

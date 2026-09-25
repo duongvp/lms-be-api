@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 import { getCalendarTeachingUserSyncStatus } from '../livestream/calendar-teaching-user-sync.worker';
+import { getCalendarAttendanceSyncStatus } from '../livestream/calendar-attendance-sync.worker';
 
 type CountRow = { total: bigint | number };
 
@@ -312,10 +313,12 @@ export const getDashboardOverview = async (
     hmoLessonSyncAvailable = false;
   }
   const calendarTeachingUserSyncCron = await getCalendarTeachingUserSyncStatus();
+  const calendarAttendanceSyncCron = await getCalendarAttendanceSyncStatus();
 
   return {
     generatedAt: new Date().toISOString(),
     calendarTeachingUserSyncCron,
+    calendarAttendanceSyncCron,
     hmoLessonSyncCron: {
       enabled: String(process.env.HMO_LESSON_SYNC_ENABLED || '').toLowerCase() === 'true',
       hour: Math.min(23, Math.max(0, Number(process.env.HMO_LESSON_SYNC_HOUR || 6))),

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildEvgPlaybackUrl, buildEvgStreamName, extractEvgStreamAlias } from '../src/modules/livestream/evg-stream.service';
+import {
+  buildEvgPlaybackUrl,
+  buildEvgStreamName,
+  extractEvgStreamAlias,
+  resolveEvgRoomIds,
+} from '../src/modules/livestream/evg-stream.service';
 import {
   buildCalendarRoomClassId,
   excelDateSerialFromCalendarDate,
@@ -37,6 +42,13 @@ test('stream.stream_key dùng URL phát HLS từ EVG stream_alias', () => {
     'https://evg-stream.hocmai.net/live/sample-stream-alias/playlist.m3u8'
   );
   assert.throws(() => buildEvgPlaybackUrl(''), /stream alias không hợp lệ/);
+});
+
+test('EVG luôn tạo tối thiểu 25 room và mở rộng theo room đã phân', () => {
+  const roomIds = resolveEvgRoomIds([1, 2, 30, 30, null, 0, -1, 'abc']);
+  assert.equal(roomIds.length, 26);
+  assert.deepEqual(roomIds.slice(0, 25), Array.from({ length: 25 }, (_, index) => index + 1));
+  assert.equal(roomIds.at(-1), 30);
 });
 
 test('tự thử lại khi EVG trả HTTP 429', async () => {

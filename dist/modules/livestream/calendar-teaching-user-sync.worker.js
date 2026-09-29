@@ -67,14 +67,14 @@ const runCalendarTeachingUserSync = async (now = new Date()) => {
             orderBy: { id: 'asc' },
         });
         const result = calendars.length === 0
-            ? { scanned: 0, created: 0, updated: 0, failed: 0, errors: [] }
+            ? { scanned: 0, created: 0, updated: 0, skipped: 0, failed: 0, errors: [] }
             : await (0, livestream_service_1.backfillMissingCalendarTeachingUsers)(calendars.map((calendar) => Number(calendar.id)));
         const status = result.failed > 0 ? 'completed_with_errors' : 'completed';
         const errorsJson = result.errors.length ? JSON.stringify(result.errors) : null;
         await prisma_1.default.$executeRaw `
       UPDATE calendar_teaching_user_sync_runs
       SET status=${status}, active_key=NULL, scanned=${result.scanned}, created=${result.created},
-        updated=${result.updated}, failed=${result.failed}, errors_json=${errorsJson}, finished_at=NOW(3)
+        updated=${result.updated}, skipped=${result.skipped}, failed=${result.failed}, errors_json=${errorsJson}, finished_at=NOW(3)
       WHERE id=${runId}
     `;
         return { started: true, ...result, start, end };
@@ -95,7 +95,7 @@ const getCalendarTeachingUserSyncStatus = async () => {
     let latest = null;
     try {
         const rows = await prisma_1.default.$queryRaw `
-      SELECT id, status, window_start, window_end, scanned, created, updated, failed,
+      SELECT id, status, window_start, window_end, scanned, created, updated, skipped, failed,
         errors_json, started_at, finished_at
       FROM calendar_teaching_user_sync_runs
       ORDER BY id DESC LIMIT 1
@@ -133,6 +133,7 @@ const getCalendarTeachingUserSyncStatus = async () => {
             scanned: Number(latest.scanned),
             created: Number(latest.created),
             updated: Number(latest.updated),
+            skipped: Number(latest.skipped),
             failed: Number(latest.failed),
             errors,
             startedAt: latest.started_at,

@@ -13,6 +13,7 @@ import {
   getLessonPrograms,
   getCourseMappingsByProgram,
   changeLessonCourseMappings,
+  changeLessonProgramSubject,
   getLessons,
   importLessonRows,
   importNewProgramLessonRows,
@@ -29,6 +30,7 @@ import {
   validateLessonPayload,
   validateLessonReorderPayload,
   validateLessonCourseMappingPayload,
+  validateLessonProgramSubjectUpdatePayload,
 } from './lesson.validation';
 import {
   parseLessonImportFile,
@@ -166,6 +168,13 @@ const updateCourseMappings = async (req: Request, res: Response) => {
   } catch (error: any) {
     return ErrorResponse(res, error.message, error.statusCode || 400);
   }
+};
+const updateProgramSubject = async (req: Request, res: Response) => {
+  try {
+    return SuccessResponse(res, 'Updated', await changeLessonProgramSubject(
+      validateLessonProgramSubjectUpdatePayload({ ...req.body, program_code: req.params.programCode })
+    ));
+  } catch (error: any) { return ErrorResponse(res, error.message, error.statusCode || 400); }
 };
 
 const detail = async (req: Request, res: Response) => {
@@ -377,6 +386,7 @@ export default {
   createProgram,
   courseMappings,
   updateCourseMappings,
+  updateProgramSubject,
   detail,
   create,
   update,

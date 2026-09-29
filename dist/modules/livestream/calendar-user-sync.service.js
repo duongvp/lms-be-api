@@ -2,9 +2,24 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.syncCalendarTeachingUsers = exports.ensureCalendarScanTeachingUsers = exports.normalizeScanTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarRoomClassId = exports.buildCalendarClassId = exports.calendarDateAtMidnight = exports.excelDateSerialFromCalendarDate = exports.buildTeachingUserName = void 0;
 const client_1 = require("@prisma/client");
+const dateTime_1 = require("../../utils/dateTime");
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const normalizeText = (value) => String(value ?? '').trim();
+const sameDateTime = (left, right) => {
+    if (!(left instanceof Date) && typeof left !== 'string')
+        return false;
+    const leftDate = left instanceof Date ? left : new Date(left);
+    return !Number.isNaN(leftDate.getTime()) && leftDate.getTime() === right.getTime();
+};
+/** Chỉ cập nhật enrollment khi trạng thái thực tế đã thay đổi. */
+const teachingUserNeedsUpdate = (existing, next) => (normalizeText(existing?.name) !== next.name
+    || Number(existing?.islearn) !== next.islearn
+    || Number(existing?.room_id) !== next.room_id
+    || normalizeText(existing?.class_id) !== next.class_id
+    || !sameDateTime(existing?.created_at, next.created_at)
+    || (next.student_hmid !== undefined
+        && normalizeText(existing?.student_hmid) !== next.student_hmid));
 const buildTeachingUserName = (studentHmid, displayName, username) => {
     const normalizedHmid = normalizeText(studentHmid);
     const normalizedDisplayName = normalizeText(displayName) || normalizeText(username);
@@ -181,57 +196,41 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
     const studentHmid = normalizeText(profile.student_hmid)
         || await findTeachingStudentHmid(client, username, calendar.code);
     const displayName = (0, exports.buildTeachingUserName)(studentHmid, profile.role === 'assistant' ? 'Giáo viên' : profile.display_name, username);
-    const identityWhere = {
-        username,
-        code: calendar.code,
-        learn_number: calendar.learn_number,
-    };
+    const identityWhere = { username, code: calendar.code, learn_number: calendar.learn_number };
     const existing = await client.users.findFirst({
         where: identityWhere,
-        select: { id: true },
+        select: { id: true, student_hmid: true, name: true, islearn: true, room_id: true, class_id: true, created_at: true },
     });
     const createData = {
-        username,
-        student_hmid: studentHmid,
-        email: username,
-        phone: null,
-        name: displayName,
-        code: calendar.code,
-        learn_number: calendar.learn_number,
-        islearn: 0,
-        room_id: 1,
-        class_id: classId,
-        created_at: lessonDate,
-        updated_at: new Date(),
+        username, student_hmid: studentHmid, email: username, phone: null, name: displayName,
+        code: calendar.code, learn_number: calendar.learn_number, islearn: 0, room_id: 1,
+        class_id: classId, created_at: lessonDate, updated_at: (0, dateTime_1.getVietnamWallClockDate)(),
     };
-    const updateData = {
-        name: displayName,
-        islearn: 0,
-        room_id: 1,
-        class_id: classId,
-        created_at: lessonDate,
+    const updateFields = {
+        name: displayName, islearn: 0, room_id: 1, class_id: classId, created_at: lessonDate,
         ...(studentHmid ? { student_hmid: studentHmid } : {}),
-        updated_at: new Date(),
     };
     if (existing) {
-        await client.users.update({ where: { id: existing.id }, data: updateData });
+        if (teachingUserNeedsUpdate(existing, updateFields)) {
+            await client.users.update({ where: { id: existing.id }, data: { ...updateFields, updated_at: (0, dateTime_1.getVietnamWallClockDate)() } });
+        }
         return;
     }
     try {
         await client.users.create({ data: createData });
     }
     catch (error) {
-        // Hai request có thể cùng không tìm thấy row rồi tạo đồng thời. Unique
-        // index 3 cột chặn duplicate; request thua race cập nhật row vừa được tạo.
         if (error?.code !== 'P2002')
             throw error;
         const concurrent = await client.users.findFirst({
             where: identityWhere,
-            select: { id: true },
+            select: { id: true, student_hmid: true, name: true, islearn: true, room_id: true, class_id: true, created_at: true },
         });
         if (!concurrent)
             throw error;
-        await client.users.update({ where: { id: concurrent.id }, data: updateData });
+        if (teachingUserNeedsUpdate(concurrent, updateFields)) {
+            await client.users.update({ where: { id: concurrent.id }, data: { ...updateFields, updated_at: (0, dateTime_1.getVietnamWallClockDate)() } });
+        }
     }
 };
 /**
@@ -242,7 +241,7 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
  */
 const ensureCalendarTeachingUsers = async (client, calendar, profileCache, additionalProfiles = []) => {
     if (!isActiveSchedule(calendar))
-        return { created: 0, updated: 0 };
+        return { created: 0, updated: 0, skipped: 0 };
     const profileCacheKey = [
         normalizeText(calendar.teacher),
         parseAssistantTeachers(calendar.assistant_teacher).sort().join(','),
@@ -254,58 +253,46 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache, addit
     }
     profiles = Array.from(new Map([...profiles, ...additionalProfiles].map((profile) => [normalizeText(profile.username), profile])).values());
     if (!profiles.length)
-        return { created: 0, updated: 0 };
+        return { created: 0, updated: 0, skipped: 0 };
     const classId = (0, exports.buildCalendarClassId)(calendar.code, calendar.start_time, calendar.learn_number);
     const lessonDate = (0, exports.calendarDateAtMidnight)(calendar.start_time);
     let created = 0;
     let updated = 0;
+    let skipped = 0;
     for (const profile of profiles) {
         const username = normalizeText(profile.username);
-        const identityWhere = {
-            username,
-            code: calendar.code,
-            learn_number: calendar.learn_number,
-        };
+        const identityWhere = { username, code: calendar.code, learn_number: calendar.learn_number };
         const existing = await client.users.findFirst({
             where: identityWhere,
-            select: { id: true, student_hmid: true, name: true },
+            select: { id: true, student_hmid: true, name: true, islearn: true, room_id: true, class_id: true, created_at: true },
         });
         const studentHmid = normalizeText(existing?.student_hmid)
             || normalizeText(profile.student_hmid)
             || await findTeachingStudentHmid(client, username, calendar.code);
         const displayName = (0, exports.buildTeachingUserName)(studentHmid, profile.role === 'assistant' ? 'Giáo viên' : profile.display_name, username);
-        const updateData = {
-            name: displayName,
-            islearn: 0,
-            room_id: 1,
-            class_id: classId,
-            created_at: lessonDate,
+        const updateFields = {
+            name: displayName, islearn: 0, room_id: 1, class_id: classId, created_at: lessonDate,
             ...(studentHmid ? { student_hmid: studentHmid } : {}),
-            updated_at: new Date(),
         };
         if (existing) {
-            await client.users.update({
-                where: { id: existing.id },
-                data: updateData,
-            });
-            updated += 1;
+            if (teachingUserNeedsUpdate(existing, updateFields)) {
+                await client.users.update({
+                    where: { id: existing.id },
+                    data: { ...updateFields, updated_at: (0, dateTime_1.getVietnamWallClockDate)() },
+                });
+                updated += 1;
+            }
+            else {
+                skipped += 1;
+            }
             continue;
         }
         try {
             await client.users.create({
                 data: {
-                    username,
-                    student_hmid: studentHmid,
-                    email: username,
-                    phone: null,
-                    name: displayName,
-                    code: calendar.code,
-                    learn_number: calendar.learn_number,
-                    islearn: 0,
-                    room_id: 1,
-                    class_id: classId,
-                    created_at: lessonDate,
-                    updated_at: new Date(),
+                    username, student_hmid: studentHmid, email: username, phone: null, name: displayName,
+                    code: calendar.code, learn_number: calendar.learn_number, islearn: 0, room_id: 1,
+                    class_id: classId, created_at: lessonDate, updated_at: (0, dateTime_1.getVietnamWallClockDate)(),
                 },
             });
             created += 1;
@@ -313,22 +300,25 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache, addit
         catch (error) {
             if (error?.code !== 'P2002')
                 throw error;
-            // Unique index 3 cột xử lý race giữa bước kiểm tra và tạo. Request thua
-            // race đọc lại đúng enrollment rồi cập nhật, thay vì bỏ qua dữ liệu mới.
             const concurrent = await client.users.findFirst({
                 where: identityWhere,
-                select: { id: true },
+                select: { id: true, student_hmid: true, name: true, islearn: true, room_id: true, class_id: true, created_at: true },
             });
             if (!concurrent)
                 throw error;
-            await client.users.update({
-                where: { id: concurrent.id },
-                data: updateData,
-            });
-            updated += 1;
+            if (teachingUserNeedsUpdate(concurrent, updateFields)) {
+                await client.users.update({
+                    where: { id: concurrent.id },
+                    data: { ...updateFields, updated_at: (0, dateTime_1.getVietnamWallClockDate)() },
+                });
+                updated += 1;
+            }
+            else {
+                skipped += 1;
+            }
         }
     }
-    return { created, updated };
+    return { created, updated, skipped };
 };
 exports.ensureCalendarTeachingUsers = ensureCalendarTeachingUsers;
 const normalizeScanTeachingUsers = (value) => {
@@ -350,7 +340,7 @@ exports.normalizeScanTeachingUsers = normalizeScanTeachingUsers;
 /** Bổ sung các tài khoản được chọn riêng khi chạy Quét user nhân sự. */
 const ensureCalendarScanTeachingUsers = async (client, calendar, additionalUsers = (0, exports.normalizeScanTeachingUsers)(undefined)) => {
     if (!isActiveSchedule(calendar))
-        return { created: 0, updated: 0 };
+        return { created: 0, updated: 0, skipped: 0 };
     const profiles = additionalUsers.length
         ? await client.teacher_profiles.findMany({
             where: { username: { in: additionalUsers.map((user) => user.username) } },
@@ -458,7 +448,7 @@ const syncCalendarTeachingUsers = async (client, before, after) => {
             data: {
                 room_id: 1,
                 class_id: classId,
-                updated_at: new Date(),
+                updated_at: (0, dateTime_1.getVietnamWallClockDate)(),
             },
         });
         return;

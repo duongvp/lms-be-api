@@ -36,7 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.exportGoogleSheetProgress = exports.exportGoogleSheet = exports.getCalendar = exports.deleteSession = exports.cancelSession = exports.provisionEvgStreamsBulk = exports.provisionEvgStream = exports.swapSessionTimes = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.getStudentSyncProgress = exports.syncStudents = exports.resendToHocmai = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
+exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.exportGoogleSheetProgress = exports.exportGoogleSheet = exports.getCalendar = exports.getCalendarTeacherFilterOptions = exports.resetCalendarAttendance = exports.getCalendarAttendanceResetStudents = exports.syncCalendarAttendance = exports.deleteSession = exports.cancelSession = exports.provisionEvgStreamsBulk = exports.provisionEvgStream = exports.swapSessionTimes = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.getStudentSyncProgress = exports.syncStudents = exports.resendToHocmai = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
 const livestreamService = __importStar(require("./livestream.service"));
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const calendar_sheet_export_service_1 = require("./calendar-sheet-export.service");
@@ -262,7 +262,7 @@ const swapSessionTimes = async (req, res, next) => {
 exports.swapSessionTimes = swapSessionTimes;
 const provisionEvgStream = async (req, res, next) => {
     try {
-        const result = await livestreamService.provisionCalendarEvgStream(Number(req.params.id), String(req.user?.username || ''), req.body?.mode || (req.body?.force === true ? 'overwrite' : 'skip_existing'));
+        const result = await livestreamService.provisionCalendarEvgStream(Number(req.params.id), String(req.user?.username || ''), req.body?.mode || (req.body?.force === true ? 'overwrite' : 'skip_existing'), req.body?.banner_url);
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
@@ -273,7 +273,7 @@ exports.provisionEvgStream = provisionEvgStream;
 const provisionEvgStreamsBulk = async (req, res, next) => {
     try {
         const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number);
-        const result = await livestreamService.provisionCalendarsEvgBulk(ids, String(req.user?.username || ''), req.body?.mode || 'skip_existing');
+        const result = await livestreamService.provisionCalendarsEvgBulk(ids, String(req.user?.username || ''), req.body?.mode || 'skip_existing', req.body?.banner_url);
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
@@ -303,6 +303,46 @@ const deleteSession = async (req, res, next) => {
     }
 };
 exports.deleteSession = deleteSession;
+const syncCalendarAttendance = async (req, res, next) => {
+    try {
+        const data = await livestreamService.syncCalendarAttendance(req.body?.ids, req.body?.preview === true);
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.syncCalendarAttendance = syncCalendarAttendance;
+const getCalendarAttendanceResetStudents = async (req, res, next) => {
+    try {
+        const data = await livestreamService.getCalendarAttendanceResetStudents(req.params.id);
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getCalendarAttendanceResetStudents = getCalendarAttendanceResetStudents;
+const resetCalendarAttendance = async (req, res, next) => {
+    try {
+        const data = await livestreamService.resetCalendarAttendance(req.params.id, req.body?.studentIds);
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.resetCalendarAttendance = resetCalendarAttendance;
+const getCalendarTeacherFilterOptions = async (req, res, next) => {
+    try {
+        const data = await livestreamService.getCalendarTeacherFilterOptions(String(req.query.code || ''), (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view'));
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getCalendarTeacherFilterOptions = getCalendarTeacherFilterOptions;
 const getCalendar = async (req, res, next) => {
     try {
         const result = await livestreamService.getCalendar(req.query, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view'), Boolean(req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin')));

@@ -8,6 +8,7 @@ import {
   LessonPayload,
   LessonReorderPayload,
   LessonCourseMappingPayload,
+  LessonProgramSubjectUpdatePayload,
 } from './lesson.types';
 
 const SORTABLE_FIELDS = new Set([
@@ -206,6 +207,11 @@ export const validateLessonPayload = (body: any, isUpdate = false): Partial<Less
 
   return payload;
 };
+
+export const validateLessonProgramSubjectUpdatePayload = (body: any): LessonProgramSubjectUpdatePayload => ({
+  program_code: requiredString(body?.program_code, 'program_code', 100),
+  subject_name: requiredString(body?.subject_name, 'subject_name', 100),
+});
 
 export const validateLessonBulkUpdatePayload = (body: any): LessonBulkUpdatePayload => {
   const ids = validateLessonIds(body.ids);

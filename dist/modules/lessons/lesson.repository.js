@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteLessonIfUnscheduled = exports.importNewProgramLessons = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findPastScheduledLessonIds = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.updateLessonCourseMappings = exports.findLessonCourseMappings = exports.findLessonProgramByCode = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = exports.syncCalendarsFromLessons = void 0;
+exports.deleteLessonIfUnscheduled = exports.importNewProgramLessons = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findPastScheduledLessonIds = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.updateLessonCourseMappings = exports.findLessonCourseMappings = exports.findLessonProgramByCode = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = exports.updateLessonProgramSubject = exports.syncCalendarsFromLessons = void 0;
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 // Các trường tài liệu/nội dung buổi học vẫn được giữ ở DB để không mất dữ liệu
 // cũ, nhưng không còn là dữ liệu của đề cương và không được trả về từ module này.
@@ -23,12 +23,40 @@ const syncCalendarsFromLessons = async (tx, lessonIds) => {
         )
       )
      SET calendar_row.session_id = lesson.id,
-         calendar_row.subject = lesson.subject_name,
+         calendar_row.subject = CASE
+           WHEN lesson.system_type = 'topclass' AND lesson.grade BETWEEN 1 AND 12
+             THEN CONCAT(TRIM(lesson.subject_name), ' ', lesson.grade)
+           ELSE TRIM(lesson.subject_name)
+         END,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
      WHERE lesson.status <> 0`, ...lessonIds);
 };
 exports.syncCalendarsFromLessons = syncCalendarsFromLessons;
+const calendarSubjectName = (subjectName, systemType, grade) => (systemType === 'topclass' && Number.isInteger(Number(grade)) && Number(grade) >= 1 && Number(grade) <= 12
+    ? `${subjectName} ${Number(grade)}`
+    : subjectName);
+const updateLessonProgramSubject = async (input) => prisma_1.default.$transaction(async (tx) => {
+    const programs = await tx.$queryRawUnsafe(`SELECT system_type, grade, subject_name FROM lessons
+     WHERE subject_code = ? AND status <> 0 FOR UPDATE`, input.programCode);
+    if (!programs.length)
+        throw new Error('Chương trình không tồn tại hoặc chưa có đề cương');
+    const systemTypes = new Set(programs.map((row) => row.system_type));
+    const grades = new Set(programs.map((row) => Number(row.grade)));
+    if (systemTypes.size !== 1 || (programs[0].system_type === 'topclass' && grades.size !== 1)) {
+        throw new Error('Dữ liệu chương trình không đồng nhất về hệ hoặc khối; cần kiểm tra đề cương trước khi đổi môn');
+    }
+    const systemType = programs[0].system_type;
+    const grade = programs[0].grade;
+    const subjectName = input.subjectName.trim();
+    const calendarSubject = calendarSubjectName(subjectName, systemType, grade);
+    const [calendarRows] = await tx.$queryRawUnsafe('SELECT COUNT(*) AS count FROM calendar WHERE code = ?', input.programCode);
+    await tx.$executeRawUnsafe('UPDATE lessons SET subject_name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE subject_code = ?', subjectName, input.programCode);
+    await tx.$executeRawUnsafe('UPDATE calendar SET subject = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE code = ?', calendarSubject, input.programCode);
+    return { program_code: input.programCode, subject_name: subjectName, calendar_subject: calendarSubject,
+        system_type: systemType, grade, lessons_updated: programs.length, calendars_updated: Number(calendarRows?.count || 0) };
+});
+exports.updateLessonProgramSubject = updateLessonProgramSubject;
 /**
  * Khi sắp xếp nội dung, learn_number của calendar đại diện cho slot lịch và
  * phải đứng yên. Nội dung bài mới được gắn vào slot cùng learn_number; tuyệt
@@ -46,7 +74,11 @@ const syncCalendarSlotsAfterLessonReorder = async (tx, _grade, subjectCode, less
       AND lesson.status <> 0
       AND lesson.id IN (${lessonPlaceholders})
      SET calendar_row.session_id = lesson.id,
-         calendar_row.subject = lesson.subject_name,
+         calendar_row.subject = CASE
+           WHEN lesson.system_type = 'topclass' AND lesson.grade BETWEEN 1 AND 12
+             THEN CONCAT(TRIM(lesson.subject_name), ' ', lesson.grade)
+           ELSE TRIM(lesson.subject_name)
+         END,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
      WHERE calendar_row.code = ?

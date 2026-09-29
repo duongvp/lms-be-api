@@ -19,6 +19,7 @@ import {
   deleteLessonIfUnscheduled,
   updateLesson,
   updateLessonCourseMappings,
+  updateLessonProgramSubject,
 } from './lesson.repository';
 import { normalizeSubject, SUBJECT_OPTIONS } from './lesson.constants';
 import { resolvePackagesByCourseId } from '../../integrations/package-course-sheet.service';
@@ -32,6 +33,7 @@ import {
   LessonPayload,
   LessonReorderPayload,
   LessonCourseMappingPayload,
+  LessonProgramSubjectUpdatePayload,
 } from './lesson.types';
 import {
   buildLessonExportBuffer,
@@ -88,6 +90,13 @@ export const changeLessonCourseMappings = async (payload: LessonCourseMappingPay
     lessonIds: payload.lesson_ids,
   });
 };
+
+export const changeLessonProgramSubject = async (payload: LessonProgramSubjectUpdatePayload) => (
+  serializeBigInt(await updateLessonProgramSubject({
+    programCode: payload.program_code,
+    subjectName: payload.subject_name,
+  }))
+);
 
 export const getLessonDetail = async (id: bigint) => {
   const lesson = await findLessonById(id);

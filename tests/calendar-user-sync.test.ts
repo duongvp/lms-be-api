@@ -643,17 +643,18 @@ test('quét nhân sự tạo tài khoản hỗ trợ như trợ giảng rồi ch
     code: 'toan-8-2027', learn_number: 24,
     start_time: '2026-09-16T18:00:00.000Z', lesson_status: 0,
   };
-  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar), { created: 1, updated: 0 });
-  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar), { created: 0, updated: 1 });
+  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar), { created: 1, updated: 0, skipped: 0 });
+  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar), { created: 0, updated: 0, skipped: 1 });
   assert.equal(creates.length, 1);
   assert.equal(creates[0].username, 'loandtt3@hocmai.vn');
   assert.equal(creates[0].email, 'loandtt3@hocmai.vn');
   assert.equal(creates[0].name, 'HM-LOAN - Giáo viên');
   assert.equal(creates[0].room_id, 1);
   assert.equal(creates[0].islearn, 0);
-  assert.equal(updates[0].where.id, creates[0].id);
-  assert.equal(updates[0].data.class_id, creates[0].class_id);
-  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, { ...calendar, lesson_status: 1 }), { created: 0, updated: 0 });
+  // users lưu giờ Việt Nam dưới dạng wall-clock nên timestamp mới phải lệch +7h.
+  assert.ok(creates[0].updated_at.getTime() - Date.now() > (6 * 60 * 60 * 1000));
+  assert.equal(updates.length, 0);
+  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, { ...calendar, lesson_status: 1 }), { created: 0, updated: 0, skipped: 0 });
 });
 
 test('quét không tạo trùng tài khoản hỗ trợ đã được gán làm trợ giảng', async () => {
@@ -701,11 +702,11 @@ test('quét nhiều tài khoản theo danh sách FE và không tự thêm tài k
   const calendar = { code: 'toan-8-2027', learn_number: 24, start_time: '2026-09-16T18:00:00.000Z', lesson_status: 0 };
   assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar, [
     { username: 'gv02', role: 'teacher' }, { username: 'tg02', role: 'assistant' },
-  ]), { created: 2, updated: 0 });
+  ]), { created: 2, updated: 0, skipped: 0 });
   assert.deepEqual(creates.map((record) => record.username), ['gv02', 'tg02']);
   assert.deepEqual(creates.map((record) => record.name), ['HM-GV02 - Giáo viên 02', 'HM-TG02 - Giáo viên']);
   creates.length = 0;
-  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar, []), { created: 0, updated: 0 });
+  assert.deepEqual(await ensureCalendarScanTeachingUsers(client, calendar, []), { created: 0, updated: 0, skipped: 0 });
   assert.equal(creates.length, 0);
 });
 

@@ -169,6 +169,7 @@ const normalizeCalendarFields = (fields) => Array.from(new Set(fields
     return field;
 })));
 router.use(authenticate);
+router.get('/filter-options/teachers', authorize(['calendar.view']), authorizeCalendarList, livestreamController.getCalendarTeacherFilterOptions);
 router.get('/', authorize(['calendar.view']), authorizeCalendarList, livestreamController.getCalendar);
 router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
 router.post('/export/google-sheet', authorize(['calendar.export']), livestreamController.exportGoogleSheet);
@@ -197,6 +198,9 @@ router.put('/bulk', authorize(['calendar.update']), authorizePrograms('calendar.
 router.post('/sync-missing-teaching-users', livestreamController.backfillMissingTeachingUsers);
 router.post('/hocmai-sync-queue/resend', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), livestreamController.resendToHocmai);
 router.post('/students/sync', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), livestreamController.syncStudents);
+router.get('/:id/attendance-reset-students', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), livestreamController.getCalendarAttendanceResetStudents);
+router.post('/:id/reset-attendance', authorize(['calendar.update']), authorizePrograms('calendar.update', calendarCodeById), livestreamController.resetCalendarAttendance);
+router.post('/students/sync-attendance', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])), livestreamController.syncCalendarAttendance);
 router.get('/students/sync/:jobId', authorize(['calendar.update']), livestreamController.getStudentSyncProgress);
 router.put('/swap', authorize(['calendar.update']), authorizePrograms('calendar.update', (req) => calendarCodesByIds([
     req.body?.first_id,

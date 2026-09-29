@@ -45,6 +45,11 @@ export interface LessonCourseMappingPayload {
   lesson_ids?: bigint[];
 }
 
+export interface LessonProgramSubjectUpdatePayload {
+  program_code: string;
+  subject_name: string;
+}
+
 export type LessonExportFormat = 'csv' | 'xlsx';
 
 export interface LessonExportQuery extends LessonListQuery {

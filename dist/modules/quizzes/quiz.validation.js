@@ -126,8 +126,12 @@ const validateQuizAnswers = (quizType, value) => {
         return answers.map((answer, index) => {
             if (!isPlainObject(answer))
                 throw new ApiError_1.default(`ans[${index}] không hợp lệ`, 400);
+            const placeholder = stringValue(answer.placeholder) ?? 'Đáp án';
+            if (placeholder.length > 200) {
+                throw new ApiError_1.default(`ans[${index}].placeholder không được vượt quá 200 ký tự`, 400);
+            }
             return {
-                placeholder: requiredString(answer.placeholder ?? `Chỗ trống ${index + 1}`, `ans[${index}].placeholder`, 200),
+                placeholder,
                 text: requiredString(answer.text, `ans[${index}].text`, 1000),
                 A: true,
             };
@@ -327,6 +331,9 @@ const validateQuizImportRows = (rows) => {
     rows.forEach((row, index) => {
         const rowNumber = index + 2;
         try {
+            const fillBlankErrors = Array.isArray(row.fill_blank_errors) ? row.fill_blank_errors : [];
+            if (fillBlankErrors.length)
+                throw new ApiError_1.default(fillBlankErrors.join('; '), 400);
             const payload = (0, exports.validateQuizPayload)({
                 quiz_id: stringValue(row.quiz_id),
                 code: row.code,

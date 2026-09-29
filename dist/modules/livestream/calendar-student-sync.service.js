@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getCalendarStudentSyncJob = exports.startCalendarStudentSync = exports.syncCalendarStudents = exports.buildStudentDisplayName = void 0;
+exports.getCalendarStudentSyncJob = exports.startCalendarStudentSync = exports.markCalendarsStudentSynced = exports.syncCalendarStudents = exports.buildStudentDisplayName = void 0;
 const crypto_1 = require("crypto");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
@@ -356,6 +356,16 @@ const syncCalendarStudents = async (rawIds, rawRegisteredAt, onProgress, prefetc
     }
 };
 exports.syncCalendarStudents = syncCalendarStudents;
+const markCalendarsStudentSynced = async (calendarIds) => {
+    const ids = Array.from(new Set(calendarIds.filter((id) => Number.isInteger(id) && id > 0)));
+    if (!ids.length)
+        return;
+    await prisma_1.default.calendar.updateMany({
+        where: { id: { in: ids } },
+        data: { student_synced_at: new Date() },
+    });
+};
+exports.markCalendarsStudentSynced = markCalendarsStudentSynced;
 const startCalendarStudentSync = (rawIds, rawRegisteredAt, ownerUserId) => {
     if (jobRunning || syncRunning) {
         const activeJob = activeJobId ? syncJobs.get(activeJobId) : undefined;
@@ -445,6 +455,8 @@ const startCalendarStudentSync = (rawIds, rawRegisteredAt, ownerUserId) => {
                         job.message = `${item.code}: ${message}`;
                     });
                     item.status = item.result.failed ? 'error' : 'success';
+                    if (!item.result.failed)
+                        await (0, exports.markCalendarsStudentSynced)(item.calendarIds);
                     item.message = `Thêm mới ${item.result.inserted}, giữ nguyên ${item.result.skipped}${item.result.failed ? `, lỗi ${item.result.failed}` : ''}`;
                     const numericKeys = [
                         'uniqueApiUsers', 'mappedRows', 'uniqueEnrollments', 'duplicateRows', 'unmatched',

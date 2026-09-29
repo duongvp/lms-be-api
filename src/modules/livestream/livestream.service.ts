@@ -4099,6 +4099,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
   let scanned = 0;
   let created = 0;
   let updated = 0;
+  let skipped = 0;
   const errors: Array<{ calendar_id: number; message: string }> = [];
 
   if (ids && ids.length > 0) {
@@ -4109,17 +4110,19 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
           where: { id: { in: batchIds } },
           orderBy: { id: 'asc' },
         });
-        if (!calendars.length) return { scanned: 0, created: 0, updated: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
+        if (!calendars.length) return { scanned: 0, created: 0, updated: 0, skipped: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
 
         await hydrateAssistantTeachers(tx, calendars);
         let batchCreated = 0;
         let batchUpdated = 0;
+        let batchSkipped = 0;
         const batchErrors: Array<{ calendar_id: number; message: string }> = [];
         for (const calendar of calendars) {
           try {
             const result = await ensureCalendarScanTeachingUsers(tx, calendar, scanUsers);
             batchCreated += result.created;
             batchUpdated += result.updated;
+            batchSkipped += result.skipped;
           } catch (error: any) {
             batchErrors.push({
               calendar_id: Number(calendar.id),
@@ -4131,6 +4134,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
           scanned: calendars.length,
           created: batchCreated,
           updated: batchUpdated,
+          skipped: batchSkipped,
           errors: batchErrors,
         };
       }, { maxWait: 10_000, timeout: 60_000 });
@@ -4138,6 +4142,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
       scanned += batchResult.scanned;
       created += batchResult.created;
       updated += batchResult.updated;
+      skipped += batchResult.skipped;
       errors.push(...batchResult.errors);
     }
   } else {
@@ -4155,17 +4160,19 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
           orderBy: { id: 'asc' },
           take: batchSize,
         });
-        if (!calendars.length) return { lastId: null as number | null, scanned: 0, created: 0, updated: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
+        if (!calendars.length) return { lastId: null as number | null, scanned: 0, created: 0, updated: 0, skipped: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
 
         await hydrateAssistantTeachers(tx, calendars);
         let batchCreated = 0;
         let batchUpdated = 0;
+        let batchSkipped = 0;
         const batchErrors: Array<{ calendar_id: number; message: string }> = [];
         for (const calendar of calendars) {
           try {
             const result = await ensureCalendarScanTeachingUsers(tx, calendar, scanUsers);
             batchCreated += result.created;
             batchUpdated += result.updated;
+            batchSkipped += result.skipped;
           } catch (error: any) {
             batchErrors.push({
               calendar_id: Number(calendar.id),
@@ -4179,6 +4186,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
           scanned: calendars.length,
           created: batchCreated,
           updated: batchUpdated,
+          skipped: batchSkipped,
           errors: batchErrors,
         };
       }, { maxWait: 10_000, timeout: 60_000 });
@@ -4188,6 +4196,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
       scanned += batchResult.scanned;
       created += batchResult.created;
       updated += batchResult.updated;
+      skipped += batchResult.skipped;
       errors.push(...batchResult.errors);
     }
   }
@@ -4196,6 +4205,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
     scanned,
     created,
     updated,
+    skipped,
     failed: errors.length,
     errors,
   };

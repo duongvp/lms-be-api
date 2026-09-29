@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.enqueueManyCalendarTeamsNotifications = exports.enqueueCalendarTeamsNotification = void 0;
+exports.enqueueStudentSyncTeamsSummary = exports.enqueueManyCalendarTeamsNotifications = exports.enqueueCalendarTeamsNotification = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const teams_notification_config_1 = require("./teams-notification.config");
@@ -108,3 +108,20 @@ const enqueueManyCalendarTeamsNotifications = async (client, events) => {
   `);
 };
 exports.enqueueManyCalendarTeamsNotifications = enqueueManyCalendarTeamsNotifications;
+const enqueueStudentSyncTeamsSummary = async (client, runId, payload) => {
+    if (!(0, teams_notification_config_1.isTeamsNotificationEnabled)())
+        return;
+    const destinations = (0, teams_notification_config_1.getTeamsWebhookDestinations)();
+    if (!destinations.length)
+        return;
+    const eventKey = `student-sync:${runId.toString()}`;
+    const serializedPayload = JSON.stringify(payload);
+    for (const destination of destinations) {
+        await client.$executeRaw `
+      INSERT INTO teams_notification_outbox (event_key, destination, event_type, calendar_id, payload, status, attempts, next_attempt_at, created_at, updated_at)
+      VALUES (${eventKey}, ${destination.name}, 'student_sync_summary', NULL, ${serializedPayload}, 0, 0, NOW(3), NOW(3), NOW(3))
+      ON DUPLICATE KEY UPDATE event_key = VALUES(event_key)
+    `;
+    }
+};
+exports.enqueueStudentSyncTeamsSummary = enqueueStudentSyncTeamsSummary;

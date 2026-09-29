@@ -20,13 +20,53 @@ export const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => 
         )
       )
      SET calendar_row.session_id = lesson.id,
-         calendar_row.subject = lesson.subject_name,
+         calendar_row.subject = CASE
+           WHEN lesson.system_type = 'topclass' AND lesson.grade BETWEEN 1 AND 12
+             THEN CONCAT(TRIM(lesson.subject_name), ' ', lesson.grade)
+           ELSE TRIM(lesson.subject_name)
+         END,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
      WHERE lesson.status <> 0`,
     ...lessonIds
   );
 };
+
+const calendarSubjectName = (subjectName: string, systemType: string, grade: number | null) => (
+  systemType === 'topclass' && Number.isInteger(Number(grade)) && Number(grade) >= 1 && Number(grade) <= 12
+    ? `${subjectName} ${Number(grade)}`
+    : subjectName
+);
+
+export const updateLessonProgramSubject = async (input: { programCode: string; subjectName: string }) => prisma.$transaction(async (tx) => {
+  const programs = await tx.$queryRawUnsafe<Array<{ system_type: string; grade: number | null; subject_name: string }>>(
+    `SELECT system_type, grade, subject_name FROM lessons
+     WHERE subject_code = ? AND status <> 0 FOR UPDATE`, input.programCode
+  );
+  if (!programs.length) throw new Error('Chương trình không tồn tại hoặc chưa có đề cương');
+  const systemTypes = new Set(programs.map((row) => row.system_type));
+  const grades = new Set(programs.map((row) => Number(row.grade)));
+  if (systemTypes.size !== 1 || (programs[0].system_type === 'topclass' && grades.size !== 1)) {
+    throw new Error('Dữ liệu chương trình không đồng nhất về hệ hoặc khối; cần kiểm tra đề cương trước khi đổi môn');
+  }
+  const systemType = programs[0].system_type;
+  const grade = programs[0].grade;
+  const subjectName = input.subjectName.trim();
+  const calendarSubject = calendarSubjectName(subjectName, systemType, grade);
+  const [calendarRows] = await tx.$queryRawUnsafe<Array<{ count: bigint }>>(
+    'SELECT COUNT(*) AS count FROM calendar WHERE code = ?', input.programCode
+  );
+  await tx.$executeRawUnsafe(
+    'UPDATE lessons SET subject_name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE subject_code = ?',
+    subjectName, input.programCode
+  );
+  await tx.$executeRawUnsafe(
+    'UPDATE calendar SET subject = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE code = ?',
+    calendarSubject, input.programCode
+  );
+  return { program_code: input.programCode, subject_name: subjectName, calendar_subject: calendarSubject,
+    system_type: systemType, grade, lessons_updated: programs.length, calendars_updated: Number(calendarRows?.count || 0) };
+});
 
 /**
  * Khi sắp xếp nội dung, learn_number của calendar đại diện cho slot lịch và
@@ -52,7 +92,11 @@ const syncCalendarSlotsAfterLessonReorder = async (
       AND lesson.status <> 0
       AND lesson.id IN (${lessonPlaceholders})
      SET calendar_row.session_id = lesson.id,
-         calendar_row.subject = lesson.subject_name,
+         calendar_row.subject = CASE
+           WHEN lesson.system_type = 'topclass' AND lesson.grade BETWEEN 1 AND 12
+             THEN CONCAT(TRIM(lesson.subject_name), ' ', lesson.grade)
+           ELSE TRIM(lesson.subject_name)
+         END,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
      WHERE calendar_row.code = ?

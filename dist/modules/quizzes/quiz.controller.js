@@ -164,8 +164,10 @@ const importFile = async (req, res) => {
         if (!rawRows.length)
             return (0, apiResponse_1.ErrorResponse)(res, 'File import không có dữ liệu', 400);
         const { validRows, errors } = (0, quiz_validation_1.validateQuizImportRows)(rawRows);
-        if (errors.length) {
-            return res.status(400).json({ success: false, message: 'File import có dữ liệu không hợp lệ', errors });
+        const lessonErrors = errors.length ? [] : await (0, quiz_service_1.validateQuizImportLessons)(validRows);
+        const importErrors = [...errors, ...lessonErrors];
+        if (importErrors.length) {
+            return res.status(400).json({ success: false, message: 'File import có dữ liệu không hợp lệ', errors: importErrors });
         }
         const result = await (0, quiz_service_1.importQuizRows)(validRows, (0, quiz_validation_1.parseQuizImportMode)(req.body?.mode), String(req.user?.username || req.user?.userId || 'system'));
         return (0, apiResponse_1.SuccessResponse)(res, 'Imported', result);

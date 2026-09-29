@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importNewProgramLessonRows = exports.importLessonRows = exports.validateLessonImportSequence = exports.getProgramImportTemplate = exports.getLessonImportTemplate = exports.exportLessons = exports.reorderExistingLessons = exports.bulkUpdateExistingLessons = exports.deleteExistingLesson = exports.updateExistingLesson = exports.createNewProgram = exports.createNewLesson = exports.getLessonDetail = exports.changeLessonCourseMappings = exports.getCourseMappingsByProgram = exports.getLessonPrograms = exports.getLessonSubjects = exports.getLessons = void 0;
+exports.importNewProgramLessonRows = exports.importLessonRows = exports.validateLessonImportSequence = exports.getProgramImportTemplate = exports.getLessonImportTemplate = exports.exportLessons = exports.reorderExistingLessons = exports.bulkUpdateExistingLessons = exports.deleteExistingLesson = exports.updateExistingLesson = exports.createNewProgram = exports.createNewLesson = exports.getLessonDetail = exports.changeLessonProgramSubject = exports.changeLessonCourseMappings = exports.getCourseMappingsByProgram = exports.getLessonPrograms = exports.getLessonSubjects = exports.getLessons = void 0;
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const serializer_1 = require("../../lib/serializer");
 const lesson_repository_1 = require("./lesson.repository");
@@ -52,6 +52,11 @@ const changeLessonCourseMappings = async (payload) => {
     });
 };
 exports.changeLessonCourseMappings = changeLessonCourseMappings;
+const changeLessonProgramSubject = async (payload) => ((0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.updateLessonProgramSubject)({
+    programCode: payload.program_code,
+    subjectName: payload.subject_name,
+})));
+exports.changeLessonProgramSubject = changeLessonProgramSubject;
 const getLessonDetail = async (id) => {
     const lesson = await (0, lesson_repository_1.findLessonById)(id);
     if (!lesson)

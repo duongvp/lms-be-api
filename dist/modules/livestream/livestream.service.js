@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.resendCalendarsToHocmai = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.getCalendarImportProgramContext = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.swapSessionTimes = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getHocmaiSectionsForProgramLessons = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.validateBulkFinalStateConflicts = exports.isSessionModifiable = exports.provisionCalendarsEvgBulk = exports.provisionCalendarEvgStream = void 0;
+exports.backfillMissingCalendarTeachingUsers = exports.updateBulk = exports.resendCalendarsToHocmai = exports.updateCalendarMappings = exports.previewCalendarMappingUpdates = exports.getCalendarRowsForExport = exports.getCalendar = exports.assertCalendarIdsInProgram = exports.resetCalendarAttendance = exports.getCalendarAttendanceResetStudents = exports.syncCalendarAttendance = exports.buildHocmaiAttendancePayload = exports.getCalendarTeacherFilterOptions = exports.getCalendarImportProgramContext = exports.assertSchedulingProgramExists = exports.deleteSession = exports.cancelSession = exports.updateSchedule = exports.bulkRescheduleSessions = exports.swapSessionTimes = exports.rescheduleSession = exports.createValidatedInternalCalendarImport = exports.createValidatedCalendarImport = exports.createBulk = exports.getHocmaiSectionsForProgramLesson = exports.getHocmaiSectionsForProgramLessons = exports.getSchedulingPrograms = exports.getProgramLessonsForScheduling = exports.createSingle = exports.validateBulkFinalStateConflicts = exports.isSessionModifiable = exports.provisionCalendarsEvgBulk = exports.provisionCalendarEvgStream = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const calendar_time_notification_1 = require("./calendar-time-notification");
 const client_1 = require("@prisma/client");
@@ -1450,6 +1450,11 @@ const cancelWithMakeup = async (tx, current, payload, reason, preloadedSourceMap
         where: { key: sourceKey },
         orderBy: [{ id: 'asc' }],
     });
+    // Giữ nguyên trigger: tạm tách mapping trong transaction để các thao tác
+    // UPDATE/INSERT calendar bên dưới không tự tạo queue CRUD dư thừa.
+    if (sourceMappings.length) {
+        await tx.package_lesson_mapping.deleteMany({ where: { key: sourceKey } });
+    }
     const lessonNameOptions = getRescheduleLessonNameOptions(payload);
     const lessonNotification = shouldSendChangeNotification(payload) ? reason : null;
     const newSessionInput = normalizeRoom({ ...(payload.new_session || payload) });
@@ -1500,6 +1505,7 @@ const cancelWithMakeup = async (tx, current, payload, reason, preloadedSourceMap
         });
     await copyPackageLessonMappingsForCalendar(tx, updatedCurrent, sourceMappings);
     const createdSession = await createCalendarRecord(tx, newSessionData, current);
+    await copyPackageLessonMappingsForCalendar(tx, createdSession, sourceMappings);
     return { canceled_session: updatedCurrent, created_session: createdSession };
 };
 const rescheduleFollowing = async (tx, current, payload, reason, canceledSource) => {
@@ -1508,10 +1514,6 @@ const rescheduleFollowing = async (tx, current, payload, reason, canceledSource)
     const sourceKey = String(current.key || '').trim();
     if (!sourceKey)
         throw new Error('Lịch học không có key để dời lịch');
-    const sourceMappings = await tx.package_lesson_mapping.findMany({
-        where: { key: sourceKey },
-        orderBy: [{ id: 'asc' }],
-    });
     const lessonNameOptions = getRescheduleLessonNameOptions(payload);
     const lessonNotification = shouldSendChangeNotification(payload) ? reason : null;
     const newSessionInput = normalizeRoom({ ...(payload.new_session || {}) });
@@ -1549,6 +1551,26 @@ const rescheduleFollowing = async (tx, current, payload, reason, canceledSource)
     const sourceSession = canceledSource || current;
     const allSessions = [sourceSession, ...followings];
     const lastSource = allSessions[allSessions.length - 1];
+    // Không đổi trigger: tạm tách mapping của toàn bộ key sẽ xuất hiện trong các
+    // UPDATE/INSERT calendar. Sau cùng mapping được khôi phục đúng theo từng key.
+    const activeKeys = Array.from(new Set(allSessions
+        .map((session) => String(session.key || '').trim())
+        .filter(Boolean)));
+    const activeMappings = activeKeys.length
+        ? await tx.package_lesson_mapping.findMany({
+            where: { key: { in: activeKeys } },
+            orderBy: [{ id: 'asc' }],
+        })
+        : [];
+    const mappingsByKey = new Map();
+    activeMappings.forEach((mapping) => {
+        const key = String(mapping.key || '');
+        mappingsByKey.set(key, [...(mappingsByKey.get(key) || []), mapping]);
+    });
+    const sourceMappings = mappingsByKey.get(sourceKey) || [];
+    if (activeKeys.length) {
+        await tx.package_lesson_mapping.deleteMany({ where: { key: { in: activeKeys } } });
+    }
     await checkConflict({
         teacher: newSessionInput.teacher ?? lastSource.teacher,
         assistant_teacher: newSessionInput.assistant_teacher ?? lastSource.assistant_teacher,
@@ -1603,6 +1625,11 @@ const rescheduleFollowing = async (tx, current, payload, reason, canceledSource)
         key: lastSource.key,
     };
     const createdSession = await createCalendarRecord(tx, newSessionData);
+    for (const source of allSessions) {
+        const key = String(source.key || '').trim();
+        if (key)
+            await copyPackageLessonMappingsForCalendar(tx, source, mappingsByKey.get(key) || []);
+    }
     return {
         canceled_session: updatedCurrent,
         shifted_sessions: shiftedSessions,
@@ -2130,6 +2157,266 @@ const getCalendarImportProgramContext = async (programCode) => {
     };
 };
 exports.getCalendarImportProgramContext = getCalendarImportProgramContext;
+const getCalendarTeacherFilterOptions = async (programCode, allowedPrograms = null) => {
+    const code = String(programCode || '').trim();
+    if (!code)
+        return [];
+    if (allowedPrograms !== null && !allowedPrograms.includes(code))
+        return [];
+    const calendarIds = await getCalendarIdsForPrograms([code]);
+    if (!calendarIds.length)
+        return [];
+    const rows = await prisma_1.default.calendar.findMany({
+        where: {
+            id: { in: calendarIds },
+            teacher: { not: null },
+        },
+        distinct: ['teacher'],
+        select: { teacher: true },
+        orderBy: { teacher: 'asc' },
+    });
+    return rows
+        .map((row) => String(row.teacher || '').trim())
+        .filter(Boolean)
+        .map((teacher) => ({ value: teacher, label: teacher }));
+};
+exports.getCalendarTeacherFilterOptions = getCalendarTeacherFilterOptions;
+const buildHocmaiAttendancePayload = (calendarKeys, calendarJoin, rawUserIds, action) => {
+    const cKeys = Array.from(new Set(calendarKeys
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)));
+    const joinedCalendarKey = action === 'delete' ? '' : String(calendarJoin || '').trim();
+    const userIds = Array.from(new Set(rawUserIds
+        .map((value) => String(value || '').trim())
+        .filter((value) => /^\d+$/.test(value))));
+    if (!userIds.length)
+        return [];
+    if (!cKeys.length)
+        throw new Error('Lịch học chưa có c_key để đồng bộ chuyên cần sang HOCMAI');
+    if (!action && !joinedCalendarKey)
+        throw new Error('Chưa xác định được calendar_join để đồng bộ chuyên cần sang HOCMAI');
+    // Giữ toàn bộ c_key của một học viên liền nhau. Nhờ vậy khi chia batch,
+    // B1/B2/... của cùng học viên không bị dồn thành các request riêng biệt.
+    return userIds.flatMap((userId) => cKeys.map((cKey) => ({
+        c_key: cKey,
+        user_id: userId,
+        calendar_join: joinedCalendarKey,
+        ...(action ? { action } : {}),
+    })));
+};
+exports.buildHocmaiAttendancePayload = buildHocmaiAttendancePayload;
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const sendHocmaiAttendance = async (calendarKeys, calendarJoin, rawUserIds, action) => {
+    const attendancePayload = (0, exports.buildHocmaiAttendancePayload)(calendarKeys, calendarJoin, rawUserIds, action);
+    if (!attendancePayload.length)
+        return 0;
+    const url = String(process.env.HOCMAI_ATTENDANCE_UPDATE_USER_API_URL || 'https://hocmai.vn/api/calendar/update-user').trim();
+    const token = String(process.env.HOCMAI_ATTENDANCE_UPDATE_USER_API_TOKEN || process.env.HOCMAI_LIVE_USER_API_TOKEN || '').trim();
+    if (!url || !token)
+        throw new Error('Chưa cấu hình token HOCMAI để đồng bộ chuyên cần');
+    const configuredBatchSize = Number(process.env.HOCMAI_ATTENDANCE_UPDATE_USER_BATCH_SIZE || 100);
+    const batchSize = Number.isFinite(configuredBatchSize) ? Math.max(1, Math.min(Math.floor(configuredBatchSize), 500)) : 100;
+    const calendarKeyCount = new Set(attendancePayload.map((item) => item.c_key)).size;
+    // Làm tròn batch theo bội số số c_key để không cắt đôi nhóm của một học viên.
+    // Trường hợp số c_key lớn hơn giới hạn, vẫn gửi trọn một học viên trong một batch.
+    const completeStudentBatchSize = calendarKeyCount > batchSize
+        ? calendarKeyCount
+        : Math.max(calendarKeyCount, Math.floor(batchSize / calendarKeyCount) * calendarKeyCount);
+    let sent = 0;
+    for (let index = 0; index < attendancePayload.length; index += completeStudentBatchSize) {
+        const payload = attendancePayload.slice(index, index + completeStudentBatchSize);
+        console.log('payload', payload);
+        let lastError;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            try {
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: { token, "Content-Type": "application/json", Accept: "application/json" },
+                    body: JSON.stringify(payload),
+                    signal: AbortSignal.timeout(Number(process.env.HOCMAI_ATTENDANCE_UPDATE_USER_TIMEOUT_MS) || 30_000),
+                });
+                const responsePayload = await response.json().catch(() => null);
+                if (!response.ok)
+                    throw new Error('HOCMAI trả HTTP ' + response.status);
+                // Một số response HOCMAI vẫn HTTP 200 nhưng báo status lỗi trong body.
+                // Chỉ chấp nhận status thành công khi trường status được trả về.
+                if (responsePayload?.status !== undefined && !['success', '200', 'true'].includes(String(responsePayload.status).toLowerCase())) {
+                    throw new Error('HOCMAI từ chối cập nhật: ' + String(responsePayload?.message || responsePayload?.error || responsePayload.status));
+                }
+                sent += payload.length;
+                lastError = undefined;
+                break;
+            }
+            catch (error) {
+                lastError = error;
+                if (attempt < 3)
+                    await sleep(500 * attempt);
+            }
+        }
+        if (lastError) {
+            const message = lastError instanceof Error ? lastError.message : 'Lỗi không xác định';
+            throw new Error('Không thể đồng bộ chuyên cần lịch ' + String(calendarJoin || calendarKeys[0] || '') + ' sang HOCMAI: ' + message);
+        }
+    }
+    return sent;
+};
+const syncCalendarAttendance = async (rawIds, preview = false) => {
+    const ids = Array.from(new Set((Array.isArray(rawIds) ? rawIds : [])
+        .map(Number)
+        .filter((id) => Number.isInteger(id) && id > 0)));
+    if (!ids.length)
+        throw new Error("Vui lòng chọn ít nhất một lịch học");
+    const calendars = await prisma_1.default.calendar.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, key: true, code: true, learn_number: true, start_time: true, end_time: true, lesson_status: true, system_type: true },
+    });
+    const result = { processed: 0, skipped: 0, updated: 0, details: [] };
+    const now = (0, dateTime_1.getVietnamWallClockDate)();
+    const updateSql = [
+        "UPDATE users AS student",
+        "INNER JOIN (",
+        "  SELECT SUBSTRING_INDEX(log.name, \' - \', 1) AS student_hmid",
+        "  FROM users_logs AS log",
+        "  WHERE log.code = ? AND log.learn_number = ?",
+        "    AND log.created_at >= ? AND log.created_at < ?",
+        "    AND log.name IS NOT NULL",
+        "  GROUP BY SUBSTRING_INDEX(log.name, \' - \', 1)",
+        "  HAVING SUM(log.status = 2) >= 2",
+        ") AS attended ON attended.student_hmid = student.student_hmid",
+        "SET student.islearn = 1",
+        "WHERE student.code = ? AND student.learn_number = ? AND student.islearn = 0",
+    ].join("\n");
+    const attendedStudentsSql = [
+        "SELECT student.student_hmid AS user_id FROM users AS student",
+        "INNER JOIN (",
+        "  SELECT SUBSTRING_INDEX(log.name, ' - ', 1) AS student_hmid",
+        "  FROM users_logs AS log",
+        "  WHERE log.code = ? AND log.learn_number = ?",
+        "    AND log.created_at >= ? AND log.created_at < ?",
+        "    AND log.name IS NOT NULL",
+        "  GROUP BY SUBSTRING_INDEX(log.name, ' - ', 1)",
+        "  HAVING SUM(log.status = 2) >= 2",
+        ") AS attended ON attended.student_hmid = student.student_hmid",
+        "WHERE student.code = ? AND student.learn_number = ? AND student.islearn = 1 AND student.student_hmid IS NOT NULL",
+    ].join("\n");
+    const previewSql = [
+        "SELECT COUNT(*) AS total FROM users AS student",
+        "INNER JOIN (",
+        "  SELECT SUBSTRING_INDEX(log.name, \' - \', 1) AS student_hmid",
+        "  FROM users_logs AS log",
+        "  WHERE log.code = ? AND log.learn_number = ?",
+        "    AND log.created_at >= ? AND log.created_at < ?",
+        "    AND log.name IS NOT NULL",
+        "  GROUP BY SUBSTRING_INDEX(log.name, \' - \', 1)",
+        "  HAVING SUM(log.status = 2) >= 2",
+        ") AS attended ON attended.student_hmid = student.student_hmid",
+        "WHERE student.code = ? AND student.learn_number = ? AND student.islearn = 0",
+    ].join("\n");
+    for (const calendar of calendars) {
+        if (Number(calendar.lesson_status) === 1 || !calendar.start_time || !calendar.end_time || calendar.end_time > now) {
+            result.skipped += 1;
+            continue;
+        }
+        // status = 2 được ghi mỗi 5 phút; từ hai log trở lên là đủ 10 phút học.
+        const previewRows = preview
+            ? await prisma_1.default.$queryRawUnsafe(previewSql, calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number)
+            : null;
+        const updated = preview ? null : await prisma_1.default.$executeRawUnsafe(updateSql, calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number);
+        // Đồng bộ HOCMAI theo từng lịch: dù islearn của bài đã là 1 từ một lịch
+        // khác, học viên vẫn phải được ghi nhận vào đúng c_key đã tham gia.
+        const attendedRows = preview ? [] : await prisma_1.default.$queryRawUnsafe(attendedStudentsSql, calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number);
+        const siblingKeys = preview || calendar.system_type !== 'topclass'
+            ? [calendar.key]
+            : (await prisma_1.default.calendar.findMany({
+                where: {
+                    code: calendar.code,
+                    learn_number: calendar.learn_number,
+                    system_type: 'topclass',
+                    key: { not: null },
+                    OR: [{ lesson_status: null }, { lesson_status: { not: 1 } }],
+                },
+                select: { key: true },
+                orderBy: [{ lesson_count: 'asc' }, { start_time: 'asc' }, { id: 'asc' }],
+            }))
+                .map((item) => item.key)
+                .filter((key) => Boolean(String(key || '').trim()));
+        const hocmaiUpdated = preview ? 0 : await sendHocmaiAttendance(siblingKeys, calendar.key, attendedRows.map((row) => row.user_id));
+        const count = preview ? Number(previewRows?.[0]?.total || 0) : Number(updated);
+        result.processed += 1;
+        result.updated += count;
+        result.details.push({ calendar_id: calendar.id, updated: count, hocmai_updated: hocmaiUpdated });
+    }
+    result.skipped += ids.length - calendars.length;
+    return result;
+};
+exports.syncCalendarAttendance = syncCalendarAttendance;
+const getEndedActiveCalendarForAttendance = async (rawCalendarId) => {
+    const calendarId = Number(rawCalendarId);
+    if (!Number.isInteger(calendarId) || calendarId <= 0)
+        throw new Error('Lịch học không hợp lệ');
+    const calendar = await prisma_1.default.calendar.findUnique({
+        where: { id: calendarId },
+        select: { id: true, key: true, code: true, learn_number: true, lesson_name: true, start_time: true, end_time: true, lesson_status: true },
+    });
+    if (!calendar)
+        throw new Error('Không tìm thấy lịch học');
+    if (Number(calendar.lesson_status) === 1)
+        throw new Error('Không thể thay đổi chuyên cần của lịch đã hủy');
+    if (!calendar.end_time || calendar.end_time > (0, dateTime_1.getVietnamWallClockDate)()) {
+        throw new Error('Chỉ có thể thay đổi chuyên cần của lịch đã kết thúc');
+    }
+    return calendar;
+};
+// Danh sách chỉ gồm học viên đang được đánh dấu đã học ở đúng bài của lịch.
+// UI phải chọn rõ từng người trước khi gửi yêu cầu hoàn tác.
+const getCalendarAttendanceResetStudents = async (rawCalendarId) => {
+    const calendar = await getEndedActiveCalendarForAttendance(rawCalendarId);
+    const students = await prisma_1.default.users.findMany({
+        where: { code: calendar.code, learn_number: calendar.learn_number, islearn: 1 },
+        select: { id: true, username: true, name: true, student_hmid: true, email: true },
+        orderBy: [{ name: 'asc' }, { username: 'asc' }],
+    });
+    return { calendar, students };
+};
+exports.getCalendarAttendanceResetStudents = getCalendarAttendanceResetStudents;
+// Hoàn tác có chủ đích: chỉ các user ID được chọn, cùng chương trình và bài học
+// của duy nhất một lịch đã kết thúc, mới được đưa islearn từ 1 về 0.
+const resetCalendarAttendance = async (rawCalendarId, rawStudentIds) => {
+    const calendar = await getEndedActiveCalendarForAttendance(rawCalendarId);
+    const studentIds = Array.from(new Set((Array.isArray(rawStudentIds) ? rawStudentIds : [])
+        .map(Number)
+        .filter((id) => Number.isInteger(id) && id > 0)));
+    if (!studentIds.length)
+        throw new Error('Vui lòng chọn ít nhất một học viên');
+    const studentsToReset = await prisma_1.default.users.findMany({
+        where: {
+            id: { in: studentIds },
+            code: calendar.code,
+            learn_number: calendar.learn_number,
+            islearn: 1,
+        },
+        select: { id: true, student_hmid: true },
+    });
+    const invalidHocmaiIds = studentsToReset.filter((student) => !/^\d+$/.test(String(student.student_hmid || '').trim()));
+    if (invalidHocmaiIds.length) {
+        throw new Error('Có ' + invalidHocmaiIds.length + ' học viên chưa có HMO ID hợp lệ; chưa thay đổi trạng thái để tránh lệch dữ liệu HOCMAI');
+    }
+    // Gửi HOCMAI trước để không đưa hai hệ thống về trạng thái lệch nhau.
+    // calendar_join rỗng và action=delete là payload hoàn tác do HOCMAI quy định.
+    const hocmaiReset = await sendHocmaiAttendance([calendar.key], '', studentsToReset.map((student) => student.student_hmid), 'delete');
+    const result = studentsToReset.length ? await prisma_1.default.users.updateMany({
+        where: { id: { in: studentsToReset.map((student) => student.id) }, islearn: 1 },
+        data: { islearn: 0 },
+    }) : { count: 0 };
+    return {
+        calendar_id: calendar.id,
+        requested: studentIds.length,
+        reset: result.count,
+        hocmai_reset: hocmaiReset,
+        skipped: studentIds.length - result.count,
+    };
+};
+exports.resetCalendarAttendance = resetCalendarAttendance;
 const assertCalendarIdsInProgram = async (ids, programCode) => {
     const uniqueIds = Array.from(new Set(ids.filter((id) => Number.isInteger(id) && id > 0)));
     if (!uniqueIds.length)
@@ -2384,21 +2671,18 @@ const getCalendar = async (query, allowedPrograms = null, allowAllPrograms = fal
         .map((record) => record.key)
         .filter((key) => Boolean(key));
     const mappingsByKey = await loadMappingsByKeys(prisma_1.default, mappingKeys);
-    const classroomStatusNow = (0, dateTime_1.getVietnamWallClockDate)();
     return {
         total,
         page,
         limit,
         data: data.map((record) => {
             const hasAssignmentHistory = assignmentStatusByCalendarId.has(record.id);
-            const hasStarted = Boolean(record.start_time && record.start_time <= classroomStatusNow);
             const isCancelled = Number(record.lesson_status) === 1;
             return {
                 ...record,
-                // Các lịch cũ có thể đã được phân lớp trước khi hệ thống bắt đầu lưu
-                // classroom_assignment_history. Lịch đã bắt đầu được coi là đã chia lớp.
-                // Lịch nghỉ học không có trạng thái phân lớp trên giao diện.
-                classroom_assigned: !isCancelled && (hasAssignmentHistory || hasStarted),
+                // Chỉ hiển thị đã chia lớp khi có lịch sử phân lớp được lưu.
+                // Không suy diễn từ thời điểm bắt đầu của lịch vì lịch cũ có thể chưa từng được chia.
+                classroom_assigned: !isCancelled && hasAssignmentHistory,
                 classroom_assigned_at: assignmentStatusByCalendarId.get(record.id) ?? null,
                 package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
                 can_create_makeup_after_cancel: isCancelled
@@ -3094,6 +3378,7 @@ const backfillMissingCalendarTeachingUsers = async (ids, additionalUsers) => {
     let scanned = 0;
     let created = 0;
     let updated = 0;
+    let skipped = 0;
     const errors = [];
     if (ids && ids.length > 0) {
         for (let i = 0; i < ids.length; i += batchSize) {
@@ -3104,16 +3389,18 @@ const backfillMissingCalendarTeachingUsers = async (ids, additionalUsers) => {
                     orderBy: { id: 'asc' },
                 });
                 if (!calendars.length)
-                    return { scanned: 0, created: 0, updated: 0, errors: [] };
+                    return { scanned: 0, created: 0, updated: 0, skipped: 0, errors: [] };
                 await hydrateAssistantTeachers(tx, calendars);
                 let batchCreated = 0;
                 let batchUpdated = 0;
+                let batchSkipped = 0;
                 const batchErrors = [];
                 for (const calendar of calendars) {
                     try {
                         const result = await (0, calendar_user_sync_service_1.ensureCalendarScanTeachingUsers)(tx, calendar, scanUsers);
                         batchCreated += result.created;
                         batchUpdated += result.updated;
+                        batchSkipped += result.skipped;
                     }
                     catch (error) {
                         batchErrors.push({
@@ -3126,12 +3413,14 @@ const backfillMissingCalendarTeachingUsers = async (ids, additionalUsers) => {
                     scanned: calendars.length,
                     created: batchCreated,
                     updated: batchUpdated,
+                    skipped: batchSkipped,
                     errors: batchErrors,
                 };
             }, { maxWait: 10_000, timeout: 60_000 });
             scanned += batchResult.scanned;
             created += batchResult.created;
             updated += batchResult.updated;
+            skipped += batchResult.skipped;
             errors.push(...batchResult.errors);
         }
     }
@@ -3151,16 +3440,18 @@ const backfillMissingCalendarTeachingUsers = async (ids, additionalUsers) => {
                     take: batchSize,
                 });
                 if (!calendars.length)
-                    return { lastId: null, scanned: 0, created: 0, updated: 0, errors: [] };
+                    return { lastId: null, scanned: 0, created: 0, updated: 0, skipped: 0, errors: [] };
                 await hydrateAssistantTeachers(tx, calendars);
                 let batchCreated = 0;
                 let batchUpdated = 0;
+                let batchSkipped = 0;
                 const batchErrors = [];
                 for (const calendar of calendars) {
                     try {
                         const result = await (0, calendar_user_sync_service_1.ensureCalendarScanTeachingUsers)(tx, calendar, scanUsers);
                         batchCreated += result.created;
                         batchUpdated += result.updated;
+                        batchSkipped += result.skipped;
                     }
                     catch (error) {
                         batchErrors.push({
@@ -3174,6 +3465,7 @@ const backfillMissingCalendarTeachingUsers = async (ids, additionalUsers) => {
                     scanned: calendars.length,
                     created: batchCreated,
                     updated: batchUpdated,
+                    skipped: batchSkipped,
                     errors: batchErrors,
                 };
             }, { maxWait: 10_000, timeout: 60_000 });
@@ -3183,6 +3475,7 @@ const backfillMissingCalendarTeachingUsers = async (ids, additionalUsers) => {
             scanned += batchResult.scanned;
             created += batchResult.created;
             updated += batchResult.updated;
+            skipped += batchResult.skipped;
             errors.push(...batchResult.errors);
         }
     }
@@ -3190,6 +3483,7 @@ const backfillMissingCalendarTeachingUsers = async (ids, additionalUsers) => {
         scanned,
         created,
         updated,
+        skipped,
         failed: errors.length,
         errors,
     };

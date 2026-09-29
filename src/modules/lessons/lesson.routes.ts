@@ -47,6 +47,7 @@ router.post(
 );
 router.get('/course-mappings', authorize(['lessons.view']), authorizeProgram('lessons.view', (req) => String(req.query.program_code || '')), lessonController.courseMappings);
 router.put('/course-mappings', authorize(['lessons.update']), authorizeProgram('lessons.update', (req) => String(req.body?.program_code || '')), lessonController.updateCourseMappings);
+router.patch('/options/programs/:programCode/subject', authorize(['lessons.update']), authorizeProgram('lessons.update', (req) => String(req.params.programCode || '')), authorizeFields('lessons', () => ['subject_name']), lessonController.updateProgramSubject);
 router.patch(
   '/bulk',
   authorize(['lessons.update']),

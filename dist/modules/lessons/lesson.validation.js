@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.validateLessonImportRows = exports.validateLessonCourseMappingPayload = exports.validateLessonReorderPayload = exports.validateLessonBulkUpdatePayload = exports.validateLessonPayload = exports.validateLessonId = exports.validateLessonExportQuery = exports.validateLessonListQuery = void 0;
+exports.validateLessonImportRows = exports.validateLessonCourseMappingPayload = exports.validateLessonReorderPayload = exports.validateLessonBulkUpdatePayload = exports.validateLessonProgramSubjectUpdatePayload = exports.validateLessonPayload = exports.validateLessonId = exports.validateLessonExportQuery = exports.validateLessonListQuery = void 0;
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const SORTABLE_FIELDS = new Set([
     'id',
@@ -190,6 +190,11 @@ const validateLessonPayload = (body, isUpdate = false) => {
     return payload;
 };
 exports.validateLessonPayload = validateLessonPayload;
+const validateLessonProgramSubjectUpdatePayload = (body) => ({
+    program_code: requiredString(body?.program_code, 'program_code', 100),
+    subject_name: requiredString(body?.subject_name, 'subject_name', 100),
+});
+exports.validateLessonProgramSubjectUpdatePayload = validateLessonProgramSubjectUpdatePayload;
 const validateLessonBulkUpdatePayload = (body) => {
     const ids = validateLessonIds(body.ids);
     const payload = (0, exports.validateLessonPayload)(body.data ?? {}, true);

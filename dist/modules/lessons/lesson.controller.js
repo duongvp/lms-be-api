@@ -142,6 +142,14 @@ const updateCourseMappings = async (req, res) => {
         return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
     }
 };
+const updateProgramSubject = async (req, res) => {
+    try {
+        return (0, apiResponse_1.SuccessResponse)(res, 'Updated', await (0, lesson_service_1.changeLessonProgramSubject)((0, lesson_validation_1.validateLessonProgramSubjectUpdatePayload)({ ...req.body, program_code: req.params.programCode })));
+    }
+    catch (error) {
+        return (0, apiResponse_1.ErrorResponse)(res, error.message, error.statusCode || 400);
+    }
+};
 const detail = async (req, res) => {
     try {
         const id = (0, lesson_validation_1.validateLessonId)(req.params.id);
@@ -350,6 +358,7 @@ exports.default = {
     createProgram,
     courseMappings,
     updateCourseMappings,
+    updateProgramSubject,
     detail,
     create,
     update,

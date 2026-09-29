@@ -2,6 +2,8 @@ import {
   CalendarChangeItem,
   CalendarNotificationPayload,
   TeamsCalendarEventType,
+  TeamsNotificationPayload,
+  TeamsStudentSyncSummaryPayload,
 } from './teams-notification.types';
 
 const TIME_ZONE = 'Asia/Ho_Chi_Minh';
@@ -101,9 +103,28 @@ export const buildCalendarChanges = (
   return changes;
 };
 
-export const buildTeamsAdaptiveCard = (payload: CalendarNotificationPayload) => {
-  const calendar = payload.after || payload.before || {};
-  const actor = payload.actor?.username || EMPTY_VALUE;
+const buildStudentSyncSummaryCard = (payload: TeamsStudentSyncSummaryPayload) => ({
+  type: 'message',
+  attachments: [{
+    contentType: 'application/vnd.microsoft.card.adaptive', contentUrl: null,
+    content: { $schema: 'http://adaptivecards.io/schemas/adaptive-card.json', type: 'AdaptiveCard', version: '1.4', body: [
+      { type: 'TextBlock', text: 'Đồng bộ học viên tự động đã hoàn tất', size: 'Large', weight: 'Bolder', wrap: true },
+      { type: 'FactSet', facts: [
+        { title: 'Ngày đăng ký quét', value: payload.registeredAt }, { title: 'Lịch chưa diễn ra', value: String(payload.calendars) },
+        { title: 'Chương trình', value: String(payload.programs) }, { title: 'Thêm mới', value: String(payload.inserted) },
+        { title: 'Đã có sẵn', value: String(payload.skipped) }, { title: 'Lỗi', value: String(payload.failed) },
+        { title: 'Hoàn tất lúc', value: formatChangedDate(payload.completedAt) + ' ' + formatChangedTime(payload.completedAt) },
+      ] },
+      ...(payload.errors.length ? [{ type: 'TextBlock', text: 'Chi tiết lỗi: ' + payload.errors.slice(0, 5).map((error) => error.code + ': ' + error.message).join('\n'), wrap: true, spacing: 'Medium' }] : []),
+    ] },
+  }],
+});
+
+export const buildTeamsAdaptiveCard = (payload: TeamsNotificationPayload) => {
+  if ('type' in payload && payload.type === 'student_sync_summary') return buildStudentSyncSummaryCard(payload);
+  const calendarPayload = payload as CalendarNotificationPayload;
+  const calendar = calendarPayload.after || calendarPayload.before || {};
+  const actor = calendarPayload.actor?.username || EMPTY_VALUE;
   const teacherName = String(calendar.teacher ?? '')
     .trim()
     .replace(/^(cô|thầy)\s+/i, '');
@@ -121,9 +142,9 @@ export const buildTeamsAdaptiveCard = (payload: CalendarNotificationPayload) => 
     },
     { title: 'Phòng học', value: text(calendar.channel_name) },
     { title: 'Người thực hiện', value: actor },
-    { title: 'Thời gian thay đổi', value: `${formatChangedDate(payload.changedAt)} ${formatChangedTime(payload.changedAt)}` },
+    { title: 'Thời gian thay đổi', value: `${formatChangedDate(calendarPayload.changedAt)} ${formatChangedTime(calendarPayload.changedAt)}` },
   ];
-  const changeBlocks = payload.changes.length
+  const changeBlocks = calendarPayload.changes.length
     ? [
       {
         type: 'TextBlock',
@@ -131,7 +152,7 @@ export const buildTeamsAdaptiveCard = (payload: CalendarNotificationPayload) => 
         weight: 'Bolder',
         spacing: 'Medium',
       },
-      ...payload.changes.map((change) => ({
+      ...calendarPayload.changes.map((change) => ({
         type: 'TextBlock',
         text: `**${change.label}:** ${change.before} → ${change.after}`,
         wrap: true,
@@ -152,7 +173,7 @@ export const buildTeamsAdaptiveCard = (payload: CalendarNotificationPayload) => 
         body: [
           {
             type: 'TextBlock',
-            text: EVENT_TITLES[payload.eventType],
+            text: EVENT_TITLES[calendarPayload.eventType],
             size: 'Large',
             weight: 'Bolder',
             wrap: true,

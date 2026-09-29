@@ -6,25 +6,25 @@ import {
   getTeamsWorkerConfig,
   isTeamsNotificationEnabled,
 } from './teams-notification.config';
-import { CalendarNotificationPayload, TeamsWebhookDestination } from './teams-notification.types';
+import { TeamsNotificationPayload, TeamsWebhookDestination } from './teams-notification.types';
 
 type OutboxRow = {
   id: bigint;
   destination: string;
-  payload: CalendarNotificationPayload | string;
+  payload: TeamsNotificationPayload | string;
   attempts: number;
 };
 
 let running = false;
 let timer: NodeJS.Timeout | null = null;
 
-const parsePayload = (value: OutboxRow['payload']): CalendarNotificationPayload => (
+const parsePayload = (value: OutboxRow['payload']): TeamsNotificationPayload => (
   typeof value === 'string' ? JSON.parse(value) : value
 );
 
 const sendWebhook = async (
   destination: TeamsWebhookDestination,
-  payload: CalendarNotificationPayload,
+  payload: TeamsNotificationPayload,
   timeoutMs: number
 ) => {
   const controller = new AbortController();

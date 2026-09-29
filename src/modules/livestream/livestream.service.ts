@@ -2762,38 +2762,68 @@ export const getCalendarTeacherFilterOptions = async (
     .map((teacher) => ({ value: teacher, label: teacher }));
 };
 
-type HocmaiAttendanceUser = { user_id: string; c_key: string; calendar_join: string; action?: 'delete' };
+export type HocmaiAttendanceUser = { user_id: string; c_key: string; calendar_join: string; action?: 'delete' };
 
-const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-const sendHocmaiAttendance = async (calendarKey: unknown, rawUserIds: unknown[], action?: 'delete') => {
-  const cKey = String(calendarKey || '').trim();
+export const buildHocmaiAttendancePayload = (
+  calendarKeys: unknown[],
+  calendarJoin: unknown,
+  rawUserIds: unknown[],
+  action?: 'delete'
+): HocmaiAttendanceUser[] => {
+  const cKeys = Array.from(new Set(calendarKeys
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)));
+  const joinedCalendarKey = action === 'delete' ? '' : String(calendarJoin || '').trim();
   const userIds = Array.from(new Set(rawUserIds
     .map((value) => String(value || '').trim())
     .filter((value) => /^\d+$/.test(value))));
-  if (!userIds.length) return 0;
-  if (!cKey) throw new Error('Lịch học chưa có c_key để đồng bộ chuyên cần sang HOCMAI');
+  if (!userIds.length) return [];
+  if (!cKeys.length) throw new Error('Lịch học chưa có c_key để đồng bộ chuyên cần sang HOCMAI');
+  if (!action && !joinedCalendarKey) throw new Error('Chưa xác định được calendar_join để đồng bộ chuyên cần sang HOCMAI');
 
-  const url = String(process.env.HOCMAI_ATTENDANCE_UPDATE_USER_API_URL || 'https://hocmai.vn/api/calendar/update-user').trim();
+  // Giữ toàn bộ c_key của một học viên liền nhau. Nhờ vậy khi chia batch,
+  // B1/B2/... của cùng học viên không bị dồn thành các request riêng biệt.
+  return userIds.flatMap((userId) => cKeys.map((cKey) => ({
+    c_key: cKey,
+    user_id: userId,
+    calendar_join: joinedCalendarKey,
+    ...(action ? { action } : {}),
+  })));
+};
+
+const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const sendHocmaiAttendance = async (
+  calendarKeys: unknown[],
+  calendarJoin: unknown,
+  rawUserIds: unknown[],
+  action?: 'delete'
+) => {
+  const attendancePayload = buildHocmaiAttendancePayload(calendarKeys, calendarJoin, rawUserIds, action);
+  if (!attendancePayload.length) return 0;
+
+  const url =  String(process.env.HOCMAI_ATTENDANCE_UPDATE_USER_API_URL || 'https://hocmai.vn/api/calendar/update-user').trim();
   const token = String(process.env.HOCMAI_ATTENDANCE_UPDATE_USER_API_TOKEN || process.env.HOCMAI_LIVE_USER_API_TOKEN || '').trim();
   if (!url || !token) throw new Error('Chưa cấu hình token HOCMAI để đồng bộ chuyên cần');
 
   const configuredBatchSize = Number(process.env.HOCMAI_ATTENDANCE_UPDATE_USER_BATCH_SIZE || 100);
   const batchSize = Number.isFinite(configuredBatchSize) ? Math.max(1, Math.min(Math.floor(configuredBatchSize), 500)) : 100;
+  const calendarKeyCount = new Set(attendancePayload.map((item) => item.c_key)).size;
+  // Làm tròn batch theo bội số số c_key để không cắt đôi nhóm của một học viên.
+  // Trường hợp số c_key lớn hơn giới hạn, vẫn gửi trọn một học viên trong một batch.
+  const completeStudentBatchSize = calendarKeyCount > batchSize
+    ? calendarKeyCount
+    : Math.max(calendarKeyCount, Math.floor(batchSize / calendarKeyCount) * calendarKeyCount);
   let sent = 0;
-  for (let index = 0; index < userIds.length; index += batchSize) {
-    const payload: HocmaiAttendanceUser[] = userIds.slice(index, index + batchSize).map((userId) => ({
-      c_key: cKey,
-      user_id: userId,
-      calendar_join: action === 'delete' ? '' : cKey,
-      ...(action ? { action } : {}),
-    }));
+  for (let index = 0; index < attendancePayload.length; index += completeStudentBatchSize) {
+    const payload = attendancePayload.slice(index, index + completeStudentBatchSize);
+    console.log('payload', payload);
     let lastError: unknown;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
         const response = await fetch(url, {
-          method: 'POST',
-          headers: { token, 'Content-Type': 'application/json', Accept: 'application/json' },
+          method: "POST",
+          headers: { token, "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify(payload),
           signal: AbortSignal.timeout(Number(process.env.HOCMAI_ATTENDANCE_UPDATE_USER_TIMEOUT_MS) || 30_000),
         });
@@ -2814,7 +2844,7 @@ const sendHocmaiAttendance = async (calendarKey: unknown, rawUserIds: unknown[],
     }
     if (lastError) {
       const message = lastError instanceof Error ? lastError.message : 'Lỗi không xác định';
-      throw new Error('Không thể đồng bộ chuyên cần lịch ' + cKey + ' sang HOCMAI: ' + message);
+      throw new Error('Không thể đồng bộ chuyên cần lịch ' + String(calendarJoin || calendarKeys[0] || '') + ' sang HOCMAI: ' + message);
     }
   }
   return sent;
@@ -2828,7 +2858,7 @@ export const syncCalendarAttendance = async (rawIds: unknown, preview = false) =
 
   const calendars = await prisma.calendar.findMany({
     where: { id: { in: ids } },
-    select: { id: true, key: true, code: true, learn_number: true, start_time: true, end_time: true, lesson_status: true },
+    select: { id: true, key: true, code: true, learn_number: true, start_time: true, end_time: true, lesson_status: true, system_type: true },
   });
   const result = { processed: 0, skipped: 0, updated: 0, details: [] as Array<{ calendar_id: number; updated: number; hocmai_updated: number }> };
   const now = getVietnamWallClockDate();
@@ -2858,7 +2888,7 @@ export const syncCalendarAttendance = async (rawIds: unknown, preview = false) =
     "  GROUP BY SUBSTRING_INDEX(log.name, ' - ', 1)",
     "  HAVING SUM(log.status = 2) >= 2",
     ") AS attended ON attended.student_hmid = student.student_hmid",
-    "WHERE student.code = ? AND student.learn_number = ? AND student.student_hmid IS NOT NULL",
+    "WHERE student.code = ? AND student.learn_number = ? AND student.islearn = 1 AND student.student_hmid IS NOT NULL",
   ].join("\n");
 
   const previewSql = [
@@ -2893,7 +2923,26 @@ export const syncCalendarAttendance = async (rawIds: unknown, preview = false) =
     const attendedRows = preview ? [] : await prisma.$queryRawUnsafe<Array<{ user_id: string | null }>>(
       attendedStudentsSql, calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number
     );
-    const hocmaiUpdated = preview ? 0 : await sendHocmaiAttendance(calendar.key, attendedRows.map((row) => row.user_id));
+    const siblingKeys = preview || calendar.system_type !== 'topclass'
+      ? [calendar.key]
+      : (await prisma.calendar.findMany({
+          where: {
+            code: calendar.code,
+            learn_number: calendar.learn_number,
+            system_type: 'topclass',
+            key: { not: null },
+            OR: [{ lesson_status: null }, { lesson_status: { not: 1 } }],
+          },
+          select: { key: true },
+          orderBy: [{ lesson_count: 'asc' }, { start_time: 'asc' }, { id: 'asc' }],
+        }))
+        .map((item) => item.key)
+        .filter((key): key is string => Boolean(String(key || '').trim()));
+    const hocmaiUpdated = preview ? 0 : await sendHocmaiAttendance(
+      siblingKeys,
+      calendar.key,
+      attendedRows.map((row) => row.user_id)
+    );
     const count = preview ? Number(previewRows?.[0]?.total || 0) : Number(updated);
     result.processed += 1;
     result.updated += count;
@@ -2958,7 +3007,8 @@ export const resetCalendarAttendance = async (rawCalendarId: unknown, rawStudent
   // Gửi HOCMAI trước để không đưa hai hệ thống về trạng thái lệch nhau.
   // calendar_join rỗng và action=delete là payload hoàn tác do HOCMAI quy định.
   const hocmaiReset = await sendHocmaiAttendance(
-    calendar.key,
+    [calendar.key],
+    '',
     studentsToReset.map((student) => student.student_hmid),
     'delete'
   );
@@ -3267,22 +3317,18 @@ export const getCalendar = async (
     .map((record) => record.key)
     .filter((key): key is string => Boolean(key));
   const mappingsByKey = await loadMappingsByKeys(prisma, mappingKeys);
-  const classroomStatusNow = getVietnamWallClockDate();
-
   return {
     total,
     page,
     limit,
     data: data.map((record) => {
       const hasAssignmentHistory = assignmentStatusByCalendarId.has(record.id);
-      const hasStarted = Boolean(record.start_time && record.start_time <= classroomStatusNow);
       const isCancelled = Number(record.lesson_status) === 1;
       return {
         ...record,
-        // Các lịch cũ có thể đã được phân lớp trước khi hệ thống bắt đầu lưu
-        // classroom_assignment_history. Lịch đã bắt đầu được coi là đã chia lớp.
-        // Lịch nghỉ học không có trạng thái phân lớp trên giao diện.
-        classroom_assigned: !isCancelled && (hasAssignmentHistory || hasStarted),
+        // Chỉ hiển thị đã chia lớp khi có lịch sử phân lớp được lưu.
+        // Không suy diễn từ thời điểm bắt đầu của lịch vì lịch cũ có thể chưa từng được chia.
+        classroom_assigned: !isCancelled && hasAssignmentHistory,
         classroom_assigned_at: assignmentStatusByCalendarId.get(record.id) ?? null,
         package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
         can_create_makeup_after_cancel: isCancelled

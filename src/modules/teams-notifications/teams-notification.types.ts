@@ -26,3 +26,17 @@ export type CalendarNotificationPayload = {
   changedAt: string;
   changes: CalendarChangeItem[];
 };
+
+export type TeamsStudentSyncSummaryPayload = {
+  type: 'student_sync_summary';
+  completedAt: string;
+  registeredAt: string;
+  calendars: number;
+  programs: number;
+  inserted: number;
+  skipped: number;
+  failed: number;
+  errors: Array<{ code: string; message: string }> ;
+};
+
+export type TeamsNotificationPayload = CalendarNotificationPayload | TeamsStudentSyncSummaryPayload;

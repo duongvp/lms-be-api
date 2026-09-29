@@ -477,6 +477,16 @@ export const syncCalendarStudents = async (
   }
 };
 
+export const markCalendarsStudentSynced = async (calendarIds: number[]) => {
+  const ids = Array.from(new Set(calendarIds.filter((id) => Number.isInteger(id) && id > 0)));
+  if (!ids.length) return;
+  await prisma.calendar.updateMany({
+    where: { id: { in: ids } },
+    data: { student_synced_at: new Date() },
+  });
+};
+
+
 export const startCalendarStudentSync = (
   rawIds: unknown,
   rawRegisteredAt: unknown,
@@ -569,6 +579,7 @@ export const startCalendarStudentSync = (
             job.message = `${item.code}: ${message}`;
           });
           item.status = item.result.failed ? 'error' : 'success';
+          if (!item.result.failed) await markCalendarsStudentSynced(item.calendarIds);
           item.message = `Thêm mới ${item.result.inserted}, giữ nguyên ${item.result.skipped}${item.result.failed ? `, lỗi ${item.result.failed}` : ''}`;
           const numericKeys: Array<Exclude<keyof CalendarStudentSyncResult, 'preview' | 'duplicateDetails'>> = [
             'uniqueApiUsers', 'mappedRows', 'uniqueEnrollments', 'duplicateRows', 'unmatched',

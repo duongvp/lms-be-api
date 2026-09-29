@@ -6,6 +6,7 @@ import { startHmoLessonSyncWorker } from './modules/hmo-lesson-sync/hmo-lesson-s
 import { startCalendarSheetExportWorker } from './modules/livestream/calendar-sheet-export.worker';
 import { startCalendarAttendanceSyncWorker } from './modules/livestream/calendar-attendance-sync.worker';
 import { startCalendarTeachingUserSyncWorker } from './modules/livestream/calendar-teaching-user-sync.worker';
+import { startCalendarStudentSyncWorker } from './modules/livestream/calendar-student-sync.worker';
 
 const PORT = process.env.PORT || 5000;
 
@@ -18,7 +19,9 @@ const stopHmoLessonSyncWorker = startHmoLessonSyncWorker();
 const stopCalendarSheetExportWorker = startCalendarSheetExportWorker();
 const stopCalendarAttendanceSyncWorker = startCalendarAttendanceSyncWorker();
 const stopCalendarTeachingUserSyncWorker = startCalendarTeachingUserSyncWorker();
+const stopCalendarStudentSyncWorker = startCalendarStudentSyncWorker();
 const shutdown = () => {
+  stopCalendarStudentSyncWorker();
   stopCalendarTeachingUserSyncWorker();
   stopCalendarAttendanceSyncWorker();
   stopCalendarSheetExportWorker();

@@ -60,3 +60,15 @@ bật `TEAMS_NOTIFICATIONS_ENABLED=true` và cấu hình webhook.
 Thông báo update chỉ được enqueue khi snapshot trước/sau có thay đổi và hiển
 thị từng giá trị cũ → mới. `event_key` cùng unique index chống enqueue trùng
 cho cùng một event/destination.
+
+
+## Đồng bộ học viên đăng ký sát giờ học
+
+Backend chỉ chạy vào 17:00, 17:30, …, 23:30 (giờ Việt Nam), quét các lịch của ngày hiện tại chưa bắt đầu, chỉ lấy học viên đăng ký trong ngày và thêm enrollment còn thiếu. Sau 23:30 cron nghỉ đến 17:00 hôm sau. Thiết lập bằng:
+
+```env
+CALENDAR_STUDENT_CRON_ENABLED=true
+CALENDAR_STUDENT_CRON_NOTIFY_EMPTY=false
+```
+
+Sau lượt có lịch cần xử lý (hoặc có lỗi), kết quả được đưa vào cùng Teams outbox nên vẫn tự retry nếu webhook tạm thời lỗi. Đặt `CALENDAR_STUDENT_CRON_NOTIFY_EMPTY=true` nếu cần nhận cả thông báo các lượt không có lịch.

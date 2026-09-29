@@ -262,7 +262,8 @@ export const provisionEvgStream = async (req: Request, res: Response, next: Next
     const result = await livestreamService.provisionCalendarEvgStream(
       Number(req.params.id),
       String(req.user?.username || ''),
-      req.body?.mode || (req.body?.force === true ? 'overwrite' : 'skip_existing')
+      req.body?.mode || (req.body?.force === true ? 'overwrite' : 'skip_existing'),
+      req.body?.banner_url
     );
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
@@ -276,7 +277,8 @@ export const provisionEvgStreamsBulk = async (req: Request, res: Response, next:
     const result = await livestreamService.provisionCalendarsEvgBulk(
       ids,
       String(req.user?.username || ''),
-      req.body?.mode || 'skip_existing'
+      req.body?.mode || 'skip_existing',
+      req.body?.banner_url
     );
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {

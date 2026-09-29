@@ -1,6 +1,7 @@
 export {
   enqueueCalendarTeamsNotification,
   enqueueManyCalendarTeamsNotifications,
+  enqueueStudentSyncTeamsSummary,
 } from './teams-notification.service';
 export {
   processTeamsNotificationOutbox,

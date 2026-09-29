@@ -6,6 +6,7 @@ import {
   getCalendarAttendanceSyncStatus,
   runCalendarAttendanceSync,
 } from '../src/modules/livestream/calendar-attendance-sync.worker';
+import { buildHocmaiAttendancePayload } from '../src/modules/livestream/livestream.service';
 
 test('cửa sổ đồng bộ chuyên cần là trọn ngày hôm trước theo giờ Việt Nam', () => {
   // 04:00 ngày 25/09/2026 tại Việt Nam.
@@ -105,4 +106,68 @@ test('Tổng quan nhận biết khi bảng lịch sử chưa được triển kh
   assert.equal(status.available, false);
   assert.equal(status.latest, null);
   assert.deepEqual(status.history, []);
+});
+
+test('payload Topclass gửi toàn bộ B và giữ calendar_join là buổi thực tế B1', () => {
+  const keys = [
+    'tc_2627_tienganh-7-2027_12',
+    'tc_2627_tienganh-7-2027_12_B2',
+    'tc_2627_tienganh-7-2027_12_B3',
+    'tc_2627_tienganh-7-2027_12_B4',
+  ];
+  const payload = buildHocmaiAttendancePayload(keys, keys[0], ['8745328']);
+  assert.deepEqual(payload.map((item) => item.c_key), keys);
+  assert.ok(payload.every((item) => item.calendar_join === keys[0] && item.user_id === '8745328'));
+});
+
+test('payload Topclass gửi toàn bộ B và giữ calendar_join là buổi thực tế B2, B3 hoặc B4', () => {
+  const keys = [
+    'tc_2627_tienganh-7-2027_12',
+    'tc_2627_tienganh-7-2027_12_B2',
+    'tc_2627_tienganh-7-2027_12_B3',
+    'tc_2627_tienganh-7-2027_12_B4',
+  ];
+  for (const joinedKey of keys.slice(1)) {
+    const payload = buildHocmaiAttendancePayload(keys, joinedKey, ['8745328']);
+    assert.equal(payload.length, 4);
+    assert.ok(payload.every((item) => item.calendar_join === joinedKey));
+  }
+});
+
+test('payload Topclass hỗ trợ B1 đến B8 không hard-code số buổi', () => {
+  const root = 'tc_2627_tienganh-7-2027_12';
+  const keys = [root, ...Array.from({ length: 7 }, (_, index) => root + '_B' + (index + 2))];
+  const payload = buildHocmaiAttendancePayload(keys, keys[5], ['8745328']);
+  assert.equal(payload.length, 8);
+  assert.deepEqual(payload.map((item) => item.c_key), keys);
+  assert.ok(payload.every((item) => item.calendar_join === keys[5]));
+});
+
+test('payload chuyên cần loại user ID không hợp lệ và không gửi khi không có học viên đủ điều kiện', () => {
+  assert.deepEqual(buildHocmaiAttendancePayload(['B1', 'B2'], 'B1', []), []);
+  const payload = buildHocmaiAttendancePayload(['B1', 'B1', 'B2'], 'B1', ['8745328', '', 'abc', '8745328']);
+  assert.deepEqual(payload, [
+    { c_key: 'B1', user_id: '8745328', calendar_join: 'B1' },
+    { c_key: 'B2', user_id: '8745328', calendar_join: 'B1' },
+  ]);
+});
+
+test('payload hoàn tác giữ behavior cũ: calendar_join rỗng và action delete', () => {
+  assert.deepEqual(buildHocmaiAttendancePayload(['B2'], '', ['8745328'], 'delete'), [
+    { c_key: 'B2', user_id: '8745328', calendar_join: '', action: 'delete' },
+  ]);
+});
+
+test("payload Topclass gom đủ B1/B2 theo từng học viên thay vì gom theo c_key", () => {
+  const payload = buildHocmaiAttendancePayload(
+    ["tc_2627_toan-10-2027_18", "tc_2627_toan-10-2027_18_B2"],
+    "tc_2627_toan-10-2027_18_B2",
+    ["7180180", "8745328"]
+  );
+  assert.deepEqual(payload, [
+    { c_key: "tc_2627_toan-10-2027_18", user_id: "7180180", calendar_join: "tc_2627_toan-10-2027_18_B2" },
+    { c_key: "tc_2627_toan-10-2027_18_B2", user_id: "7180180", calendar_join: "tc_2627_toan-10-2027_18_B2" },
+    { c_key: "tc_2627_toan-10-2027_18", user_id: "8745328", calendar_join: "tc_2627_toan-10-2027_18_B2" },
+    { c_key: "tc_2627_toan-10-2027_18_B2", user_id: "8745328", calendar_join: "tc_2627_toan-10-2027_18_B2" },
+  ]);
 });

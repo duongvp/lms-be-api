@@ -6,6 +6,7 @@ import {
   CalendarNotificationPayload,
   TeamsCalendarEventType,
   TeamsNotificationActor,
+  TeamsStudentSyncSummaryPayload,
 } from './teams-notification.types';
 
 type QueryClient = Pick<Prisma.TransactionClient, '$executeRaw'>;
@@ -137,4 +138,21 @@ export const enqueueManyCalendarTeamsNotifications = async (
     ) VALUES ${Prisma.join(rows)}
     ON DUPLICATE KEY UPDATE event_key = VALUES(event_key)
   `);
+};
+
+export const enqueueStudentSyncTeamsSummary = async (
+  client: QueryClient, runId: bigint, payload: TeamsStudentSyncSummaryPayload
+) => {
+  if (!isTeamsNotificationEnabled()) return;
+  const destinations = getTeamsWebhookDestinations();
+  if (!destinations.length) return;
+  const eventKey = `student-sync:${runId.toString()}`;
+  const serializedPayload = JSON.stringify(payload);
+  for (const destination of destinations) {
+    await client.$executeRaw`
+      INSERT INTO teams_notification_outbox (event_key, destination, event_type, calendar_id, payload, status, attempts, next_attempt_at, created_at, updated_at)
+      VALUES (${eventKey}, ${destination.name}, 'student_sync_summary', NULL, ${serializedPayload}, 0, 0, NOW(3), NOW(3), NOW(3))
+      ON DUPLICATE KEY UPDATE event_key = VALUES(event_key)
+    `;
+  }
 };

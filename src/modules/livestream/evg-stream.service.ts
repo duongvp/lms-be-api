@@ -60,10 +60,28 @@ const objectConfig = (value: Prisma.JsonValue | null | undefined): Prisma.JsonOb
     : {}
 );
 
+const normalizeBannerUrlOverride = (value: unknown): string | undefined => {
+  const bannerUrl = String(value || '').trim();
+  if (!bannerUrl) return undefined;
+  if (bannerUrl.length > 2_048) throw new Error('URL background EVG không được vượt quá 2048 ký tự');
+
+  let parsed: URL;
+  try {
+    parsed = new URL(bannerUrl);
+  } catch {
+    throw new Error('URL background EVG không hợp lệ');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('URL background EVG phải bắt đầu bằng http:// hoặc https://');
+  }
+  return parsed.toString();
+};
+
 export const provisionCalendarEvgStream = async (
   calendarId: number,
   actorUsername: string,
-  mode: EvgProvisionMode = 'skip_existing'
+  mode: EvgProvisionMode = 'skip_existing',
+  bannerUrlOverride?: string
 ) => {
   if (!Number.isInteger(calendarId) || calendarId <= 0) throw new Error('ID lịch học không hợp lệ');
   const calendar = await prisma.calendar.findUnique({ where: { id: calendarId } });
@@ -74,10 +92,11 @@ export const provisionCalendarEvgStream = async (
   if (calendar.evg_stream && mode === 'skip_existing') {
     return { skipped: true, operation: 'skipped', reason: 'Lịch học đã có EVG', calendar };
   }
-  const configuredBanner = await resolveProgramTeacherBanner(prisma, calendar.code, calendar.teacher);
+  const manualBannerUrl = normalizeBannerUrlOverride(bannerUrlOverride);
+  const configuredBanner = manualBannerUrl || await resolveProgramTeacherBanner(prisma, calendar.code, calendar.teacher);
   if (!configuredBanner) {
     throw new Error(
-      `Chưa cấu hình banner cho chương trình ${calendar.code} và giáo viên ${calendar.teacher || '(trống)'}`
+      `Chưa cấu hình banner cho chương trình ${calendar.code} và giáo viên ${calendar.teacher || '(trống)'}. Nhập URL background EVG để dùng banner tạm thời.`
     );
   }
   const requestName = buildEvgStreamName(calendar.code, calendar.learn_number, calendar.start_time);
@@ -93,10 +112,10 @@ export const provisionCalendarEvgStream = async (
       throw new Error('Lịch học vừa được tạo EVG bởi một yêu cầu khác');
     }
 
-    const bannerUrl = await resolveProgramTeacherBanner(tx, latest.code, latest.teacher);
+    const bannerUrl = manualBannerUrl || await resolveProgramTeacherBanner(tx, latest.code, latest.teacher);
     if (!bannerUrl) {
       throw new Error(
-        `Chưa cấu hình banner cho chương trình ${latest.code} và giáo viên ${latest.teacher || '(trống)'}`
+        `Chưa cấu hình banner cho chương trình ${latest.code} và giáo viên ${latest.teacher || '(trống)'}. Nhập URL background EVG để dùng banner tạm thời.`
       );
     }
 
@@ -201,8 +220,10 @@ export const provisionCalendarEvgStream = async (
 export const provisionCalendarsEvgBulk = async (
   calendarIds: number[],
   actorUsername: string,
-  mode: EvgProvisionMode = 'skip_existing'
+  mode: EvgProvisionMode = 'skip_existing',
+  bannerUrlOverride?: string
 ) => {
+  const normalizedBannerUrlOverride = normalizeBannerUrlOverride(bannerUrlOverride);
   const ids = Array.from(new Set(calendarIds.filter((id) => Number.isInteger(id) && id > 0)));
   if (!ids.length) throw new Error('Vui lòng chọn ít nhất một lịch học');
   if (ids.length > 100) throw new Error('Chỉ được xử lý tối đa 100 lịch mỗi lần');
@@ -218,7 +239,7 @@ export const provisionCalendarsEvgBulk = async (
         return {
           calendar_id: calendarId,
           success: true,
-          data: await provisionCalendarEvgStream(calendarId, actorUsername, mode),
+          data: await provisionCalendarEvgStream(calendarId, actorUsername, mode, normalizedBannerUrlOverride),
         };
       } catch (error: any) {
         return { calendar_id: calendarId, success: false, error: String(error?.message || error) };

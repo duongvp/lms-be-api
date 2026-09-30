@@ -22,7 +22,8 @@
     "seed": "tsx prisma/seed.ts",
     "db:quiz-rbac": "tsx prisma/scripts/syncQuizRbac.ts",
     "db:room-config-rbac": "tsx prisma/scripts/syncRoomConfigRbac.ts",
-    "db:calendar-triggers": "tsx prisma/scripts/syncCalendarTriggers.ts"
+    "db:calendar-triggers": "tsx prisma/scripts/syncCalendarTriggers.ts",
+    "test:hmo-lesson-sync-match": "npm run build && node tests/hmo-lesson-sync-match.test.js"
   },
   "keywords": [],
   "author": "",

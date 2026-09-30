@@ -513,6 +513,10 @@ test('HMO dùng nhiều GET và giới hạn số request chạy đồng thời'
     assert.deepEqual(results[0].lessons, [{
       lessonId: '168357',
       name: 'Lesson',
+      sectionId: '1096309',
+      sectionName: 'Section',
+      sectionIndex: 0,
+      lessonIndex: 0,
     }]);
   } finally {
     global.fetch = originalFetch;
@@ -571,6 +575,10 @@ test('HMO thử lại khi phản hồi success tạm thời chưa có lessons', 
     assert.deepEqual(result.lessons, [{
       lessonId: '161327',
       name: 'Lesson đã tải',
+      sectionId: '1095301',
+      sectionName: 'Section',
+      sectionIndex: 0,
+      lessonIndex: 0,
     }]);
   } finally {
     global.fetch = originalFetch;

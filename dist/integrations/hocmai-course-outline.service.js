@@ -24,10 +24,14 @@ const parseSuccessfulResponse = (payload, pair) => {
     }
     // `section.id` chỉ là ID nhóm nội dung. Lesson ID HMO cần dùng trong lịch là
     // ID của phần tử nằm trong `section.lessons[]`.
-    const lessons = course.sections.flatMap((section) => (Array.isArray(section?.lessons) ? section.lessons : [])).map((lesson) => ({
+    const lessons = course.sections.flatMap((section, sectionIndex) => (Array.isArray(section?.lessons) ? section.lessons : []).map((lesson, lessonIndex) => ({
         lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
         name: String(lesson?.name ?? '').trim() || undefined,
-    })).filter((lesson) => lesson.lessonId);
+        sectionId: String(section?.id ?? '').trim() || undefined,
+        sectionName: String(section?.name ?? '').trim() || undefined,
+        sectionIndex,
+        lessonIndex,
+    }))).filter((lesson) => lesson.lessonId);
     return {
         packageId: pair.packageId,
         courseId: pair.courseId,

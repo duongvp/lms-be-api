@@ -1150,6 +1150,10 @@ const getHocmaiSectionsForProgramLessons = async (programCode, lessonIds) => {
                         course_id: outline.courseId,
                         lesson_id: lesson.lessonId,
                         lesson_name: lesson.name,
+                        section_id: lesson.sectionId,
+                        section_name: lesson.sectionName,
+                        section_index: lesson.sectionIndex,
+                        lesson_index: lesson.lessonIndex,
                     }));
                     optionsByPair.set(pairKey, options);
                     // Không cache danh sách rỗng: HMO có thể trả success trước khi hydrate lessons.

@@ -4,7 +4,14 @@ import { logger } from '../../utils/logger';
 import { reconcileCalendarMappingsAndEnqueue } from '../livestream/hocmai-sync-queue.service';
 
 type TriggerType = 'cron' | 'manual';
-type Candidate = { lessonId: string; name?: string };
+export type Candidate = {
+  lessonId: string;
+  name?: string;
+  sectionId?: string;
+  sectionName?: string;
+  sectionIndex?: number;
+  lessonIndex?: number;
+};
 
 let runningPromise: Promise<void> | null = null;
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -54,6 +61,27 @@ const teacherMatchQuality = (actual: string, expected: string) => {
   if (actual === expected) return 2;
   return teacherMatches(actual, expected) ? 1 : -1;
 };
+const scheduleMonthYear = (value: unknown) => {
+  const date = value instanceof Date ? value : new Date(String(value || ''));
+  if (Number.isNaN(date.getTime())) return undefined;
+  return { month: date.getUTCMonth() + 1, year: date.getUTCFullYear() };
+};
+const sectionMonthYear = (value: unknown) => {
+  const normalized = canonical(value);
+  const match = /(?:^|\b)thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(normalized);
+  if (!match) return undefined;
+  const month = Number(match[1]);
+  const year = match[2] ? Number(match[2]) : undefined;
+  return month >= 1 && month <= 12 ? { month, year } : undefined;
+};
+const sessionMatchQuality = (startTime: unknown, sectionName: unknown) => {
+  const schedule = scheduleMonthYear(startTime);
+  const section = sectionMonthYear(sectionName);
+  if (!schedule || !section) return 0;
+  if (schedule.month !== section.month) return -1;
+  if (section.year && section.year !== schedule.year) return -1;
+  return section.year === schedule.year ? 2 : 1;
+};
 const partMarkers = (title: string) => Array.from(new Set(title.split(' ').filter((part) => /^p\d+$/.test(part)))).sort().join('|');
 export const compatibleParts = (left: string, right: string) => {
   const leftParts = partMarkers(left); const rightParts = partMarkers(right);
@@ -79,17 +107,18 @@ export const titleSimilarity = (left: string, right: string) => {
   return tokenScore * 0.6 + (1 - levenshtein(left, right) / Math.max(left.length, right.length)) * 0.4;
 };
 
-type CalendarCandidateMatch = {
+export type CalendarCandidateMatch = {
   lessonId?: string;
   errorCode?: 'AMBIGUOUS' | 'NO_MATCH';
+  ambiguityReason?: 'SESSION_UNCERTAIN' | 'MULTIPLE_MATCHES';
   candidateCount: number;
 };
 
 // Cùng quy tắc với màn cập nhật hàng loạt: phân ứng viên trên cả nhóm lịch;
 // mỗi calendar nhận một Lesson ID riêng trong từng Course.
-const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Candidate[]) => {
+export const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Candidate[]) => {
   const candidates = rawCandidates.map(parseCandidate);
-  const evaluated = calendarRows.map((row, index) => {
+  const rawEvaluated = calendarRows.map((row, index) => {
     // Modal hàng loạt mặc định dùng tên chuẩn trong bảng lessons để match.
     // Tên calendar có thể chứa [Lịch n], [HỌC BÙ] hoặc hậu tố vận hành và chỉ
     // được dùng để suy ra occurrence.
@@ -107,6 +136,9 @@ const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Candidate[]
         exactTitle: title === candidate.title,
         teacherMatched: Boolean(candidate.teacher && teacherMatches(teacher, candidate.teacher)),
         teacherMatchQuality: matchQuality,
+        sessionQuality: sessionMatchQuality(row.start_time, candidate.sectionName),
+        sessionKey: candidate.sectionId
+          || `index:${candidate.sectionIndex ?? "unknown"}:${candidate.sectionName || ""}`,
       };
     }).filter((item): item is NonNullable<typeof item> => Boolean(item)).sort((left, right) => (
       right.teacherMatchQuality - left.teacherMatchQuality
@@ -114,22 +146,56 @@ const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Candidate[]
       || right.score - left.score
       || left.candidate.lessonId.localeCompare(right.candidate.lessonId, 'vi', { numeric: true })
     ));
-    const bestTeacherQuality = allMatches[0]?.teacherMatchQuality;
+    return { row, index, teacher, allMatches };
+  });
+  const trustedSessionKeys = new Set(
+    rawEvaluated.flatMap(({ allMatches }) => allMatches
+      .filter((item) => item.sessionQuality === 2)
+      .map((item) => item.sessionKey))
+  );
+  const inferredSessionKey = trustedSessionKeys.size === 1
+    ? Array.from(trustedSessionKeys)[0]
+    : undefined;
+  const evaluated = rawEvaluated.map(({ row, index, teacher, allMatches }) => {
+    const exactSessionMatches = allMatches.filter((item) => item.sessionQuality === 2);
+    const sessionMatches = exactSessionMatches.length
+      ? exactSessionMatches
+      : inferredSessionKey
+        ? allMatches.filter((item) => item.sessionKey === inferredSessionKey)
+        : [];
+    if (!sessionMatches.length && allMatches.length) {
+      return {
+        row,
+        index,
+        teacher,
+        matches: [] as typeof allMatches,
+        ambiguousCount: allMatches.length,
+        ambiguityReason: 'SESSION_UNCERTAIN' as const,
+      };
+    }
+    const bestTeacherQuality = sessionMatches[0]?.teacherMatchQuality;
     let matches = bestTeacherQuality === undefined
-      ? allMatches
-      : allMatches.filter((item) => item.teacherMatchQuality === bestTeacherQuality);
+      ? sessionMatches
+      : sessionMatches.filter((item) => item.teacherMatchQuality === bestTeacherQuality);
     if (matches[0] && !matches[0].exactTitle) {
       const competing = matches.find((item, matchIndex) => matchIndex > 0
         && item.teacherMatched === matches[0].teacherMatched
         && item.candidate.title !== matches[0].candidate.title);
       if (competing && matches[0].score - competing.score < 0.05) {
-        return { row, index, teacher, matches: [] as typeof matches, ambiguousCount: matches.length };
+        return {
+          row,
+          index,
+          teacher,
+          matches: [] as typeof matches,
+          ambiguousCount: matches.length,
+          ambiguityReason: 'MULTIPLE_MATCHES' as const,
+        };
       }
     }
     if (matches[0]) {
       matches = matches.filter((item) => item.candidate.title === matches[0].candidate.title);
     }
-    return { row, index, teacher, matches, ambiguousCount: 0 };
+    return { row, index, teacher, matches, ambiguousCount: 0, ambiguityReason: undefined };
   });
   evaluated.sort((left, right) => (
     Number(Boolean(right.matches[0]?.teacherMatched)) - Number(Boolean(left.matches[0]?.teacherMatched))
@@ -143,6 +209,7 @@ const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Candidate[]
     if (!item.matches.length) {
       result.set(Number(item.row.calendar_id), {
         errorCode: item.ambiguousCount ? 'AMBIGUOUS' : 'NO_MATCH',
+        ambiguityReason: item.ambiguityReason,
         candidateCount: item.ambiguousCount,
       });
       return;
@@ -320,8 +387,10 @@ const executeRun = async (runId: bigint) => {
           if (!match?.lessonId) {
             const ambiguous = match?.errorCode === 'AMBIGUOUS';
             const message = ambiguous
-              ? `Course ${pair.courseId} có ${match?.candidateCount || 2} tên bài gần giống cùng khớp; cần chọn thủ công.`
-              : `Course ${pair.courseId} không có Lesson ID phù hợp sau khi phân theo tên bài và giáo viên.`;
+              ? match?.ambiguityReason === 'SESSION_UNCERTAIN'
+                ? `Course ${pair.courseId} không có session Tháng M/YYYY khớp ngày lịch; cần chọn Session/Lesson ID thủ công.`
+                : `Course ${pair.courseId} có ${match?.candidateCount || 2} tên bài gần giống cùng khớp; cần chọn thủ công.`
+              : `Course ${pair.courseId} không có Lesson ID phù hợp sau khi phân theo tên bài, giáo viên và session.`;
             await addIssue(runId, row, ambiguous ? 'AMBIGUOUS' : 'NO_MATCH', message, pair);
             failure = true; continue;
           }

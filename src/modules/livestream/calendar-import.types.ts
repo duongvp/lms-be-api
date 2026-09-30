@@ -56,6 +56,10 @@ export type HmoCourseOutlineLesson = {
   /** HMO lesson ID from `course.sections[].lessons[]`. */
   lessonId: string;
   name?: string;
+  sectionId?: string;
+  sectionName?: string;
+  sectionIndex?: number;
+  lessonIndex?: number;
 };
 
 export type HmoCourseOutlineResult = {

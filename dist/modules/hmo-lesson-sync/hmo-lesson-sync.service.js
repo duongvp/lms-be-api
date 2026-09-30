@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isHmoLessonSyncRunning = exports.startHmoLessonSync = exports.titleSimilarity = exports.compatibleParts = exports.calendarOccurrence = exports.normalizeTitle = exports.markInterruptedHmoLessonSyncRuns = void 0;
+exports.isHmoLessonSyncRunning = exports.startHmoLessonSync = exports.matchCalendarsForCourse = exports.titleSimilarity = exports.compatibleParts = exports.calendarOccurrence = exports.normalizeTitle = exports.markInterruptedHmoLessonSyncRuns = void 0;
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const hocmai_course_outline_service_1 = require("../../integrations/hocmai-course-outline.service");
 const logger_1 = require("../../utils/logger");
@@ -60,6 +60,32 @@ const teacherMatchQuality = (actual, expected) => {
         return 2;
     return teacherMatches(actual, expected) ? 1 : -1;
 };
+const scheduleMonthYear = (value) => {
+    const date = value instanceof Date ? value : new Date(String(value || ''));
+    if (Number.isNaN(date.getTime()))
+        return undefined;
+    return { month: date.getUTCMonth() + 1, year: date.getUTCFullYear() };
+};
+const sectionMonthYear = (value) => {
+    const normalized = canonical(value);
+    const match = /(?:^|\b)thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(normalized);
+    if (!match)
+        return undefined;
+    const month = Number(match[1]);
+    const year = match[2] ? Number(match[2]) : undefined;
+    return month >= 1 && month <= 12 ? { month, year } : undefined;
+};
+const sessionMatchQuality = (startTime, sectionName) => {
+    const schedule = scheduleMonthYear(startTime);
+    const section = sectionMonthYear(sectionName);
+    if (!schedule || !section)
+        return 0;
+    if (schedule.month !== section.month)
+        return -1;
+    if (section.year && section.year !== schedule.year)
+        return -1;
+    return section.year === schedule.year ? 2 : 1;
+};
 const partMarkers = (title) => Array.from(new Set(title.split(' ').filter((part) => /^p\d+$/.test(part)))).sort().join('|');
 const compatibleParts = (left, right) => {
     const leftParts = partMarkers(left);
@@ -93,7 +119,7 @@ exports.titleSimilarity = titleSimilarity;
 // mỗi calendar nhận một Lesson ID riêng trong từng Course.
 const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
     const candidates = rawCandidates.map(parseCandidate);
-    const evaluated = calendarRows.map((row, index) => {
+    const rawEvaluated = calendarRows.map((row, index) => {
         // Modal hàng loạt mặc định dùng tên chuẩn trong bảng lessons để match.
         // Tên calendar có thể chứa [Lịch n], [HỌC BÙ] hoặc hậu tố vận hành và chỉ
         // được dùng để suy ra occurrence.
@@ -114,27 +140,62 @@ const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
                 exactTitle: title === candidate.title,
                 teacherMatched: Boolean(candidate.teacher && teacherMatches(teacher, candidate.teacher)),
                 teacherMatchQuality: matchQuality,
+                sessionQuality: sessionMatchQuality(row.start_time, candidate.sectionName),
+                sessionKey: candidate.sectionId
+                    || `index:${candidate.sectionIndex ?? "unknown"}:${candidate.sectionName || ""}`,
             };
         }).filter((item) => Boolean(item)).sort((left, right) => (right.teacherMatchQuality - left.teacherMatchQuality
             || Number(right.exactTitle) - Number(left.exactTitle)
             || right.score - left.score
             || left.candidate.lessonId.localeCompare(right.candidate.lessonId, 'vi', { numeric: true })));
-        const bestTeacherQuality = allMatches[0]?.teacherMatchQuality;
+        return { row, index, teacher, allMatches };
+    });
+    const trustedSessionKeys = new Set(rawEvaluated.flatMap(({ allMatches }) => allMatches
+        .filter((item) => item.sessionQuality === 2)
+        .map((item) => item.sessionKey)));
+    const inferredSessionKey = trustedSessionKeys.size === 1
+        ? Array.from(trustedSessionKeys)[0]
+        : undefined;
+    const evaluated = rawEvaluated.map(({ row, index, teacher, allMatches }) => {
+        const exactSessionMatches = allMatches.filter((item) => item.sessionQuality === 2);
+        const sessionMatches = exactSessionMatches.length
+            ? exactSessionMatches
+            : inferredSessionKey
+                ? allMatches.filter((item) => item.sessionKey === inferredSessionKey)
+                : [];
+        if (!sessionMatches.length && allMatches.length) {
+            return {
+                row,
+                index,
+                teacher,
+                matches: [],
+                ambiguousCount: allMatches.length,
+                ambiguityReason: 'SESSION_UNCERTAIN',
+            };
+        }
+        const bestTeacherQuality = sessionMatches[0]?.teacherMatchQuality;
         let matches = bestTeacherQuality === undefined
-            ? allMatches
-            : allMatches.filter((item) => item.teacherMatchQuality === bestTeacherQuality);
+            ? sessionMatches
+            : sessionMatches.filter((item) => item.teacherMatchQuality === bestTeacherQuality);
         if (matches[0] && !matches[0].exactTitle) {
             const competing = matches.find((item, matchIndex) => matchIndex > 0
                 && item.teacherMatched === matches[0].teacherMatched
                 && item.candidate.title !== matches[0].candidate.title);
             if (competing && matches[0].score - competing.score < 0.05) {
-                return { row, index, teacher, matches: [], ambiguousCount: matches.length };
+                return {
+                    row,
+                    index,
+                    teacher,
+                    matches: [],
+                    ambiguousCount: matches.length,
+                    ambiguityReason: 'MULTIPLE_MATCHES',
+                };
             }
         }
         if (matches[0]) {
             matches = matches.filter((item) => item.candidate.title === matches[0].candidate.title);
         }
-        return { row, index, teacher, matches, ambiguousCount: 0 };
+        return { row, index, teacher, matches, ambiguousCount: 0, ambiguityReason: undefined };
     });
     evaluated.sort((left, right) => (Number(Boolean(right.matches[0]?.teacherMatched)) - Number(Boolean(left.matches[0]?.teacherMatched))
         || left.matches.length - right.matches.length
@@ -146,6 +207,7 @@ const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
         if (!item.matches.length) {
             result.set(Number(item.row.calendar_id), {
                 errorCode: item.ambiguousCount ? 'AMBIGUOUS' : 'NO_MATCH',
+                ambiguityReason: item.ambiguityReason,
                 candidateCount: item.ambiguousCount,
             });
             return;
@@ -166,6 +228,7 @@ const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
     });
     return result;
 };
+exports.matchCalendarsForCourse = matchCalendarsForCourse;
 const addIssue = async (runId, row, code, message, pair) => {
     await prisma_1.default.$executeRaw `
     INSERT INTO hmo_lesson_sync_issues
@@ -274,7 +337,7 @@ const executeRun = async (runId) => {
                     calendarsByLesson.set(lessonId, [...(calendarsByLesson.get(lessonId) || []), calendar]);
                 });
                 calendarsByLesson.forEach((lessonCalendars) => {
-                    matchCalendarsForCourse(lessonCalendars, outline.lessons).forEach((match, calendarId) => {
+                    (0, exports.matchCalendarsForCourse)(lessonCalendars, outline.lessons).forEach((match, calendarId) => {
                         courseMatches.set(`${calendarId}::${pairKey}`, match);
                     });
                 });
@@ -328,8 +391,10 @@ const executeRun = async (runId) => {
                     if (!match?.lessonId) {
                         const ambiguous = match?.errorCode === 'AMBIGUOUS';
                         const message = ambiguous
-                            ? `Course ${pair.courseId} có ${match?.candidateCount || 2} tên bài gần giống cùng khớp; cần chọn thủ công.`
-                            : `Course ${pair.courseId} không có Lesson ID phù hợp sau khi phân theo tên bài và giáo viên.`;
+                            ? match?.ambiguityReason === 'SESSION_UNCERTAIN'
+                                ? `Course ${pair.courseId} không có session Tháng M/YYYY khớp ngày lịch; cần chọn Session/Lesson ID thủ công.`
+                                : `Course ${pair.courseId} có ${match?.candidateCount || 2} tên bài gần giống cùng khớp; cần chọn thủ công.`
+                            : `Course ${pair.courseId} không có Lesson ID phù hợp sau khi phân theo tên bài, giáo viên và session.`;
                         await addIssue(runId, row, ambiguous ? 'AMBIGUOUS' : 'NO_MATCH', message, pair);
                         failure = true;
                         continue;

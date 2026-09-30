@@ -46,12 +46,18 @@ const parseSuccessfulResponse = (
 
   // `section.id` chỉ là ID nhóm nội dung. Lesson ID HMO cần dùng trong lịch là
   // ID của phần tử nằm trong `section.lessons[]`.
-  const lessons = course.sections.flatMap((section: any) => (
-    Array.isArray(section?.lessons) ? section.lessons : []
-  )).map((lesson: any) => ({
-    lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
-    name: String(lesson?.name ?? '').trim() || undefined,
-  })).filter((lesson: any) => lesson.lessonId);
+  const lessons = course.sections.flatMap((section: any, sectionIndex: number) =>
+    (Array.isArray(section?.lessons) ? section.lessons : []).map(
+      (lesson: any, lessonIndex: number) => ({
+        lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
+        name: String(lesson?.name ?? '').trim() || undefined,
+        sectionId: String(section?.id ?? '').trim() || undefined,
+        sectionName: String(section?.name ?? '').trim() || undefined,
+        sectionIndex,
+        lessonIndex,
+      })
+    )
+  ).filter((lesson: any) => lesson.lessonId);
 
   return {
     packageId: pair.packageId,
@@ -59,7 +65,7 @@ const parseSuccessfulResponse = (
     exists: true,
     lessons: Array.from(new Map(
       lessons.map((lesson: any) => [lesson.lessonId, lesson])
-    ).values()) as Array<{ lessonId: string; name?: string }>,
+    ).values()) as HmoCourseOutlineResult['lessons'],
   };
 };
 

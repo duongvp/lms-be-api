@@ -110,7 +110,7 @@ const buildStudentSyncSummaryCard = (payload: TeamsStudentSyncSummaryPayload) =>
     content: { $schema: 'http://adaptivecards.io/schemas/adaptive-card.json', type: 'AdaptiveCard', version: '1.4', body: [
       { type: 'TextBlock', text: 'Đồng bộ học viên tự động đã hoàn tất', size: 'Large', weight: 'Bolder', wrap: true },
       { type: 'FactSet', facts: [
-        { title: 'Ngày đăng ký quét', value: payload.registeredAt }, { title: 'Lịch chưa diễn ra', value: String(payload.calendars) },
+        { title: 'Ngày đăng ký quét', value: payload.registeredAt }, { title: 'Lịch trong ngày', value: String(payload.calendars) },
         { title: 'Chương trình', value: String(payload.programs) }, { title: 'Thêm mới', value: String(payload.inserted) },
         { title: 'Đã có sẵn', value: String(payload.skipped) }, { title: 'Lỗi', value: String(payload.failed) },
         { title: 'Hoàn tất lúc', value: formatChangedDate(payload.completedAt) + ' ' + formatChangedTime(payload.completedAt) },

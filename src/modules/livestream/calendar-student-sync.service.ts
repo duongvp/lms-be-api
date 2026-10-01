@@ -11,7 +11,7 @@ type CalendarMapping = {
   startTime: Date;
 };
 
-type HocmaiUser = {
+export type HocmaiUser = {
   userid?: unknown;
   username?: unknown;
   email?: unknown;
@@ -221,7 +221,7 @@ const fetchAllUsers = async (
   }
   const perPage = Number(firstPage.per_page || config.limit);
   const calculatedLastPage = perPage > 0 ? Math.max(1, Math.ceil(total / perPage)) : 1;
-  const lastPage = Math.max(1, Number(firstPage.last_page || calculatedLastPage));
+  const lastPage = Math.max(1, calculatedLastPage, Number(firstPage.last_page || 0) || 0);
   const users: HocmaiUser[] = [...firstPage.data];
   onProgress?.(Math.round(10 + 55 / lastPage), `Đã quét trang 1/${lastPage} từ API HOCMAI`);
   for (let page = 2; page <= lastPage; page += 1) {
@@ -232,7 +232,20 @@ const fetchAllUsers = async (
       `Đã quét trang ${page}/${lastPage} từ API HOCMAI`
     );
   }
+  if (users.length < total) {
+    throw new ApiError("API HOCMAI trả thiếu trang: " + users.length + "/" + total + " học viên", 502);
+  }
   return { users, total };
+};
+
+export const fetchCalendarRegisteredStudents = async (rawProductIds: string[], registeredAt: string) => {
+  const productIds = [...new Set(rawProductIds.map(normalizeText).filter(Boolean))];
+  const users: HocmaiUser[] = [];
+  for (let index = 0; index < productIds.length; index += 50) {
+    const batch = await fetchAllUsers(productIds.slice(index, index + 50), registeredAt);
+    users.push(...batch.users);
+  }
+  return users;
 };
 
 const loadMappings = async (calendarIds: number[]) => {

@@ -64,7 +64,7 @@ cho cùng một event/destination.
 
 ## Đồng bộ học viên đăng ký sát giờ học
 
-Backend chỉ chạy vào 17:00, 17:30, …, 23:30 (giờ Việt Nam), quét các lịch của ngày hiện tại chưa bắt đầu, chỉ lấy học viên đăng ký trong ngày và thêm enrollment còn thiếu. Sau 23:30 cron nghỉ đến 17:00 hôm sau. Thiết lập bằng:
+Backend chỉ chạy vào 17:00, 17:30, …, 23:30 (giờ Việt Nam), quét mọi lịch hoạt động của ngày hiện tại (kể cả đang dạy hoặc đã kết thúc, loại lịch nghỉ học), chỉ lấy học viên đăng ký trong ngày và thêm enrollment còn thiếu. Enrollment đã có không bị sửa. Cron lấy học viên qua API theo các package của toàn bộ lịch trong ngày (chia nhóm tối đa 50 package, lấy đủ mọi trang), rồi phân dữ liệu cho từng chương trình để ghi tuần tự. Nếu request gộp lỗi, cron tự quay lại gọi API riêng theo chương trình. Sau 23:30 cron nghỉ đến 17:00 hôm sau. Thiết lập bằng:
 
 ```env
 CALENDAR_STUDENT_CRON_ENABLED=true

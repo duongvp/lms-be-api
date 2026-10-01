@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { calendarStudentSyncRegisteredAt, calendarStudentSyncWindow, createCalendarStudentSyncCheck } from '../src/modules/livestream/calendar-student-sync.worker';
+import { calendarStudentSyncCalendarWhere, calendarStudentSyncRegisteredAt, calendarStudentSyncWindow, createCalendarStudentSyncCheck } from '../src/modules/livestream/calendar-student-sync.worker';
 
-test('cron đồng bộ học viên dùng đúng ngày và chỉ quét phần thời gian còn lại trong ngày Việt Nam', () => {
+test('cron đồng bộ học viên quét toàn bộ lịch trong ngày Việt Nam, kể cả buổi đã bắt đầu', () => {
   const now = new Date('2026-09-28T12:00:00.000Z'); // 19:00 Việt Nam
   const window = calendarStudentSyncWindow(now);
   assert.equal(window.start.toISOString(), '2026-09-28T00:00:00.000Z');
   assert.equal(window.current.toISOString(), '2026-09-28T19:00:00.000Z');
+  const where = calendarStudentSyncCalendarWhere(window.start, window.end);
+  assert.deepEqual(where.start_time, { gte: window.start, lt: window.end });
+  assert.deepEqual(where.OR, [{ lesson_status: null }, { lesson_status: { not: 1 } }]);
+  assert.ok(new Date('2026-09-28T18:30:00.000Z') >= where.start_time.gte);
+  assert.ok(new Date('2026-09-28T18:30:00.000Z') < where.start_time.lt);
   assert.equal(window.end.toISOString(), '2026-09-29T00:00:00.000Z');
   assert.equal(calendarStudentSyncRegisteredAt(now), '28/09/2026');
 });

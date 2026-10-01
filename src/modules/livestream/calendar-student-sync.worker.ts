@@ -2,7 +2,7 @@ import prisma from '../../lib/prisma';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 import { logger } from '../../utils/logger';
 import { enqueueStudentSyncTeamsSummary } from '../teams-notifications';
-import { markCalendarsStudentSynced, syncCalendarStudents } from './calendar-student-sync.service';
+import { fetchCalendarRegisteredStudents, markCalendarsStudentSynced, syncCalendarStudents, type HocmaiUser } from './calendar-student-sync.service';
 
 const CHECK_INTERVAL_MS = 30_000;
 const START_HOUR = 17;
@@ -28,8 +28,13 @@ export const calendarStudentSyncRegisteredAt = (now = new Date()) => {
   return [String(date.getUTCDate()).padStart(2, '0'), String(date.getUTCMonth() + 1).padStart(2, '0'), date.getUTCFullYear()].join('/');
 };
 
+export const calendarStudentSyncCalendarWhere = (start: Date, end: Date) => ({
+  start_time: { gte: start, lt: end },
+  OR: [{ lesson_status: null }, { lesson_status: { not: 1 } }],
+});
+
 export const runCalendarStudentSync = async (now = new Date()) => {
-  const { start, end, current } = calendarStudentSyncWindow(now);
+  const { start, end } = calendarStudentSyncWindow(now);
   await prisma.$executeRaw`
     UPDATE calendar_student_sync_runs
     SET status='interrupted', active_key=NULL, finished_at=NOW(3),
@@ -57,22 +62,64 @@ export const runCalendarStudentSync = async (now = new Date()) => {
   let skipped = 0;
   const errors: Array<{ code: string; message: string }> = [];
   try {
-    // Thời gian lịch được lưu theo Vietnam wall-clock; chỉ lấy buổi hôm nay chưa bắt đầu.
+    // Thời gian lịch được lưu theo Vietnam wall-clock; quét mọi buổi trong ngày,
+    // kể cả buổi đang học/đã kết thúc, nhưng không thêm học viên vào lịch nghỉ.
     const calendars = await prisma.calendar.findMany({
-      where: {
-        start_time: { gte: current, lt: end },
-        OR: [{ lesson_status: null }, { lesson_status: { not: 1 } }],
-      },
-      select: { id: true, code: true },
+      where: calendarStudentSyncCalendarWhere(start, end),
+      select: { id: true, code: true, key: true },
       orderBy: [{ code: 'asc' }, { learn_number: 'asc' }],
     });
     calendarsTotal = calendars.length;
     const byProgram = new Map<string, number[]>();
     calendars.forEach((calendar) => byProgram.set(calendar.code, [...(byProgram.get(calendar.code) || []), calendar.id]));
     programs = byProgram.size;
+    const productsByProgram = new Map<string, Set<string>>();
+    let prefetchedByProduct: Map<string, HocmaiUser[]> | undefined;
+    try {
+      const keys = calendars.map((calendar) => calendar.key?.trim()).filter((key): key is string => Boolean(key));
+      const packageMappings = keys.length
+        ? await prisma.package_lesson_mapping.findMany({
+          where: { key: { in: keys } },
+          select: { key: true, package_id: true },
+        })
+        : [];
+      const productsByKey = new Map<string, Set<string>>();
+      packageMappings.forEach((mapping) => {
+        const key = String(mapping.key || "").trim();
+        const productId = String(mapping.package_id || "").trim();
+        if (!key || !productId) return;
+        const products = productsByKey.get(key) || new Set<string>();
+        products.add(productId);
+        productsByKey.set(key, products);
+      });
+      calendars.forEach((calendar) => {
+        const products = productsByProgram.get(calendar.code) || new Set<string>();
+        productsByKey.get(String(calendar.key || "").trim())?.forEach((productId) => products.add(productId));
+        productsByProgram.set(calendar.code, products);
+      });
+      const allProductIds = [...new Set([...productsByProgram.values()].flatMap((products) => [...products]))];
+      if (allProductIds.length) {
+        const users = await fetchCalendarRegisteredStudents(allProductIds, registeredAt);
+        prefetchedByProduct = new Map<string, HocmaiUser[]>();
+        users.forEach((user) => {
+          const productId = String(user.product_id || "").trim();
+          const productUsers = prefetchedByProduct!.get(productId) || [];
+          productUsers.push(user);
+          prefetchedByProduct!.set(productId, productUsers);
+        });
+        logger.info("Calendar student sync fetched " + users.length + " users from " + allProductIds.length + " packages");
+      }
+    } catch (error: any) {
+      prefetchedByProduct = undefined;
+      // API gộp lỗi thì trở lại cách quét riêng từng chương trình để không chặn cả lượt.
+      logger.warn("Calendar student sync combined fetch failed, falling back by program:", error?.message || error);
+    }
     for (const [code, ids] of byProgram) {
       try {
-        const result = await syncCalendarStudents(ids, registeredAt);
+        const prefetchedUsers = prefetchedByProduct
+          ? [...(productsByProgram.get(code) || [])].flatMap((productId) => prefetchedByProduct!.get(productId) || [])
+          : undefined;
+        const result = await syncCalendarStudents(ids, registeredAt, undefined, prefetchedUsers);
         inserted += result.inserted;
         skipped += result.skipped;
         if (!result.failed) await markCalendarsStudentSynced(ids);

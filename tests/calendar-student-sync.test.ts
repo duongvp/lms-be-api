@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import prisma from '../src/lib/prisma';
-import { startCalendarStudentSync, getCalendarStudentSyncJob } from '../src/modules/livestream/calendar-student-sync.service';
+import { startCalendarStudentSync, getCalendarStudentSyncJob, syncCalendarStudents } from '../src/modules/livestream/calendar-student-sync.service';
 
 const waitForJob = async (jobId: string) => {
   for (let index = 0; index < 100; index += 1) {
@@ -11,6 +11,60 @@ const waitForJob = async (jobId: string) => {
   }
   throw new Error('Job did not finish');
 };
+
+test('loads every HOCMAI page even when last_page underreports', async () => {
+  const originals = {
+    calendars: prisma.calendar.findMany, mappings: prisma.package_lesson_mapping.findMany,
+    users: prisma.users.findMany, create: prisma.users.createMany, fetch: globalThis.fetch,
+    url: process.env.HOCMAI_LIVE_USER_API_URL, token: process.env.HOCMAI_LIVE_USER_API_TOKEN,
+  };
+  const requestedPages: number[] = [];
+  const inserted: any[] = [];
+  try {
+    process.env.HOCMAI_LIVE_USER_API_URL = 'https://example.invalid/users';
+    process.env.HOCMAI_LIVE_USER_API_TOKEN = 'test';
+    (prisma.calendar.findMany as any) = async () => [{
+      id: 1, key: 'calendar-1', code: 'toan-7-2027', learn_number: 13,
+      start_time: new Date('2026-09-30T18:00:00Z'),
+    }];
+    (prisma.package_lesson_mapping.findMany as any) = async () => [{ key: 'calendar-1', package_id: '9019' }];
+    (prisma.users.findMany as any) = async () => [];
+    (prisma.users.createMany as any) = async ({ data }: any) => {
+      inserted.push(...data);
+      return { count: data.length };
+    };
+    globalThis.fetch = async (rawUrl: any) => {
+      const page = Number(new URL(String(rawUrl)).searchParams.get('page'));
+      requestedPages.push(page);
+      const firstIndex = (page - 1) * 100;
+      const count = page === 3 ? 54 : 100;
+      return new Response(JSON.stringify({
+        status: 'success', total: '254', per_page: '100', last_page: '1',
+        data: Array.from({ length: count }, (_, index) => ({
+          userid: String(firstIndex + index + 1),
+          username: 'student-' + (firstIndex + index + 1),
+          name: 'Student', product_id: '9019',
+        })),
+      }));
+    };
+    const result = await syncCalendarStudents([1], '30/09/2026');
+    assert.deepEqual(requestedPages, [1, 2, 3]);
+    assert.equal(result.apiUsers, 254);
+    assert.equal(result.uniqueEnrollments, 254);
+    assert.equal(result.inserted, 254);
+    assert.equal(inserted.length, 254);
+  } finally {
+    (prisma.calendar.findMany as any) = originals.calendars;
+    (prisma.package_lesson_mapping.findMany as any) = originals.mappings;
+    (prisma.users.findMany as any) = originals.users;
+    (prisma.users.createMany as any) = originals.create;
+    globalThis.fetch = originals.fetch;
+    if (originals.url === undefined) delete process.env.HOCMAI_LIVE_USER_API_URL;
+    else process.env.HOCMAI_LIVE_USER_API_URL = originals.url;
+    if (originals.token === undefined) delete process.env.HOCMAI_LIVE_USER_API_TOKEN;
+    else process.env.HOCMAI_LIVE_USER_API_TOKEN = originals.token;
+  }
+});
 
 test('reports mapping errors and preserves existing enrollment without updating islearn', async () => {
   const originals = {

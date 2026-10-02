@@ -34,13 +34,19 @@ const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => 
   username: String(req.user?.username || ''),
 });
 
+const conflictErrorResponse = (res: Response, err: any) => res.status(400).json({
+  success: false,
+  message: err.message,
+  ...(Array.isArray(err?.conflicts) ? { conflicts: err.conflicts } : {}),
+});
+
 export const createSingle = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     console.log(req.body);
     const result = await livestreamService.createSingle(req.body, getChangeActor(req));
     res.status(201).json({ success: true, data: result });
   } catch (err: any) {
-    res.status(400).json({ success: false, message: err.message });
+    conflictErrorResponse(res, err);
   }
 };
 
@@ -49,7 +55,7 @@ export const createBulk = async (req: Request, res: Response, next: NextFunction
     const result = await livestreamService.createBulk(req.body, getChangeActor(req));
     res.status(201).json({ success: true, data: result });
   } catch (err: any) {
-    res.status(400).json({ success: false, message: err.message });
+    conflictErrorResponse(res, err);
   }
 };
 
@@ -126,7 +132,7 @@ export const updateBulk = async (req: Request, res: Response, next: NextFunction
       : await livestreamService.updateBulk(req.body, getChangeActor(req));
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
-    res.status(400).json({ success: false, message: err.message });
+    conflictErrorResponse(res, err);
   }
 };
 
@@ -136,7 +142,7 @@ export const backfillMissingTeachingUsers = async (req: Request, res: Response):
     const result = await livestreamService.backfillMissingCalendarTeachingUsers(ids, req.body.additionalUsers);
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
-    res.status(400).json({ success: false, message: err.message });
+    conflictErrorResponse(res, err);
   }
 };
 
@@ -149,7 +155,7 @@ export const resendToHocmai = async (req: Request, res: Response): Promise<void>
       data: result,
     });
   } catch (err: any) {
-    res.status(400).json({ success: false, message: err.message });
+    conflictErrorResponse(res, err);
   }
 };
 
@@ -230,7 +236,7 @@ export const updateSchedule = async (req: Request, res: Response, next: NextFunc
     );
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
-    res.status(400).json({ success: false, message: err.message });
+    conflictErrorResponse(res, err);
   }
 };
 
@@ -244,7 +250,7 @@ export const rescheduleSession = async (req: Request, res: Response, next: NextF
     );
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
-    res.status(400).json({ success: false, message: err.message });
+    conflictErrorResponse(res, err);
   }
 };
 

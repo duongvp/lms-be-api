@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateBulkFinalStateConflicts } from '../src/modules/livestream/livestream.service';
+import { ScheduleConflictError, validateBulkFinalStateConflicts, validateBulkScheduleConflicts } from '../src/modules/livestream/livestream.service';
 
 const at = (date: string, hour: string) => new Date(`${date}T${hour}:00.000Z`);
 
@@ -45,7 +45,7 @@ test('từ chối khi trạng thái cuối của hai lịch vẫn trùng giáo v
     },
   ]), (error: unknown) => {
     assert.ok(error instanceof Error);
-    assert.match(error.message, /Trùng lịch giáo viên: “Giáo viên A”/);
+    assert.match(error.message, /Giáo viên “Giáo viên A”/);
     assert.match(error.message, /khóa COURSE-1, Bài 10, “Bài thứ nhất”, ID lịch 1/);
     assert.match(error.message, /28\/08\/2026 08:00–28\/08\/2026 10:00/);
     assert.match(error.message, /khóa COURSE-2, Bài 20, “Bài thứ hai”, ID lịch 2/);
@@ -147,9 +147,46 @@ test('thông báo rõ trợ giảng và hai lịch bị trùng trong cập nhậ
     },
   ]), (error: unknown) => {
     assert.ok(error instanceof Error);
-    assert.match(error.message, /Trùng lịch trợ giảng: “trogiang-b”/);
+    assert.match(error.message, /Trợ giảng “trogiang-b”/);
     assert.match(error.message, /khóa COURSE-11, Bài 11, “Lịch thứ nhất”, ID lịch 11/);
     assert.match(error.message, /khóa COURSE-12, Bài 12, “Lịch thứ hai”, ID lịch 12/);
+    return true;
+  });
+});
+
+test('gom đầy đủ các lịch trùng trong lô và ngoài lô, loại bỏ lịch lặp', async () => {
+  const candidates = [1, 2, 3].map((id) => ({
+    id,
+    teacher: 'Giáo viên A',
+    start_time: at('2026-10-04', id === 3 ? '14:00' : '08:00'),
+    end_time: at('2026-10-04', id === 3 ? '16:00' : '10:00'),
+  }));
+  const queried: number[] = [];
+  const client = { calendar: { findMany: async ({ where }: any) => {
+    queried.push(where.start_time.lt.getUTCHours());
+    const id = where.start_time.lt.getUTCHours() === 16 ? 5 : 4;
+    return [{
+      id, code: `COURSE-${id}`, learn_number: id, lesson_name: `Bài ${id}`,
+      start_time: at('2026-10-04', id === 5 ? '15:00' : '09:00'),
+      end_time: at('2026-10-04', id === 5 ? '17:00' : '11:00'),
+    }];
+  } } };
+  await assert.rejects(validateBulkScheduleConflicts(candidates, [1, 2, 3], client), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    assert.deepEqual(error.conflicts.map((item) => item.id), [1, 2, 4, 5]);
+    assert.ok(error.conflicts.every((item) => item.start_time && item.end_time));
+    assert.equal(queried.length, 3);
+    return true;
+  });
+});
+
+test('gom cả xung đột cùng khóa khi không trùng nhân sự', () => {
+  assert.throws(() => validateBulkFinalStateConflicts([1, 2, 3].map((id) => ({
+    id, code: 'COURSE-1',
+    start_time: at('2026-10-04', '08:00'), end_time: at('2026-10-04', '10:00'),
+  }))), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    assert.deepEqual(error.conflicts.map((item) => item.id), [1, 2, 3]);
     return true;
   });
 });

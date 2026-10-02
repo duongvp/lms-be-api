@@ -1143,6 +1143,31 @@ const describeConflictSchedule = (schedule: {
   return identity ? `${identity} (${time})` : `lịch ${schedule.id || '-'} (${time})`;
 };
 
+export type ScheduleConflict = {
+  id: number;
+  code: string | null;
+  learn_number: number | null;
+  lesson_name: string | null;
+  start_time: Date;
+  end_time: Date;
+  staff_type: 'teacher' | 'assistant' | 'course';
+  username: string;
+};
+
+export class ScheduleConflictError extends Error {
+  readonly conflicts: ScheduleConflict[];
+
+  constructor(conflicts: ScheduleConflict[]) {
+    const lines = conflicts.map((conflict) => (
+      `• ${conflict.staff_type === 'course' ? 'Khóa học' : conflict.staff_type === 'teacher' ? 'Giáo viên' : 'Trợ giảng'} “${conflict.username}”: `
+      + describeConflictSchedule(conflict)
+    ));
+    super(`Lịch đang cập nhật bị trùng với ${conflicts.length} lịch:\n${lines.join('\n')}`);
+    this.name = 'ScheduleConflictError';
+    this.conflicts = conflicts;
+  }
+}
+
 // UI và dữ liệu nghiệp vụ chỉ thao tác tới phút. Một số bản ghi cũ còn giây
 // nên 09:30:30 từng bị xem là chồng với buổi bắt đầu 09:30 dù cùng hiển thị
 // 09:30. Kiểm tra conflict theo đúng độ chính xác mà người dùng nhìn thấy.
@@ -1186,6 +1211,7 @@ const checkConflict = async ({
     ...ignoredIds,
     ...(id ? [id] : []),
   ].filter((value) => Number.isInteger(value) && value > 0)));
+  const conflicts: ScheduleConflict[] = [];
 
   if (teacher) {
     const possibleTeacherConflicts = await client.calendar.findMany({
@@ -1200,16 +1226,19 @@ const checkConflict = async ({
         id: excludedIds.length ? { notIn: excludedIds } : undefined
       }
     });
-    const conflictTeacher = possibleTeacherConflicts.find((session: any) => timeRangesOverlap(
-      start_time, end_time, session.start_time, session.end_time
-    ));
-    if (conflictTeacher) {
-      throw new Error(
-        `Trùng lịch giáo viên: “${teacher}”.\n`
-        + `Lịch đang cập nhật: ${formatScheduleRange(start_time, end_time)}.\n`
-        + `Trùng với: ${describeConflictSchedule(conflictTeacher)}.`
-      );
-    }
+    const teacherConflicts: ScheduleConflict[] = possibleTeacherConflicts
+      .filter((session: any) => timeRangesOverlap(start_time, end_time, session.start_time, session.end_time))
+      .map((session: any) => ({
+        id: Number(session.id),
+        code: session.code ?? null,
+        learn_number: session.learn_number ?? null,
+        lesson_name: session.lesson_name ?? null,
+        start_time: session.start_time,
+        end_time: session.end_time,
+        staff_type: 'teacher' as const,
+        username: teacher,
+      }));
+    conflicts.push(...teacherConflicts);
   }
 
   const assistantTeachers = parseAssistantTeachers(assistant_teacher);
@@ -1233,23 +1262,24 @@ const checkConflict = async ({
       end_time: Date;
       assistant_teacher: string | null;
     }>;
-    let conflictAssistant: { username: string; session: typeof overlappingSessions[number] } | null = null;
+    const assistantConflicts: ScheduleConflict[] = [];
     for (const session of overlappingSessions) {
       if (!timeRangesOverlap(start_time, end_time, session.start_time, session.end_time)) continue;
       const assigned = new Set(parseAssistantTeachers(session.assistant_teacher));
-      const username = assistantTeachers.find((item) => assigned.has(item));
-      if (username) {
-        conflictAssistant = { username, session };
-        break;
+      for (const username of assistantTeachers.filter((item) => assigned.has(item))) {
+        assistantConflicts.push({
+          id: Number(session.id),
+          code: session.code ?? null,
+          learn_number: session.learn_number ?? null,
+          lesson_name: session.lesson_name ?? null,
+          start_time: session.start_time,
+          end_time: session.end_time,
+          staff_type: 'assistant',
+          username,
+        });
       }
     }
-    if (conflictAssistant) {
-      throw new Error(
-        `Trùng lịch trợ giảng: “${conflictAssistant.username}”.\n`
-        + `Lịch đang cập nhật: ${formatScheduleRange(start_time, end_time)}.\n`
-        + `Trùng với: ${describeConflictSchedule(conflictAssistant.session)}.`
-      );
-    }
+    conflicts.push(...assistantConflicts);
   }
 
   // if (channel_name) {
@@ -1277,11 +1307,24 @@ const checkConflict = async ({
         id: excludedIds.length ? { notIn: excludedIds } : undefined
       }
     });
-    const conflictCourse = possibleCourseConflicts.find((session: any) => timeRangesOverlap(
+    const courseConflicts = possibleCourseConflicts.filter((session: any) => timeRangesOverlap(
       start_time, end_time, session.start_time, session.end_time
     ));
-    if (conflictCourse) throw new Error("Hai buổi cùng khóa không được trùng thời gian");
+    conflicts.push(...courseConflicts.map((session: any) => ({
+      id: Number(session.id),
+      code: session.code ?? null,
+      learn_number: session.learn_number ?? null,
+      lesson_name: session.lesson_name ?? null,
+      start_time: session.start_time,
+      end_time: session.end_time,
+      staff_type: 'course' as const,
+      username: code,
+    })));
   }
+  const uniqueConflicts = Array.from(new Map(
+    conflicts.map((conflict) => [conflict.id, conflict])
+  ).values());
+  if (uniqueConflicts.length) throw new ScheduleConflictError(uniqueConflicts);
 };
 
 type BulkConflictCandidate = {
@@ -1304,6 +1347,19 @@ const schedulesOverlap = (left: BulkConflictCandidate, right: BulkConflictCandid
 export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidate[]) => {
   candidates.forEach((candidate) => ensureValidTimeRange(candidate.start_time, candidate.end_time));
   candidates = candidates.filter((candidate) => Number(candidate.lesson_status) !== 1);
+  const conflicts = new Map<number, ScheduleConflict>();
+  const addPair = (left: BulkConflictCandidate, right: BulkConflictCandidate, staff_type: ScheduleConflict['staff_type'], username: string) => {
+    for (const candidate of [left, right]) {
+      if (!conflicts.has(candidate.id)) conflicts.set(candidate.id, {
+        ...candidate,
+        code: candidate.code ?? null,
+        learn_number: candidate.learn_number ?? null,
+        lesson_name: candidate.lesson_name ?? null,
+        staff_type,
+        username,
+      });
+    }
+  };
 
   for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
@@ -1311,11 +1367,7 @@ export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidat
       const right = candidates[rightIndex];
       if (!schedulesOverlap(left, right)) continue;
       if (left.teacher && right.teacher && left.teacher === right.teacher) {
-        throw new Error(
-          `Trùng lịch giáo viên: “${left.teacher}”.\n`
-          + `Lịch 1: ${describeConflictSchedule(left)}.\n`
-          + `Lịch 2: ${describeConflictSchedule(right)}.`
-        );
+        addPair(left, right, 'teacher', left.teacher);
       }
     }
   }
@@ -1329,11 +1381,7 @@ export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidat
       const conflictAssistant = parseAssistantTeachers(left.assistant_teacher)
         .find((username) => rightAssistants.has(username));
       if (conflictAssistant) {
-        throw new Error(
-          `Trùng lịch trợ giảng: “${conflictAssistant}”.\n`
-          + `Lịch 1: ${describeConflictSchedule(left)}.\n`
-          + `Lịch 2: ${describeConflictSchedule(right)}.`
-        );
+        addPair(left, right, 'assistant', conflictAssistant);
       }
     }
   }
@@ -1343,10 +1391,38 @@ export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidat
       const left = candidates[leftIndex];
       const right = candidates[rightIndex];
       if (schedulesOverlap(left, right) && left.code && right.code && left.code === right.code) {
-        throw new Error('Hai buổi cùng khóa không được trùng thời gian');
+        addPair(left, right, 'course', left.code);
       }
     }
   }
+  if (conflicts.size) throw new ScheduleConflictError(Array.from(conflicts.values()));
+};
+
+/** Gom xung đột trong lô và với lịch ngoài lô trước khi ghi bất kỳ thay đổi nào. */
+export const validateBulkScheduleConflicts = async (candidates: BulkConflictCandidate[], ignoredIds: number[], client: any = prisma) => {
+  const conflicts = new Map<number, ScheduleConflict>();
+  const collect = (error: unknown) => {
+    if (!(error instanceof ScheduleConflictError)) throw error;
+    for (const conflict of error.conflicts) {
+      if (!conflicts.has(conflict.id)) conflicts.set(conflict.id, conflict);
+    }
+  };
+  try {
+    validateBulkFinalStateConflicts(candidates);
+  } catch (error) {
+    collect(error);
+  }
+  for (const candidate of candidates) {
+    if (Number(candidate.lesson_status) === 1) continue;
+    try {
+      await checkConflict({ ...candidate, code: candidate.code ?? undefined, ignoredIds, client });
+    } catch (error) {
+      collect(error);
+    }
+  }
+  if (conflicts.size) throw new ScheduleConflictError(Array.from(conflicts.values()).sort(
+    (left, right) => left.start_time.getTime() - right.start_time.getTime() || left.id - right.id
+  ));
 };
 
 
@@ -3053,10 +3129,12 @@ export const getCalendar = async (
 ) => {
   const page = normalizeNumber(query.page, 'page') ?? 1;
   const limit = normalizeNumber(query.limit, 'limit') ?? 10;
+  const calendarId = normalizeNumber(query.calendar_id, 'calendar_id');
 
   if (page < 1) throw new Error('page phải lớn hơn 0');
   // Bảng Quản lý lịch học cho phép người dùng theo dõi tối đa 300 buổi/trang.
   if (limit < 1 || limit > 300) throw new Error('limit phải nằm trong khoảng 1-300');
+  if (calendarId !== undefined && calendarId < 1) throw new Error('calendar_id phải là số nguyên dương');
 
   const skip = (page - 1) * limit;
   const take = limit;
@@ -3168,6 +3246,7 @@ export const getCalendar = async (
     ? null
     : { id: { in: scopedCalendarIds } };
   const where: Prisma.calendarWhereInput = programCondition ? { AND: [programCondition] } : {};
+  if (calendarId !== undefined) where.id = calendarId;
 
   if (keyword) {
     where.OR = [
@@ -3814,11 +3893,12 @@ export const updateBulk = async (
             code: current.code,
             learn_number: current.learn_number,
             lesson_name: current.lesson_name,
+            lesson_status: current.lesson_status,
             start_time: startTime,
             end_time: endTime,
           };
         });
-        validateBulkFinalStateConflicts(finalCandidates);
+        await validateBulkScheduleConflicts(finalCandidates, normalizedIds, tx);
         const teamsEvents: Array<Parameters<typeof enqueueCalendarTeamsNotification>[1]> = [];
         const applyUpdates = async () => {
           for (const idStr of ids) {
@@ -3841,19 +3921,6 @@ export const updateBulk = async (
               newEnd = new Date(current.end_time);
               newEnd.setUTCHours(Number(hours), Number(minutes), 0, 0);
             }
-
-            // Check conflict
-            await checkConflict({
-              teacher: dataToUpdate.teacher || current.teacher,
-              assistant_teacher: dataToUpdate.assistant_teacher ?? (current as any).assistant_teacher,
-              channel_name: dataToUpdate.channel_name || current.channel_name,
-              code: current.code,
-              start_time: newStart,
-              end_time: newEnd,
-              id,
-              ignoredIds: normalizedIds,
-              client: tx,
-            });
 
             const updated = await updateCalendarRecord(tx, id, {
               ...dataToUpdate,
@@ -3992,7 +4059,7 @@ export const updateBulk = async (
           end_time: endTime,
         });
       }
-      validateBulkFinalStateConflicts(finalCandidates);
+      await validateBulkScheduleConflicts(finalCandidates, normalizedIds, tx);
       const results: any[] = [];
       const teachingProfileCache = new Map<string, any[]>();
       const teamsEvents: Array<Parameters<typeof enqueueCalendarTeamsNotification>[1]> = [];
@@ -4052,17 +4119,6 @@ export const updateBulk = async (
           if (!hasCalendarFieldUpdate && mappingUpdate === undefined) continue;
           let updated = current;
           if (hasCalendarFieldUpdate) {
-            await checkConflict({
-              teacher: dataToUpdate.teacher || current.teacher,
-              assistant_teacher: dataToUpdate.assistant_teacher ?? (current as any).assistant_teacher,
-              channel_name: dataToUpdate.channel_name || current.channel_name,
-              code: current.code,
-              start_time: newStart,
-              end_time: newEnd,
-              id,
-              ignoredIds: normalizedIds,
-              client: tx,
-            });
             updated = await updateCalendarRecord(tx, id, dataToUpdate, current);
             await auditTimeChange(tx, current, updated, changeActor, item?.reason ?? config?.reason);
           }

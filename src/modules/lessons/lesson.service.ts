@@ -95,6 +95,7 @@ export const changeLessonProgramSubject = async (payload: LessonProgramSubjectUp
   serializeBigInt(await updateLessonProgramSubject({
     programCode: payload.program_code,
     subjectName: payload.subject_name,
+    newProgramCode: payload.subject_code,
   }))
 );
 

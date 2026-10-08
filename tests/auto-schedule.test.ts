@@ -406,3 +406,95 @@ test('Topuni hỗ trợ lịch cách tuần theo đúng nhịp 14 ngày', () => 
     '2027-01-19',
   ]);
 });
+
+for (const systemType of ['topclass', 'topuni'] as const) {
+  for (const strategy of ['by_block', 'interleaved'] as const) {
+    test(`${systemType}/${strategy}: chia 30 bài thành hai đợt với lịch dạy khác nhau`, () => {
+      const blocks = Array.from({ length: 15 }, (_, blockIndex) => ({
+        lessons: [1, 2].map((offset) => {
+          const learnNumber = blockIndex * 2 + offset;
+          return {
+            learn_number: learnNumber,
+            session_id: String(learnNumber),
+            lesson_name: `Bài ${learnNumber}`,
+            sessions: [
+              { weekday: 1, start_time: '19:00', end_time: '20:30', teacher: 'gv-dot-1' },
+              { weekday: 3, start_time: '19:00', end_time: '20:30', teacher: 'gv-dot-1' },
+            ],
+          };
+        }),
+      }));
+      const first = previewAutoSchedule({
+        program_code: 'range-30', system_type: systemType, strategy,
+        start_date: '2027-06-21', from_learn_number: 1, to_learn_number: 15, blocks,
+      });
+      const second = previewAutoSchedule({
+        program_code: 'range-30', system_type: systemType, strategy,
+        start_date: '2028-01-04', from_learn_number: 16, to_learn_number: 30,
+        blocks: blocks.map((block) => ({
+          lessons: block.lessons.map((lesson) => ({
+            ...lesson,
+            sessions: lesson.sessions.map((session) => ({
+              ...session, weekday: 2, start_time: '20:00', end_time: '21:30', teacher: 'gv-dot-2',
+            })),
+          })),
+        })),
+      });
+      const sessionsPerLesson = systemType === 'topclass' ? 2 : 1;
+      assert.equal(first.count, 15 * sessionsPerLesson);
+      assert.equal(second.count, 15 * sessionsPerLesson);
+      assert.deepEqual([...new Set(first.calendars.map((item) => item.learn_number))],
+        Array.from({ length: 15 }, (_, index) => index + 1));
+      assert.deepEqual([...new Set(second.calendars.map((item) => item.learn_number))],
+        Array.from({ length: 15 }, (_, index) => index + 16));
+      assert.equal(first.calendars[0].start_time, '2027-06-21T19:00:00.000Z');
+      assert.equal(second.calendars[0].start_time, '2028-01-04T20:00:00.000Z');
+      assert.ok(second.calendars.every((item) => item.teacher === 'gv-dot-2'));
+      assert.equal(second.calendars[0].auto_schedule.block_index, 7);
+      assert.equal(second.calendars[0].auto_schedule.lesson_index, 1);
+      if (systemType === 'topclass' && strategy === 'interleaved') {
+        assert.deepEqual(first.calendars.slice(0, 4).map((item) => item.learn_number), [1, 2, 1, 2]);
+        assert.deepEqual(second.calendars.slice(0, 6).map((item) => item.learn_number), [16, 16, 17, 18, 17, 18]);
+      }
+    });
+  }
+}
+
+test('khoảng chỉ một bài giữ số bài, ngày nghỉ, mẫu tên và mapping HMO', () => {
+  const result = previewAutoSchedule({
+    program_code: 'range-single', system_type: 'topclass', start_date: '2027-06-21',
+    from_learn_number: 16, to_learn_number: 16,
+    holidays: ['2027-06-21'], holiday_handling: 'next_session',
+    customize_lesson_names: true, lesson_name_suffix: ' - buổi {n}',
+    blocks: [{ lessons: [15, 16, 17].map((learn_number) => ({
+      learn_number, lesson_name: `Bài ${learn_number}`,
+      sessions: [1, 3].map((weekday) => ({
+        weekday, start_time: '19:00', end_time: '20:30',
+        hmo_mappings: [{ package_id: 'p', course_id: 'c', lesson_id: String(learn_number) }],
+      })),
+    })) }],
+  });
+  assert.deepEqual(result.calendars.map((item) => item.learn_number), [16, 16]);
+  assert.equal(result.calendars[0].start_time, '2027-06-23T19:00:00.000Z');
+  assert.deepEqual(result.calendars.map((item) => item.lesson_name), ['Bài 16', 'Bài 16 - buổi 2']);
+  assert.deepEqual(result.calendars[0].package_lesson_mappings,
+    [{ package_ids: ['p'], course_id: 'c', lesson_ids: ['16'] }]);
+});
+
+test('từ chối khoảng đảo ngược, thiếu đầu mút, số lẻ, số không và khoảng trống', () => {
+  const payload = {
+    program_code: 'range-invalid', system_type: 'topclass' as const, start_date: '2027-06-21',
+    blocks: [{ learn_number: 1, sessions: [{ weekday: 1, start_time: '19:00', end_time: '20:30' }] }],
+  };
+  for (const range of [
+    { from_learn_number: 2, to_learn_number: 1 },
+    { from_learn_number: 1 }, { to_learn_number: 1 },
+    { from_learn_number: 0, to_learn_number: 1 },
+    { from_learn_number: 1, to_learn_number: 1.5 },
+    { from_learn_number: NaN, to_learn_number: 1 },
+  ]) {
+    assert.throws(() => previewAutoSchedule({ ...payload, ...range }), /Khoảng bài không hợp lệ/);
+  }
+  assert.throws(() => previewAutoSchedule({ ...payload, from_learn_number: 16, to_learn_number: 30 }),
+    /Không có bài học trong khoảng/);
+});

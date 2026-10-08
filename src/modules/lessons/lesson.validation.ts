@@ -163,6 +163,17 @@ const validateLessonIds = (value: unknown) => {
   return value.map((item) => validateLessonId(item));
 };
 
+export const validateLessonProgramPayload = (body: any): LessonPayload => (
+  validateLessonPayload({
+    ...body,
+    learn_number: 1,
+    lesson_name: body?.lesson_name == null
+      || (typeof body.lesson_name === 'string' && !body.lesson_name.trim())
+      ? 'Bài 1'
+      : body.lesson_name,
+  }) as LessonPayload
+);
+
 export const validateLessonPayload = (body: any, isUpdate = false): Partial<LessonPayload> => {
   rejectCalendarOnlyFields(body ?? {});
   const payload: Partial<LessonPayload> = {};
@@ -208,10 +219,19 @@ export const validateLessonPayload = (body: any, isUpdate = false): Partial<Less
   return payload;
 };
 
-export const validateLessonProgramSubjectUpdatePayload = (body: any): LessonProgramSubjectUpdatePayload => ({
-  program_code: requiredString(body?.program_code, 'program_code', 100),
-  subject_name: requiredString(body?.subject_name, 'subject_name', 100),
-});
+export const validateLessonProgramSubjectUpdatePayload = (body: any): LessonProgramSubjectUpdatePayload => {
+  const payload: LessonProgramSubjectUpdatePayload = {
+    program_code: requiredString(body?.program_code, 'program_code', 100),
+    subject_name: requiredString(body?.subject_name, 'subject_name', 100),
+  };
+  if (body?.subject_code !== undefined) {
+    payload.subject_code = requiredString(body.subject_code, 'subject_code', 100);
+    if (!/^[A-Za-z0-9_-]+$/.test(payload.subject_code)) {
+      throw new ApiError('Mã chương trình chỉ dùng chữ không dấu, số, dấu gạch ngang hoặc gạch dưới', 400);
+    }
+  }
+  return payload;
+};
 
 export const validateLessonBulkUpdatePayload = (body: any): LessonBulkUpdatePayload => {
   const ids = validateLessonIds(body.ids);

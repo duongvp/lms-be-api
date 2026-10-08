@@ -32,6 +32,9 @@ export type AutoSchedulePayload = {
   program_code: string;
   system_type: 'topclass' | 'topuni';
   start_date: string;
+  /** Chỉ tạo các bài trong khoảng này (bao gồm cả hai đầu); bỏ trống để tạo tất cả. */
+  from_learn_number?: number;
+  to_learn_number?: number;
   /** Các thứ lặp lại cho TopUni. Bỏ trống để tương thích lịch cũ theo weekday của buổi mẫu. */
   topuni_weekdays?: number[];
   /** Khi bật, mỗi bài TopUni dùng chính session duy nhất của bài làm lịch ngoại lệ. */
@@ -247,11 +250,23 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
     holidays.add(rule.date);
     holidayHandlingByDate.set(rule.date, rule.handling);
   });
+  const hasLessonRange = payload.from_learn_number !== undefined || payload.to_learn_number !== undefined;
+  const fromLearnNumber = payload.from_learn_number;
+  const toLearnNumber = payload.to_learn_number;
+  if (hasLessonRange && (
+    !Number.isInteger(fromLearnNumber) || !Number.isInteger(toLearnNumber)
+    || (fromLearnNumber as number) <= 0 || (toLearnNumber as number) < (fromLearnNumber as number)
+  )) {
+    throw new Error('Khoảng bài không hợp lệ: Từ bài và Đến bài phải là số nguyên dương, Đến bài phải lớn hơn hoặc bằng Từ bài');
+  }
   const sequence = orderedSessions(
     payload.blocks,
     payload.strategy || 'by_block',
     payload.system_type === 'topuni' ? 1 : undefined
-  );
+  ).filter(({ lesson }) => !hasLessonRange || (
+    lesson.learn_number >= (fromLearnNumber as number) && lesson.learn_number <= (toLearnNumber as number)
+  ));
+  if (!sequence.length) throw new Error('Không có bài học trong khoảng đã chọn');
   const holidayHandling = payload.holiday_handling === 'next_session'
     || (payload.system_type === 'topuni'
       && payload.holiday_handling === undefined

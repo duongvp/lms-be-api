@@ -48,6 +48,7 @@ export interface LessonCourseMappingPayload {
 export interface LessonProgramSubjectUpdatePayload {
   program_code: string;
   subject_name: string;
+  subject_code?: string;
 }
 
 export type LessonExportFormat = 'csv' | 'xlsx';

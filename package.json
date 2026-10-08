@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "dist/server.js",
   "scripts": {
+    "predev": "prisma generate",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "build": "prisma generate && tsc",

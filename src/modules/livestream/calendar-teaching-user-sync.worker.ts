@@ -59,10 +59,6 @@ export const runCalendarTeachingUserSync = async (now = new Date()) => {
     const calendars = await prisma.calendar.findMany({
       where: {
         start_time: { gte: start, lt: end },
-        OR: [
-          { lesson_status: null },
-          { lesson_status: { not: 1 } },
-        ],
       },
       select: { id: true },
       orderBy: { id: 'asc' },

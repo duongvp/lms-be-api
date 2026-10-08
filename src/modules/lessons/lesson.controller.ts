@@ -28,6 +28,7 @@ import {
   validateLessonImportRows,
   validateLessonListQuery,
   validateLessonPayload,
+  validateLessonProgramPayload,
   validateLessonReorderPayload,
   validateLessonCourseMappingPayload,
   validateLessonProgramSubjectUpdatePayload,
@@ -291,10 +292,7 @@ const programs = async (req: Request, res: Response) => {
 
 const createProgram = async (req: Request, res: Response) => {
   try {
-    const payload = validateLessonPayload({
-      ...req.body,
-      learn_number: 1,
-    }) as LessonPayload;
+    const payload = validateLessonProgramPayload(req.body);
     const result = await createNewProgram(payload);
     return res.status(201).json({
       success: true,

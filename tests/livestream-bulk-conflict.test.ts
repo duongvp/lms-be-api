@@ -171,11 +171,42 @@ test('gom đầy đủ các lịch trùng trong lô và ngoài lô, loại bỏ 
       end_time: at('2026-10-04', id === 5 ? '17:00' : '11:00'),
     }];
   } } };
-  await assert.rejects(validateBulkScheduleConflicts(candidates, [1, 2, 3], client), (error: unknown) => {
+  await assert.rejects(validateBulkScheduleConflicts(candidates, [1, 2, 3], client, at('2026-10-03', '12:00')), (error: unknown) => {
     assert.ok(error instanceof ScheduleConflictError);
     assert.deepEqual(error.conflicts.map((item) => item.id), [1, 2, 4, 5]);
     assert.ok(error.conflicts.every((item) => item.start_time && item.end_time));
     assert.equal(queried.length, 3);
+    return true;
+  });
+});
+
+test('bỏ qua lịch quá khứ bị trùng trong lô và không truy vấn xung đột ngoài lô', async () => {
+  const candidates = [1, 2].map((id) => ({
+    id, teacher: 'Giáo viên A', assistant_teacher: 'trogiang-a', code: 'COURSE-1',
+    start_time: at('2026-10-04', '08:00'), end_time: at('2026-10-04', '10:00'),
+  }));
+  const client = { calendar: { findMany: async () => {
+    assert.fail('Không được kiểm tra xung đột ngoài lô cho lịch quá khứ');
+  } } };
+  await assert.doesNotReject(validateBulkScheduleConflicts(candidates, [1, 2], client, at('2026-10-06', '12:00')));
+});
+
+test('lô gồm lịch quá khứ và tương lai vẫn từ chối lịch tương lai bị trùng', async () => {
+  const candidates = [1, 2, 3, 4].map((id) => ({
+    id, teacher: 'Giáo viên A', code: 'COURSE-1',
+    start_time: at(id <= 2 ? '2026-10-04' : '2026-10-08', '08:00'),
+    end_time: at(id <= 2 ? '2026-10-04' : '2026-10-08', '10:00'),
+  }));
+  let queries = 0;
+  const client = { calendar: { findMany: async ({ where }: any) => {
+    assert.ok(where.start_time.lt > at('2026-10-06', '12:00'));
+    queries += 1;
+    return [];
+  } } };
+  await assert.rejects(validateBulkScheduleConflicts(candidates, [1, 2, 3, 4], client, at('2026-10-06', '12:00')), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    assert.deepEqual(error.conflicts.map((row) => row.id), [3, 4]);
+    assert.equal(queries, 4);
     return true;
   });
 });

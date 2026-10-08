@@ -556,6 +556,17 @@ const assertCanUpdateSession = (session: any) => {
   }
 };
 
+// Mapping HMO cần được sửa/khôi phục cả sau khi buổi học đã diễn ra.
+// Các thay đổi khác vẫn đi qua điều kiện bảo vệ lịch cũ.
+export const assertCanUpdateSessionMappings = (session: any, data: any) => {
+  if (isSessionModifiable(session)) return;
+  const metadataKeys = new Set(['id', 'reason', 'change_reason', 'send_notification', 'allow_past']);
+  const changedFields = Object.keys(data).filter((key) => data[key] !== undefined && !metadataKeys.has(key));
+  if (Array.isArray(data.package_lesson_mappings)
+    && changedFields.every((key) => key === 'package_lesson_mappings')) return;
+  throw new Error('Lịch đã diễn ra hoặc đã nghỉ chỉ được cập nhật Package/Course/Lesson ID; không được đổi ngày giờ hay thông tin lịch khác');
+};
+
 const withCalendarTriggerErrorHint = async <T>(operation: () => Promise<T>) => {
   try {
     return await operation();
@@ -1399,7 +1410,16 @@ export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidat
 };
 
 /** Gom xung đột trong lô và với lịch ngoài lô trước khi ghi bất kỳ thay đổi nào. */
-export const validateBulkScheduleConflicts = async (candidates: BulkConflictCandidate[], ignoredIds: number[], client: any = prisma) => {
+export const validateBulkScheduleConflicts = async (
+  candidates: BulkConflictCandidate[],
+  ignoredIds: number[],
+  client: any = prisma,
+  now = getVietnamWallClockDate()
+) => {
+  // Lịch cũ có thể trùng từ trước. Khi sửa mapping HMO, không để xung đột
+  // lịch sử chặn cập nhật; chỉ kiểm tra xung đột cho buổi chưa bắt đầu.
+  candidates.forEach((candidate) => ensureValidTimeRange(candidate.start_time, candidate.end_time));
+  candidates = candidates.filter((candidate) => candidate.start_time > now);
   const conflicts = new Map<number, ScheduleConflict>();
   const collect = (error: unknown) => {
     if (!(error instanceof ScheduleConflictError)) throw error;
@@ -2586,7 +2606,7 @@ export const updateSchedule = async (
   const current = await prisma.calendar.findUnique({ where: { id } });
   if (!current) throw new Error("Not found");
   await hydrateAssistantTeachers(prisma, [current]);
-  assertCanUpdateSession(current);
+  assertCanUpdateSessionMappings(current, data);
 
   if (data.code !== undefined && String(data.code) !== String(current.code)) {
     throw new Error('Không được thay đổi code khi cập nhật lịch học');
@@ -2649,7 +2669,7 @@ export const updateSchedule = async (
   ) {
     await checkConflict({
       teacher: data.teacher ?? current.teacher,
-      assistant_teacher: data.assistant_teacher ?? (current as any).assistant_teacher,
+      assistant_teacher: data.assistant_teacher !== undefined ? data.assistant_teacher : (current as any).assistant_teacher,
       channel_name: data.channel_name ?? current.channel_name,
       code: current.code,
       start_time: data.start_time ?? current.start_time,
@@ -3664,7 +3684,6 @@ const buildMappingUpdatePlan = async (updates: CalendarMappingUpdateInput[]) => 
     try {
       const calendar = await findCalendarForMappingUpdate(prisma, update);
       if (!calendar) throw new Error('Không tìm thấy lịch học cần cập nhật');
-      assertCanUpdateSession(calendar);
       if (seenCalendarIds.has(Number(calendar.id))) {
         throw new Error('Lịch học bị lặp trong danh sách cập nhật');
       }
@@ -3734,7 +3753,6 @@ export const updateCalendarMappings = async (
             where: { id: Number(item.calendar.id) },
           });
           if (!calendar) throw new Error(`Dòng ${item.row}: Không tìm thấy lịch học cần cập nhật`);
-          assertCanUpdateSession(calendar);
           const mappingResult = await reconcileCalendarMappingsAndEnqueue(
             tx,
             calendar,
@@ -3889,7 +3907,7 @@ export const updateBulk = async (
           return {
             id: Number(current.id),
             teacher: dataToUpdate.teacher || current.teacher,
-            assistant_teacher: dataToUpdate.assistant_teacher ?? current.assistant_teacher,
+            assistant_teacher: dataToUpdate.assistant_teacher !== undefined ? dataToUpdate.assistant_teacher : current.assistant_teacher,
             code: current.code,
             learn_number: current.learn_number,
             lesson_name: current.lesson_name,
@@ -3957,7 +3975,7 @@ export const updateBulk = async (
         where: { id: { in: normalizedIds } },
       });
       await hydrateAssistantTeachers(tx, sessions);
-      sessions.forEach(assertCanUpdateSession);
+      sessions.forEach((session) => assertCanUpdateSessionMappings(session, update_data));
       const results: any[] = [];
       const teachingProfileCache = new Map<string, any[]>();
       const teamsEvents: Array<Parameters<typeof enqueueCalendarTeamsNotification>[1]> = [];
@@ -4019,7 +4037,11 @@ export const updateBulk = async (
         where: { id: { in: normalizedIds } },
       });
       await hydrateAssistantTeachers(tx, sessions);
-      sessions.forEach(assertCanUpdateSession);
+      sessions.forEach((session) => {
+        for (const item of update_data.filter((item: any) => Number(item.id) === Number(session.id))) {
+          assertCanUpdateSessionMappings(session, item);
+        }
+      });
       const sessionsById = new Map(sessions.map((session) => [Number(session.id), session]));
       const finalCandidates: BulkConflictCandidate[] = [];
       for (const item of update_data) {
@@ -4048,7 +4070,7 @@ export const updateBulk = async (
         finalCandidates.push({
           id: Number(current.id),
           teacher: assignments.teacher || current.teacher,
-          assistant_teacher: assignments.assistant_teacher ?? current.assistant_teacher,
+          assistant_teacher: assignments.assistant_teacher !== undefined ? assignments.assistant_teacher : current.assistant_teacher,
           code: current.code,
           learn_number: current.learn_number,
           lesson_name: typeof item.lesson_name === 'string'
@@ -4170,13 +4192,16 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
     for (let i = 0; i < ids.length; i += batchSize) {
       const batchIds = ids.slice(i, i + batchSize);
       const batchResult = await prisma.$transaction(async (tx) => {
-        const calendars = await tx.calendar.findMany({
-          where: { id: { in: batchIds } },
-          orderBy: { id: 'asc' },
-        });
+        // Đọc snapshot hiện tại và khóa lịch trong cùng transaction. Cron
+        // không được dùng phân công cũ để cấp lại quyền sau thao tác sửa lịch.
+        const calendars = await tx.$queryRaw<any[]>(Prisma.sql`
+          SELECT * FROM calendar
+          WHERE id IN (${Prisma.join(batchIds)})
+          ORDER BY id ASC
+          FOR UPDATE
+        `);
         if (!calendars.length) return { scanned: 0, created: 0, updated: 0, skipped: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
 
-        await hydrateAssistantTeachers(tx, calendars);
         let batchCreated = 0;
         let batchUpdated = 0;
         let batchSkipped = 0;
@@ -4213,20 +4238,15 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
     let lastId = 0;
     while (true) {
       const batchResult = await prisma.$transaction(async (tx) => {
-        const calendars = await tx.calendar.findMany({
-          where: {
-            id: { gt: lastId },
-            OR: [
-              { lesson_status: null },
-              { lesson_status: { not: 1 } },
-            ],
-          },
-          orderBy: { id: 'asc' },
-          take: batchSize,
-        });
+        const calendars = await tx.$queryRaw<any[]>(Prisma.sql`
+          SELECT * FROM calendar
+          WHERE id > ${lastId}
+          ORDER BY id ASC
+          LIMIT ${batchSize}
+          FOR UPDATE
+        `);
         if (!calendars.length) return { lastId: null as number | null, scanned: 0, created: 0, updated: 0, skipped: 0, errors: [] as Array<{ calendar_id: number; message: string }> };
 
-        await hydrateAssistantTeachers(tx, calendars);
         let batchCreated = 0;
         let batchUpdated = 0;
         let batchSkipped = 0;

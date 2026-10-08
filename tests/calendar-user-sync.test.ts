@@ -376,7 +376,6 @@ test('đổi ngày cập nhật class_id trên đúng user hiện tại, không 
     users: {
       findFirst: async () => null,
       updateMany: async (input: any) => { updates.push(input); },
-      deleteMany: async (input: any) => { deletes.push(input); },
     },
     $queryRaw: async () => [],
   };
@@ -396,10 +395,10 @@ test('đổi ngày cập nhật class_id trên đúng user hiện tại, không 
   );
 
   assert.equal(
-    updates[0].where.code,
-    'tongondinhluonghsav2027'
+    updates[0].where.class_id,
+    'tongondinhluonghsav20274624691'
   );
-  assert.equal(updates[0].where.class_id, undefined);
+  assert.deepEqual(updates[0].where.username, { in: ['gv01'] });
   assert.equal(updates[0].data.class_id, 'tongondinhluonghsav20274624791');
   assert.equal(deletes.length, 0);
 });
@@ -438,15 +437,14 @@ test('tên giáo viên legacy trùng nhiều profile không chặn đổi ngày 
   assert.equal(updates[0].data.class_id, 'sinhhoc-7-20274624711');
 });
 
-test('nghỉ học thu hồi user room_id = 1 khi không còn lịch hoạt động cùng bài', async () => {
+test('nghỉ học thu hồi class_id và giữ nguyên tài khoản nhân sự', async () => {
   const deletes: any[] = [];
   const client = {
     teacher_profiles: {
       findMany: async () => [{ username: 'gv01', display_name: 'Giáo viên 01' }],
     },
     users: {
-      updateMany: async () => undefined,
-      deleteMany: async (input: any) => { deletes.push(input); },
+      updateMany: async (input: any) => { deletes.push(input); },
     },
     $queryRaw: async () => [],
   };
@@ -467,9 +465,8 @@ test('nghỉ học thu hồi user room_id = 1 khi không còn lịch hoạt đ�
 
   assert.equal(deletes.length, 1);
   assert.equal(deletes[0].where.username, 'gv01');
-  assert.equal(deletes[0].where.class_id, undefined);
-  assert.equal(deletes[0].where.room_id, 1);
-  assert.equal(deletes[0].where.islearn, 0);
+  assert.equal(deletes[0].where.class_id, 'tongondinhluonghsav20274624791');
+  assert.equal(deletes[0].data.class_id, null);
 });
 
 test('đổi giáo viên tạo người mới và thu hồi người cũ nếu không còn lịch khác', async () => {
@@ -487,7 +484,7 @@ test('đổi giáo viên tạo người mới và thu hồi người cũ nếu k
     users: {
       findFirst: async () => null,
       create: async (input: any) => { creates.push(input); },
-      deleteMany: async (input: any) => { deletes.push(input); },
+      updateMany: async (input: any) => { deletes.push(input); },
     },
     $queryRaw: async () => [],
   };
@@ -508,10 +505,8 @@ test('đổi giáo viên tạo người mới và thu hồi người cũ nếu k
 
   assert.equal(creates[0].data.username, 'gv-b');
   assert.equal(deletes[0].where.username, 'gv-a');
-  assert.equal(deletes[0].where.code, 'tongondinhluonghsav2027');
-  assert.equal(deletes[0].where.learn_number, 9);
-  assert.equal(deletes[0].where.room_id, 1);
-  assert.equal(deletes[0].where.islearn, 0);
+  assert.equal(deletes[0].where.class_id, 'tongondinhluonghsav20274624791');
+  assert.equal(deletes[0].data.class_id, null);
 });
 
 test('đổi đồng thời giáo viên và trợ giảng tạo người mới, thu hồi cả hai người cũ', async () => {
@@ -536,7 +531,7 @@ test('đổi đồng thời giáo viên và trợ giảng tạo người mới, 
     users: {
       findFirst: async () => null,
       create: async (input: any) => { creates.push(input); },
-      deleteMany: async (input: any) => { deletes.push(input); },
+      updateMany: async (input: any) => { deletes.push(input); },
     },
     $queryRaw: async () => [],
   };
@@ -563,12 +558,12 @@ test('đổi đồng thời giáo viên và trợ giảng tạo người mới, 
     ['gv-cu', 'tg-cu']
   );
   assert.ok(deletes.every((item) => (
-    item.where.code === 'sinhhoc-7-2027'
-    && item.where.learn_number === 1
+    item.where.class_id === buildCalendarClassId(base.code, base.start_time, base.learn_number)
+    && item.data.class_id === null
   )));
 });
 
-test('không thu hồi giáo viên hoặc trợ giảng cũ khi còn buổi khác cùng chương trình và bài đang dùng', async () => {
+test('không thu hồi giáo viên hoặc trợ giảng khi còn phân công khác tại cùng class_id', async () => {
   const creates: any[] = [];
   const deletes: any[] = [];
   const client = {
@@ -590,7 +585,7 @@ test('không thu hồi giáo viên hoặc trợ giảng cũ khi còn buổi khá
     users: {
       findFirst: async () => null,
       create: async (input: any) => { creates.push(input); },
-      deleteMany: async (input: any) => { deletes.push(input); },
+      updateMany: async (input: any) => { deletes.push(input); },
     },
     // Mô phỏng một buổi khác cùng code + learn_number vẫn đang gắn người cũ.
     $queryRaw: async () => [{

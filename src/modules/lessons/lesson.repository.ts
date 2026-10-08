@@ -38,7 +38,7 @@ const calendarSubjectName = (subjectName: string, systemType: string, grade: num
     : subjectName
 );
 
-export const updateLessonProgramSubject = async (input: { programCode: string; subjectName: string }) => prisma.$transaction(async (tx) => {
+export const updateLessonProgramSubject = async (input: { programCode: string; subjectName: string; newProgramCode?: string }) => prisma.$transaction(async (tx) => {
   const programs = await tx.$queryRawUnsafe<Array<{ system_type: string; grade: number | null; subject_name: string }>>(
     `SELECT system_type, grade, subject_name FROM lessons
      WHERE subject_code = ? AND status <> 0 FOR UPDATE`, input.programCode
@@ -53,19 +53,44 @@ export const updateLessonProgramSubject = async (input: { programCode: string; s
   const grade = programs[0].grade;
   const subjectName = input.subjectName.trim();
   const calendarSubject = calendarSubjectName(subjectName, systemType, grade);
-  const [calendarRows] = await tx.$queryRawUnsafe<Array<{ count: bigint }>>(
-    'SELECT COUNT(*) AS count FROM calendar WHERE code = ?', input.programCode
+  const calendarRows = await tx.$queryRawUnsafe<Array<{ id: number }>>(
+    'SELECT id FROM calendar WHERE code = ? FOR UPDATE', input.programCode
   );
+  const programCode = input.newProgramCode ?? input.programCode;
+  if (programCode !== input.programCode && calendarRows.length) {
+    throw new Error('Chỉ được đổi mã chương trình khi chưa có lịch học nào được tạo');
+  }
+  if (programCode !== input.programCode) {
+    const duplicates = await tx.$queryRawUnsafe<Array<{ code: string }>>(
+      `SELECT subject_code AS code FROM lessons WHERE subject_code = ?
+       UNION ALL SELECT code FROM calendar WHERE code = ?
+       UNION ALL SELECT scopeKey AS code FROM scope_resources WHERE scopeType = 'PROGRAM' AND scopeKey = ?`,
+      programCode, programCode, programCode
+    );
+    if (duplicates.length) throw new Error(`Mã chương trình ${programCode} đã tồn tại`);
+  }
   await tx.$executeRawUnsafe(
-    'UPDATE lessons SET subject_name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE subject_code = ?',
-    subjectName, input.programCode
+    'UPDATE lessons SET subject_code = ?, subject_name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE subject_code = ?',
+    programCode, subjectName, input.programCode
   );
+  if (programCode === input.programCode) {
+    await tx.$executeRawUnsafe(
+      'UPDATE calendar SET subject = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE code = ?',
+      calendarSubject, input.programCode
+    );
+  }
+  if (programCode !== input.programCode) {
+    // Giữ cấu hình và quyền truy cập gắn với chương trình sau khi đổi mã.
+    await tx.$executeRawUnsafe('UPDATE role_program_scopes SET subjectCode = ? WHERE subjectCode = ?', programCode, input.programCode);
+    await tx.$executeRawUnsafe('UPDATE room_config SET code = ? WHERE code = ?', programCode, input.programCode);
+    await tx.$executeRawUnsafe('UPDATE program_teacher_banners SET program_code = ? WHERE program_code = ?', programCode, input.programCode);
+  }
   await tx.$executeRawUnsafe(
-    'UPDATE calendar SET subject = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE code = ?',
-    calendarSubject, input.programCode
+    "UPDATE scope_resources SET scopeKey = ?, displayName = ?, updatedAt = CURRENT_TIMESTAMP(3) WHERE scopeType = 'PROGRAM' AND scopeKey = ?",
+    programCode, `${programCode} — ${subjectName}`, input.programCode
   );
-  return { program_code: input.programCode, subject_name: subjectName, calendar_subject: calendarSubject,
-    system_type: systemType, grade, lessons_updated: programs.length, calendars_updated: Number(calendarRows?.count || 0) };
+  return { program_code: programCode, subject_name: subjectName, calendar_subject: calendarSubject,
+    system_type: systemType, grade, lessons_updated: programs.length, calendars_updated: calendarRows.length };
 });
 
 /**
@@ -213,8 +238,10 @@ export const findLessonProgramOptions = async (allowedPrograms: string[] | null 
     system_type: 'topclass' | 'topuni' | null;
     subject_name: string | null;
     subject_code: string;
+    calendar_count: bigint;
   }>>(
     `SELECT program.subject_code,
+            (SELECT COUNT(*) FROM calendar WHERE calendar.code = program.subject_code) AS calendar_count,
             COALESCE(
              MAX(CASE
                 WHEN program.source_priority = 1
@@ -300,28 +327,9 @@ export const updateLessonCourseMappings = async (input: {
   );
   if (!lessons.length) throw new Error('Chương trình không có bài học phù hợp');
 
-  // Khi thao tác toàn bộ Chương trình, mapping phải được áp dụng cả cho bài
-  // đã từng diễn ra vì bài đó có thể được xếp lịch và giảng dạy lại sau này.
-  // Chỉ giữ cơ chế bảo vệ bài quá khứ với thao tác trên danh sách chọn cụ thể.
-  const locked = new Set<string>();
-  if (input.lessonIds?.length) {
-    const lockedIds = await tx.$queryRawUnsafe<Array<{ id: bigint }>>(
-      `SELECT DISTINCT lesson.id
-       FROM lessons AS lesson
-       INNER JOIN calendar AS calendar_row
-         ON calendar_row.session_id = lesson.id
-         OR (calendar_row.code = lesson.subject_code AND calendar_row.learn_number = lesson.learn_number)
-       WHERE lesson.subject_code = ?
-         AND calendar_row.start_time <= NOW()
-         AND lesson.id IN (${lessons.map(() => '?').join(', ')})`,
-      input.programCode,
-      ...lessons.map((lesson) => lesson.id)
-    );
-    lockedIds.forEach((row) => locked.add(String(row.id)));
-  }
-  const eligible = lessons.filter((lesson) => !locked.has(String(lesson.id)));
-
-  for (const lesson of eligible) {
+  // Mapping có thể cần được khôi phục cho bài đã diễn ra hoặc được dạy lại,
+  // kể cả khi chỉ thao tác trên các bài được chọn.
+  for (const lesson of lessons) {
     if (input.action === 'add') {
       await tx.$executeRawUnsafe(
         `INSERT INTO lesson_course_mapping (lesson_id, package_id, course_id)
@@ -342,7 +350,7 @@ export const updateLessonCourseMappings = async (input: {
     }
   }
 
-  return { affected: eligible.length, skipped_past: locked.size, total: lessons.length };
+  return { affected: lessons.length, skipped_past: 0, total: lessons.length };
 });
 
 export const findLessonsForExport = async (query: LessonExportQuery) => {

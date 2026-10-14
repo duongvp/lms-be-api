@@ -111,7 +111,7 @@ export const createBanner = async (payload: BannerPayload, actor?: string) => {
     );
     return getBanner(Number(ids[0].id));
   } catch (error: any) {
-    if (error?.code === 'P2002') throw new ApiError('Chương trình và giáo viên này đã có banner', 409);
+    if (error?.code === 'P2002' || (error?.code === 'P2010' && String(error?.meta?.code) === '1062')) throw new ApiError('Chương trình và giáo viên này đã có banner', 409);
     throw error;
   }
 };
@@ -135,7 +135,7 @@ export const updateBanner = async (id: number, payload: BannerPayload, actor?: s
     await syncFutureStreams(payload.program_code, payload.teacher_profile_id, payload.status ? payload.banner_url : null);
     return getBanner(id);
   } catch (error: any) {
-    if (error?.code === 'P2002') throw new ApiError('Chương trình và giáo viên này đã có banner', 409);
+    if (error?.code === 'P2002' || (error?.code === 'P2010' && String(error?.meta?.code) === '1062')) throw new ApiError('Chương trình và giáo viên này đã có banner', 409);
     throw error;
   }
 };

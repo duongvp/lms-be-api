@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
+import { calendarSourceFromCode } from './calendar-source';
 
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -321,6 +322,10 @@ export const ensureCalendarTeachingUsers = async (
   profileCache?: Map<string, ResolvedTeachingProfile[]>,
   additionalProfiles: ResolvedTeachingProfile[] = []
 ) => {
+  // Feed chỉ lưu lịch và phân công, không tự cấp enrollment trong users.
+  if (calendarSourceFromCode(calendar.code) === 'feed') {
+    return { created: 0, updated: 0, skipped: 1 };
+  }
   if (!isActiveSchedule(calendar)) {
     await removeLegacyTeachingUsersNotInNext(client, calendar, new Set());
     return { created: 0, updated: 0, skipped: 0 };
@@ -431,6 +436,9 @@ export const ensureCalendarScanTeachingUsers = async (
   calendar: CalendarTeachingSnapshot,
   additionalUsers: ScanTeachingUser[] = normalizeScanTeachingUsers(undefined)
 ) => {
+  if (calendarSourceFromCode(calendar.code) === 'feed') {
+    return { created: 0, updated: 0, skipped: 1 };
+  }
   if (!isActiveSchedule(calendar)) return ensureCalendarTeachingUsers(client, calendar);
   const profiles: TeachingProfile[] = additionalUsers.length
     ? await client.teacher_profiles.findMany({
@@ -542,6 +550,7 @@ export const syncCalendarTeachingUsers = async (
   before: CalendarTeachingSnapshot | null,
   after: CalendarTeachingSnapshot
 ) => {
+  if (calendarSourceFromCode(after.code) === 'feed') return;
   if (before && calendarSyncSignature(before) === calendarSyncSignature(after)) return;
 
   // Khi chỉ thay ngày/giờ của lịch cũ, teacher có thể là display_name trùng

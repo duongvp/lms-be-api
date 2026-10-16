@@ -12,6 +12,37 @@ import {
   syncCalendarTeachingUsers,
 } from '../src/modules/livestream/calendar-user-sync.service';
 
+test('tạo và sửa lịch Feed không truy cập bảng users để đồng bộ nhân sự', async () => {
+  const calendar = {
+    id: 10,
+    code: 'feed-diali-5-2027',
+    learn_number: 1,
+    start_time: '2026-10-16T20:00:00.000Z',
+    teacher: 'gv01',
+    assistant_teacher: 'tg01',
+    lesson_status: 0,
+  };
+  // Client rỗng đảm bảo không có truy vấn profile hay ghi users nào phát sinh.
+  await syncCalendarTeachingUsers({}, null, calendar);
+  await syncCalendarTeachingUsers({}, calendar, { ...calendar, teacher: 'gv02' });
+});
+
+test('đối soát và quét định kỳ bỏ qua nhân sự Feed, kể cả lịch hủy', async () => {
+  for (const lesson_status of [0, 1]) {
+    const calendar = {
+      code: 'FEED-diali-5-2027',
+      learn_number: 1,
+      start_time: '2026-10-16T20:00:00.000Z',
+      teacher: 'gv01',
+      assistant_teacher: 'tg01',
+      lesson_status,
+    };
+    const expected = { created: 0, updated: 0, skipped: 1 };
+    assert.deepEqual(await ensureCalendarTeachingUsers({}, calendar), expected);
+    assert.deepEqual(await ensureCalendarScanTeachingUsers({}, calendar), expected);
+  }
+});
+
 test('chuẩn hóa name nhân sự theo student_hmid - tên hiển thị và không lặp tiền tố', () => {
   assert.equal(
     buildTeachingUserName('8741468', 'Lê Văn Minh', 'levanminh'),

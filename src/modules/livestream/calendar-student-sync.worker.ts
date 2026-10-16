@@ -5,6 +5,7 @@ import { enqueueStudentSyncTeamsSummary } from '../teams-notifications';
 import { fetchCalendarRegisteredStudents, markCalendarsStudentSynced, syncCalendarStudents, type HocmaiUser } from './calendar-student-sync.service';
 
 const CHECK_INTERVAL_MS = 30_000;
+const SYNC_INTERVAL_MINUTES = 5;
 const START_HOUR = 17;
 const END_HOUR = 23;
 let timer: NodeJS.Timeout | null = null;
@@ -100,6 +101,10 @@ export const runCalendarStudentSync = async (now = new Date()) => {
       const allProductIds = [...new Set([...productsByProgram.values()].flatMap((products) => [...products]))];
       if (allProductIds.length) {
         const users = await fetchCalendarRegisteredStudents(allProductIds, registeredAt);
+        const requestedProducts = new Set(allProductIds);
+        if (users.some((user) => !requestedProducts.has(String(user.product_id || '').trim()))) {
+          throw new Error('API HOCMAI trả học viên có product_id không khớp các package được yêu cầu');
+        }
         prefetchedByProduct = new Map<string, HocmaiUser[]>();
         users.forEach((user) => {
           const productId = String(user.product_id || "").trim();
@@ -122,8 +127,17 @@ export const runCalendarStudentSync = async (now = new Date()) => {
         const result = await syncCalendarStudents(ids, registeredAt, undefined, prefetchedUsers);
         inserted += result.inserted;
         skipped += result.skipped;
-        if (!result.failed) await markCalendarsStudentSynced(ids);
-        if (result.failed) errors.push({ code, message: 'Có ' + result.failed + ' học viên không hợp lệ' });
+        logger.info('Calendar student sync program result', {
+          runId: String(runId), code, registeredAt, calendars: ids.length,
+          apiRows: result.apiUsers, uniqueApiUsers: result.uniqueApiUsers,
+          mappedRows: result.mappedRows, duplicateRows: result.duplicateRows,
+          uniqueEnrollments: result.uniqueEnrollments, inserted: result.inserted,
+          skipped: result.skipped, failed: result.failed, unmatched: result.unmatched,
+        });
+        if (!result.failed && !result.unmatched) await markCalendarsStudentSynced(ids);
+        if (result.failed || result.unmatched) errors.push({ code, message:
+          'Có ' + result.failed + ' enrollment không hợp lệ hoặc chưa ghi được vào database; '
+          + result.unmatched + ' dòng API không khớp package của lịch' });
       } catch (error: any) {
         errors.push({ code, message: String(error?.message || 'Không thể đồng bộ chương trình') });
       }
@@ -169,13 +183,18 @@ export const createCalendarStudentSyncCheck = (
     const current = now();
     const parts = vietnamTimeParts(current);
     const hour = Number(parts.hour);
-    if (hour < START_HOUR || hour > END_HOUR || !['00', '30'].includes(parts.minute)) return;
-    const slot = current.toISOString().slice(0, 10) + ':' + parts.hour + ':' + parts.minute;
+    if (hour < START_HOUR || hour > END_HOUR) return;
+    // Run once per five-minute window even after a restart or a delayed timer.
+    const slotMinute = String(Math.floor(Number(parts.minute) / SYNC_INTERVAL_MINUTES) * SYNC_INTERVAL_MINUTES).padStart(2, '0');
+    const slot = calendarStudentSyncRegisteredAt(current) + ':' + parts.hour + ':' + slotMinute;
     if (running || lastSlot === slot) return;
     running = true;
     try {
       const result = await sync(current);
-      lastSlot = slot;
+      // A database lock held by another worker is not a completed run.
+      if (!(result && typeof result === 'object' && 'started' in result && result.started === false)) {
+        lastSlot = slot;
+      }
       onSuccess(result);
     } catch (error) { onError(error); } finally { running = false; }
   };
@@ -191,6 +210,6 @@ export const startCalendarStudentSyncWorker = () => {
   void check();
   timer = setInterval(() => void check(), CHECK_INTERVAL_MS);
   timer.unref();
-  logger.info('Calendar student sync cron enabled at 17:00–23:30 every 30 minutes (Asia/Ho_Chi_Minh)');
+  logger.info('Calendar student sync cron enabled at 17:00–23:55 every 5 minutes (Asia/Ho_Chi_Minh)');
   return () => { if (timer) clearInterval(timer); timer = null; };
 };

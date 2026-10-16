@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import prisma from '../src/lib/prisma';
 import { startCalendarStudentSync, getCalendarStudentSyncJob, syncCalendarStudents } from '../src/modules/livestream/calendar-student-sync.service';
+
+// Background jobs also mark student_synced_at after enrollment succeeds.
+// Mock this write so these unit tests never depend on an existing database.
+const originalCalendarUpdateMany = prisma.calendar.updateMany;
+const originalQueryRaw = prisma.$queryRaw;
+beforeEach(() => {
+  (prisma.calendar.updateMany as any) = async ({where}: any) => ({count: where.id.in.length});
+  (prisma.$queryRaw as any) = async () => [{db_now: new Date('2026-10-15T19:00:00Z')}];
+});
+afterEach(() => {
+  prisma.calendar.updateMany = originalCalendarUpdateMany;
+  prisma.$queryRaw = originalQueryRaw;
+});
 
 const waitForJob = async (jobId: string) => {
   for (let index = 0; index < 100; index += 1) {

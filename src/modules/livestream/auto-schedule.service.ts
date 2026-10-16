@@ -1,3 +1,4 @@
+import { calendarSourceFromCode, assertCalendarSourceUnchanged, type CalendarSource } from './calendar-source';
 type AutoScheduleSession = {
   weekday: number;
   start_time: string;
@@ -29,6 +30,7 @@ type AutoScheduleBlock = Partial<AutoScheduleLesson> & {
 };
 
 export type AutoSchedulePayload = {
+  calendar_source?: CalendarSource;
   program_code: string;
   system_type: 'topclass' | 'topuni';
   start_date: string;
@@ -222,6 +224,8 @@ const nextStudyDate = (
 
 export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
   const programCode = String(payload?.program_code || '').trim();
+  const calendarSource = calendarSourceFromCode(programCode);
+  assertCalendarSourceUnchanged({code:programCode}, payload);
   if (!programCode) throw new Error('Vui lòng chọn Chương trình');
   if (!['topclass', 'topuni'].includes(payload?.system_type)) {
     throw new Error('system_type chỉ hỗ trợ topclass hoặc topuni');
@@ -363,6 +367,7 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
       : masterLessonName;
 
     return {
+      calendar_source: calendarSource,
       system_type: payload.system_type,
       code: programCode,
       learn_number: lesson.learn_number,

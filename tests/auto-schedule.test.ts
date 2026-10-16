@@ -498,3 +498,19 @@ test('từ chối khoảng đảo ngược, thiếu đầu mút, số lẻ, số
   assert.throws(() => previewAutoSchedule({ ...payload, from_learn_number: 16, to_learn_number: 30 }),
     /Không có bài học trong khoảng/);
 });
+
+
+test('auto scheduling defaults to Livestream and preserves Feed on every generated row', () => {
+ const input = {program_code:'QA-SOURCE',system_type:'topclass' as const,start_date:'2031-12-01',blocks:[{lessons:[{learn_number:1,sessions:[{weekday:1,start_time:'08:00',end_time:'09:00'}]}]}]};
+ assert.ok(previewAutoSchedule(input).calendars.every(row=>row.calendar_source==='livestream'));
+ assert.ok(previewAutoSchedule({...input,program_code:'feed-QA-SOURCE'}).calendars.every(row=>row.calendar_source==='feed'));
+ assert.throws(()=>previewAutoSchedule({...input,calendar_source:'bad' as any}),/calendar_source/);
+});
+
+
+test('automatic source is inferred after normalizing the program code', () => {
+ const input = {program_code:'  feed-QA-SOURCE  ',system_type:'topclass' as const,start_date:'2031-12-01',blocks:[{lessons:[{learn_number:1,sessions:[{weekday:1,start_time:'08:00',end_time:'09:00'}]}]}]};
+ const result=previewAutoSchedule(input);
+ assert.ok(result.calendars.every(row=>row.code==='feed-QA-SOURCE'&&row.calendar_source==='feed'));
+ assert.doesNotThrow(()=>previewAutoSchedule({...input,calendar_source:'feed'}));
+});

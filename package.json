@@ -24,7 +24,10 @@
     "db:quiz-rbac": "tsx prisma/scripts/syncQuizRbac.ts",
     "db:room-config-rbac": "tsx prisma/scripts/syncRoomConfigRbac.ts",
     "db:calendar-triggers": "tsx prisma/scripts/syncCalendarTriggers.ts",
-    "test:hmo-lesson-sync-match": "npm run build && node tests/hmo-lesson-sync-match.test.js"
+    "test:hmo-lesson-sync-match": "npm run build && node tests/hmo-lesson-sync-match.test.js",
+    "test:calendar-source": "node --import tsx --test tests/calendar-source.test.ts",
+    "test:calendar-source:integration": "node --import tsx tests/calendar-source.integration.ts",
+    "db:calendar-source-rollback-triggers": "tsx prisma/scripts/rollbackCalendarSourceTriggers.ts"
   },
   "keywords": [],
   "author": "",

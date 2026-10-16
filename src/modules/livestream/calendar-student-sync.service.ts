@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import prisma from '../../lib/prisma';
 import ApiError from '../../utils/ApiError';
 import { buildCalendarClassId } from './calendar-user-sync.service';
+import { calendarStudentTimestamps } from './calendar-student-timestamp';
 
 type CalendarMapping = {
   productId: string;
@@ -162,6 +163,11 @@ const fetchApiPage = async (
   page: number
 ) => {
   const url = new URL(config.url);
+  // Configuration may contain example package query parameters. Only request
+  // the packages selected for this run, without duplicate packages[0] values.
+  for (const key of [...url.searchParams.keys()]) {
+    if (/^packages(?:\[.*\])?$/.test(key)) url.searchParams.delete(key);
+  }
   url.searchParams.set('page', String(page));
   url.searchParams.set('limit', String(config.limit));
   url.searchParams.set('skip_finishtime', config.skipFinishTime);
@@ -189,6 +195,9 @@ const fetchApiPage = async (
       }
       if (!payload || payload.status !== 'success' || !Array.isArray(payload.data)) {
         throw new ApiError(`API HOCMAI trả dữ liệu không hợp lệ ở trang ${page}`, 502);
+      }
+      if (payload.current_page !== undefined && Number(payload.current_page) !== page) {
+        throw new ApiError(`API HOCMAI trả sai trang: yêu cầu ${page}, nhận ${payload.current_page}`, 502);
       }
       return payload;
     } catch (error: any) {
@@ -220,6 +229,10 @@ const fetchAllUsers = async (
     throw new ApiError('API HOCMAI trả tổng học viên không hợp lệ', 502);
   }
   const perPage = Number(firstPage.per_page || config.limit);
+  if (!Number.isSafeInteger(perPage) || perPage < 1
+    || (firstPage.last_page !== undefined && (!Number.isSafeInteger(Number(firstPage.last_page)) || Number(firstPage.last_page) < 0))) {
+    throw new ApiError('API HOCMAI trả thông tin phân trang không hợp lệ', 502);
+  }
   const calculatedLastPage = perPage > 0 ? Math.max(1, Math.ceil(total / perPage)) : 1;
   const lastPage = Math.max(1, calculatedLastPage, Number(firstPage.last_page || 0) || 0);
   const users: HocmaiUser[] = [...firstPage.data];
@@ -232,10 +245,17 @@ const fetchAllUsers = async (
       `Đã quét trang ${page}/${lastPage} từ API HOCMAI`
     );
   }
-  if (users.length < total) {
-    throw new ApiError("API HOCMAI trả thiếu trang: " + users.length + "/" + total + " học viên", 502);
+  if (users.length !== total) {
+    throw new ApiError("API HOCMAI trả số dòng không khớp: " + users.length + "/" + total + " học viên", 502);
   }
   return { users, total };
+};
+
+// Read-only primitives shared with the independent registration audit.
+export {
+  loadApiConfig as loadRegistrationApiConfig,
+  fetchApiPage as fetchRegistrationApiPage,
+  normalizeOptionalRegisteredAt as normalizeRegistrationAuditDate,
 };
 
 export const fetchCalendarRegisteredStudents = async (rawProductIds: string[], registeredAt: string) => {
@@ -461,9 +481,17 @@ export const syncCalendarStudents = async (
     let completedBatches = 0;
     for (let index = 0; index < newRows.length; index += 200) {
       const batch = newRows.slice(index, index + 200);
-      const write = await prisma.users.createMany({ data: batch, skipDuplicates: true });
+      const timestamps = await calendarStudentTimestamps(prisma);
+      const write = await prisma.users.createMany({ data: batch.map(row => ({...row, ...timestamps})), skipDuplicates: true });
       inserted += write.count;
-      skipped += batch.length - write.count;
+      if (write.count < batch.length) {
+        // INSERT IGNORE can reject rows for a different unique index as well.
+        // Only count an actual enrollment as skipped; missing rows are errors.
+        const afterWrite = await loadExistingEnrollments(batch);
+        const remaining = batch.filter((row) => !afterWrite.has(enrollmentKey(row))).length;
+        failed += remaining;
+        skipped += Math.max(0, batch.length - write.count - remaining);
+      }
       completedBatches += 1;
       onProgress?.(Math.round(76 + (23 * completedBatches) / totalBatches), `Đã thêm ${inserted}/${newRows.length} enrollment`);
     }

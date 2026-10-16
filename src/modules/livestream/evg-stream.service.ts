@@ -1,3 +1,4 @@
+import { calendarSourceFromCode } from './calendar-source';
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { createEvgLiveStream } from '../../integrations/evg-live-stream.service';
@@ -86,7 +87,12 @@ export const provisionCalendarEvgStream = async (
   if (!Number.isInteger(calendarId) || calendarId <= 0) throw new Error('ID lịch học không hợp lệ');
   const calendar = await prisma.calendar.findUnique({ where: { id: calendarId } });
   if (!calendar) throw new Error('Không tìm thấy lịch học');
-  if (Number(calendar.lesson_status ?? 0) === 1) throw new Error('Không tạo EVG cho lịch đã nghỉ học');
+
+  const calendarSource = calendarSourceFromCode(calendar.code);
+  if (calendarSource === 'feed') throw new Error('Không tạo EVG Livestream cho lịch Feed');
+  if (Number((calendar as { lesson_status?: number | null }).lesson_status ?? 0) === 1) {
+    throw new Error('Không tạo EVG cho lịch đã nghỉ học');
+  }
 
   if (!['skip_existing', 'overwrite'].includes(mode)) throw new Error('Chế độ xử lý EVG không hợp lệ');
   if (calendar.evg_stream && mode === 'skip_existing') {

@@ -1,4 +1,5 @@
 export interface LessonListQuery {
+  calendar_source?: 'livestream' | 'feed';
   page?: number;
   limit?: number;
   grade?: number;

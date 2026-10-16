@@ -277,7 +277,8 @@ const executeRun = async (runId: bigint) => {
         ON plm.key = c.key
        AND plm.package_id = lcm.package_id
        AND plm.course_id = lcm.course_id
-      WHERE COALESCE(c.lesson_status, 0) <> 1
+      WHERE c.code NOT LIKE 'feed-%'
+        AND COALESCE(c.lesson_status, 0) <> 1
       ORDER BY l.subject_code, l.learn_number, c.start_time, c.id
     `;
     const targetRows = rows.filter((row) => Boolean(Number(row.is_target)));

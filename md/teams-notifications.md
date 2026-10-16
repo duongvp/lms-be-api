@@ -64,7 +64,7 @@ cho cùng một event/destination.
 
 ## Đồng bộ học viên đăng ký sát giờ học
 
-Backend chỉ chạy vào 17:00, 17:30, …, 23:30 (giờ Việt Nam), quét mọi lịch hoạt động của ngày hiện tại (kể cả đang dạy hoặc đã kết thúc, loại lịch nghỉ học), chỉ lấy học viên đăng ký trong ngày và thêm enrollment còn thiếu. Enrollment đã có không bị sửa. Cron lấy học viên qua API theo các package của toàn bộ lịch trong ngày (chia nhóm tối đa 50 package, lấy đủ mọi trang), rồi phân dữ liệu cho từng chương trình để ghi tuần tự. Nếu request gộp lỗi, cron tự quay lại gọi API riêng theo chương trình. Sau 23:30 cron nghỉ đến 17:00 hôm sau. Thiết lập bằng:
+Backend chạy mỗi 5 phút theo các lượt 17:00, 17:05, …, 23:55 (giờ Việt Nam), quét mọi lịch hoạt động của ngày hiện tại (kể cả đang dạy hoặc đã kết thúc, loại lịch nghỉ học), chỉ lấy học viên đăng ký trong ngày và thêm enrollment còn thiếu. Nếu timer bị trễ hoặc backend khởi động lại giữa một khoảng 5 phút, cron thực hiện lượt của khoảng đó ngay. Timer kiểm tra mỗi 30 giây; mỗi khoảng 5 phút chạy tối đa một lượt trên process, lượt đang chạy không bị chạy chồng. Lượt bị khóa bởi worker khác được thử lại ở lần kiểm tra tiếp theo. Sau 00:00 cron nghỉ đến 17:00 hôm sau; chưa có lượt chốt ngày hôm trước, nên đăng ký sau lượt cuối không được bảo đảm tự bổ sung. Enrollment đã có không bị sửa. Cron lấy học viên qua API theo các package của toàn bộ lịch trong ngày (chia nhóm tối đa 50 package, lấy đủ mọi trang), rồi phân dữ liệu cho từng chương trình để ghi tuần tự. Nếu request gộp lỗi, cron tự quay lại gọi API riêng theo chương trình. Thiết lập bằng:
 
 ```env
 CALENDAR_STUDENT_CRON_ENABLED=true
@@ -72,3 +72,7 @@ CALENDAR_STUDENT_CRON_NOTIFY_EMPTY=false
 ```
 
 Sau lượt có lịch cần xử lý (hoặc có lỗi), kết quả được đưa vào cùng Teams outbox nên vẫn tự retry nếu webhook tạm thời lỗi. Đặt `CALENDAR_STUDENT_CRON_NOTIFY_EMPTY=true` nếu cần nhận cả thông báo các lượt không có lịch.
+
+Log `Calendar student sync program result` chứa runId, chương trình, ngày đăng ký, tổng dòng API, username duy nhất, enrollment, dòng trùng, thêm mới, đã có, lỗi và dòng không khớp package; không chứa danh tính học viên. API trả sai `current_page`, thông tin phân trang sai hoặc số dòng không khớp `total` sẽ báo lỗi thay vì ghi nhận thành công. Dòng bị `INSERT IGNORE` bỏ qua chỉ được tính là đã có khi đọc lại thấy enrollment theo username + code + learn_number; xung đột unique khác mà vẫn thiếu enrollment được tính là lỗi. Lịch còn lỗi hoặc dòng không khớp package không được đánh dấu đã đồng bộ.
+
+Khi thêm enrollment, service đọc `CURRENT_TIMESTAMP` từ DB trước mỗi batch và truyền rõ cùng giá trị cho `created_at`/`updated_at`, tránh thời gian mặc định do Prisma sinh theo UTC. Với kết nối DB UTC+7, hai cột hiển thị giờ Việt Nam như insert tay. Đồng bộ thủ công và chức năng bổ sung học viên thiếu cũng áp dụng cách ghi này. Không đổi schema/timezone DB, không sửa timestamp hay các thông tin khác của enrollment đã có.

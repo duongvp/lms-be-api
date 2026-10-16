@@ -1,3 +1,4 @@
+import { calendarSourceFromCode } from './calendar-source';
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 
@@ -123,6 +124,7 @@ const enqueueStatus = async (
   session: any
 ) => {
   const calendar = await loadCalendarForSync(tx, Number(session.id));
+  if (calendarSourceFromCode(calendar.code) === 'feed') return false;
   const key = String(calendar.key || '');
   if (!key) throw new Error('Lịch học không có key để tạo queue HMO');
   const mappings = await loadPackagesForKey(tx, key);
@@ -152,6 +154,7 @@ const enqueueCalendar = async (
   payloadOverrides: Record<string, unknown> = {}
 ) => {
   const calendar = await loadCalendarForSync(tx, Number(session.id));
+  if (calendarSourceFromCode(calendar.code) === 'feed') return false;
   const key = String(calendar.key || '');
   if (!key) throw new Error('Lịch học không có key để tạo queue HMO');
 
@@ -348,7 +351,7 @@ export const enqueueCalendarsSyncBulk = async (
     const id = Number(calendar.id);
     const key = String(calendar.key || '');
     const calendarMappings = mappingsByKey.get(key) || [];
-    if (!key || !calendarMappings.length) {
+    if (calendarSourceFromCode(calendar.code) === 'feed' || !key || !calendarMappings.length) {
       skippedIds.push(id);
       return;
     }

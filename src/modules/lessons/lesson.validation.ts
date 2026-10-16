@@ -1,3 +1,4 @@
+import { calendarSourceFromCode, resolveCalendarSource } from '../livestream/calendar-source';
 import ApiError from '../../utils/ApiError';
 import {
   LessonBulkUpdatePayload,
@@ -123,6 +124,7 @@ export const validateLessonListQuery = (query: any): LessonListQuery => {
     from_learn_number: fromLearnNumber,
     to_learn_number: toLearnNumber,
     keyword: stringOrUndefined(query.keyword),
+    calendar_source: query.calendar_source === undefined ? undefined : resolveCalendarSource(query.calendar_source),
     course_code: courseCode,
     status: optionalInteger(query.status, 'status'),
     sort_by: sortBy ?? 'learn_number',
@@ -163,16 +165,23 @@ const validateLessonIds = (value: unknown) => {
   return value.map((item) => validateLessonId(item));
 };
 
-export const validateLessonProgramPayload = (body: any): LessonPayload => (
-  validateLessonPayload({
+export const validateLessonProgramPayload = (body: any): LessonPayload => {
+  const source = body?.calendar_source === undefined ? undefined : resolveCalendarSource(body.calendar_source);
+  const code = String(body?.subject_code || '').trim();
+  if (source === 'livestream' && calendarSourceFromCode(code) === 'feed') {
+    throw new ApiError('Mã chương trình Livestream không được bắt đầu bằng feed-', 400);
+  }
+  const subject_code = source === 'feed' && code && calendarSourceFromCode(code) !== 'feed' ? `feed-${code}` : code;
+  if (calendarSourceFromCode(subject_code) === 'feed' && subject_code.length > 30) {
+    throw new ApiError('Mã chương trình Feed không được quá 30 ký tự, bao gồm feed-, để tương thích cột calendar.code', 400);
+  }
+  return validateLessonPayload({
     ...body,
+    subject_code,
     learn_number: 1,
-    lesson_name: body?.lesson_name == null
-      || (typeof body.lesson_name === 'string' && !body.lesson_name.trim())
-      ? 'Bài 1'
-      : body.lesson_name,
-  }) as LessonPayload
-);
+    lesson_name: body?.lesson_name == null || (typeof body.lesson_name === 'string' && !body.lesson_name.trim()) ? 'Bài 1' : body.lesson_name,
+  }) as LessonPayload;
+};
 
 export const validateLessonPayload = (body: any, isUpdate = false): Partial<LessonPayload> => {
   rejectCalendarOnlyFields(body ?? {});

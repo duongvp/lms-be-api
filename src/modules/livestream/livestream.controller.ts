@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import * as livestreamService from './livestream.service';
+import { assertLivestreamCalendarSource, calendarSourceFromCode } from './calendar-source';
 import FieldPermissionService from '../roles/field-permission.service';
 import { calendarSheetExportTask } from './calendar-sheet-export.service';
 import {
@@ -69,7 +70,7 @@ export const previewAutoSchedule = async (req: Request, res: Response, next: Nex
 
 export const getProgramLessons = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const data = await livestreamService.getProgramLessonsForScheduling(String(req.params.code || ''));
+    const data = await livestreamService.getProgramLessonsForScheduling(String(req.params.code || ''), req.query.calendar_source);
     res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);
@@ -375,6 +376,7 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
         ...record,
         // id/can_modify là metadata phục vụ thao tác, không phải cột dữ liệu.
         id: source.id,
+        calendar_source: calendarSourceFromCode(source.code),
         session_id: source.session_id == null ? null : String(source.session_id),
         can_modify: livestreamService.isSessionModifiable(source, now),
         classroom_assigned: source.classroom_assigned === true,
@@ -387,7 +389,7 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
       data: { ...result, data: dataWithSystemMetadata },
     });
   } catch (err: any) {
-    res.status(400).json({ success: false, message: err.message });
+    res.status(err.statusCode || 400).json({ success: false, message: err.message });
   }
 };
 
@@ -448,6 +450,7 @@ export const importTemplate = async (req: Request, res: Response): Promise<void>
 
 export const importFile = async (req: Request, res: Response): Promise<void> => {
   try {
+    assertLivestreamCalendarSource(req.body?.calendar_source);
     const sheetUrl = String(req.body?.sheet_url || '').trim();
     if (!req.file && !sheetUrl) {
       res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
@@ -508,6 +511,7 @@ export const importFile = async (req: Request, res: Response): Promise<void> => 
 
 export const updateImportFile = async (req: Request, res: Response): Promise<void> => {
   try {
+    assertLivestreamCalendarSource(req.body?.calendar_source);
     const sheetUrl = String(req.body?.sheet_url || '').trim();
     if (!req.file && !sheetUrl) {
       res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });

@@ -1,3 +1,4 @@
+import { resolveCalendarSource } from '../livestream/calendar-source';
 import prisma from '../../lib/prisma';
 import { LessonExportQuery, LessonImportMode, LessonImportResult, LessonImportRow, LessonListQuery, LessonPayload } from './lesson.types';
 
@@ -183,20 +184,22 @@ export const findLessons = async (query: LessonListQuery) => {
   const sortBy = query.sort_by ?? 'updated_at';
   const sortOrder = query.sort_order ?? 'desc';
   const programCode = query.subject_code || query.course_code;
+  const source = query.calendar_source === undefined ? undefined : resolveCalendarSource(query.calendar_source);
+  const sourceClause = source === undefined ? '' : source === 'feed' ? " AND calendar.code LIKE 'feed-%'" : " AND calendar.code NOT LIKE 'feed-%'";
   const selectSql = programCode
     ? `lessons.${LESSON_COLUMNS}, (
         SELECT COUNT(*)
         FROM calendar
-        WHERE calendar.session_id = lessons.id
+        WHERE (calendar.session_id = lessons.id
            OR (calendar.code = lessons.subject_code
-             AND calendar.learn_number = lessons.learn_number)
+             AND calendar.learn_number = lessons.learn_number))${sourceClause}
       ) AS scheduled_count, (
         SELECT COUNT(*)
         FROM calendar
         WHERE (calendar.session_id = lessons.id
           OR (calendar.code = lessons.subject_code
             AND calendar.learn_number = lessons.learn_number))
-          AND calendar.start_time <= NOW()
+          AND calendar.start_time <= NOW()${sourceClause}
       ) AS past_scheduled_count`
     : `lessons.${LESSON_COLUMNS}`;
   const selectValues = values;

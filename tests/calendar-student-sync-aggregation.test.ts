@@ -8,7 +8,8 @@ type ApiReply = { status: string; total?: number; last_page?: number; data?: Api
 
 const runMockedCron = async (
   mappings: Array<{ key: string; package_id: string }>,
-  reply: (products: string[]) => ApiReply
+  reply: (products: string[]) => ApiReply,
+  rejectWrites = false
 ) => {
   const originals = {
     execute: prisma.$executeRaw, query: prisma.$queryRaw,
@@ -24,18 +25,23 @@ const runMockedCron = async (
   ];
   const requests: string[][] = [];
   const inserted: Array<{ username: string; code: string }> = [];
+  const marked: number[] = [];
   try {
     process.env.HOCMAI_LIVE_USER_API_URL = 'https://example.invalid/users';
     process.env.HOCMAI_LIVE_USER_API_TOKEN = 'test';
     (prisma.$executeRaw as any) = async () => 1;
-    (prisma.$queryRaw as any) = async () => [{ id: 1n }];
+    (prisma.$queryRaw as any) = async () => [{ id: 1n, db_now: new Date('2026-09-30T18:00:00Z') }];
     (prisma.calendar.findMany as any) = async (query: any) => query.where?.id?.in
       ? calendars.filter((row) => query.where.id.in.includes(row.id)) : calendars;
-    (prisma.calendar.updateMany as any) = async () => ({ count: 1 });
+    (prisma.calendar.updateMany as any) = async ({ where }: any) => {
+      marked.push(...where.id.in);
+      return { count: 1 };
+    };
     (prisma.package_lesson_mapping.findMany as any) = async (query: any) =>
       mappings.filter((row) => query.where.key.in.includes(row.key));
     (prisma.users.findMany as any) = async () => [];
     (prisma.users.createMany as any) = async ({ data }: any) => {
+      if (rejectWrites) return { count: 0 };
       inserted.push(...data);
       return { count: data.length };
     };
@@ -47,7 +53,7 @@ const runMockedCron = async (
       return new Response(JSON.stringify(reply(products)));
     };
     const result = await runCalendarStudentSync(new Date('2026-09-30T11:00:00Z'));
-    return { result, requests, inserted };
+    return { result, requests, inserted, marked };
   } finally {
     (prisma.$executeRaw as any) = originals.execute;
     (prisma.$queryRaw as any) = originals.query;
@@ -85,6 +91,36 @@ test('cron fetches shared packages once and dispatches each user to matching pro
   assert.deepEqual(inserted.map((row) => row.username + '/' + row.code).sort(), [
     'a-user/program-a', 'b-user/program-b', 'shared-user/program-a', 'shared-user/program-b',
   ]);
+});
+
+test('cron reports rejected enrollments as errors and does not mark calendars synced', async () => {
+  const { result, marked } = await runMockedCron([
+    { key: 'calendar-a', package_id: 'a' },
+    { key: 'calendar-b', package_id: 'b' },
+  ], (products) => ({ status: 'success', total: products.length, last_page: 1,
+    data: products.map((product_id) => ({ userid: product_id, username: product_id, name: 'Student', product_id })),
+  }), true);
+  assert.equal(result.status, 'completed_with_errors');
+  assert.equal(result.inserted, 0);
+  assert.equal(result.skipped, 0);
+  assert.equal(result.failed, 2);
+  assert.deepEqual(marked, []);
+});
+
+test('cron does not mark a program synced when its API rows do not match any package', async () => {
+  const { result, marked, requests } = await runMockedCron([
+    { key: 'calendar-a', package_id: 'a' },
+    { key: 'calendar-b', package_id: 'b' },
+  ], () => ({status: 'success', total: 1, last_page: 1, data: [
+    {userid: '1', username: 'student', name: 'Student', product_id: 'unexpected-package'},
+  ]}));
+  // Combined results for unrelated packages must not silently become an empty
+  // successful run. Retry individual programs to expose the mapping mismatch.
+  assert.equal(result.status, 'completed_with_errors');
+  assert.equal(result.inserted, 0);
+  assert.equal(result.failed, 2);
+  assert.deepEqual(requests, [['a', 'b'], ['a'], ['b']]);
+  assert.deepEqual(marked, []);
 });
 
 test('cron falls back to per-program API calls when combined request fails', async () => {

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import * as livestreamController from './livestream.controller';
+import registrationAuditRouter from './calendar-registration-audit.route';
 import authMiddleware from '../auth/auth.middleware';
 import prisma from '../../lib/prisma';
 import { Prisma } from '@prisma/client';
@@ -19,7 +20,8 @@ const calendarCodesByIds = async (ids: unknown[]) => {
   const validIds = ids.map(Number).filter((id) => Number.isInteger(id) && id > 0);
   if (!validIds.length) return [];
   const rows = await prisma.$queryRaw<Array<{ program_code: string | null }>>(Prisma.sql`
-    SELECT COALESCE(session_lesson.subject_code, legacy_lesson.subject_code) AS program_code
+    SELECT COALESCE(session_lesson.subject_code, legacy_lesson.subject_code,
+      CASE WHEN calendar_row.session_id IS NULL THEN calendar_row.code END) AS program_code
     FROM calendar AS calendar_row
     LEFT JOIN lessons AS session_lesson
       ON session_lesson.id = calendar_row.session_id AND session_lesson.status <> 0
@@ -109,6 +111,7 @@ const authorizeTeachingAssignment = (permission: string) => (
 const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
   fields
     .filter((field) => ![
+      'calendar_source',
       'lesson_id',
       'session_id',
       'sessionId',
@@ -130,6 +133,7 @@ const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
 ));
 
 router.use(authenticate);
+router.use('/students/registration-audits', registrationAuditRouter);
 
 router.get(
   '/filter-options/teachers',

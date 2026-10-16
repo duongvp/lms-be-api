@@ -32,6 +32,7 @@ export type CalendarImportRow = {
   courseIds: string[];
   lessonIds: string[];
   calendar: {
+    calendar_source?: 'livestream' | 'feed';
     system_type: 'topclass' | 'topuni';
     code: string;
     learn_number: number;

@@ -10,7 +10,7 @@ Contract hiện tại ngày 14/10/2026, thay thế phương án lưu `calendar_s
 - Bộ lọc mặc định Livestream; Feed lọc `code LIKE 'feed-%'`. Danh sách chương trình của bộ lọc chỉ hiển thị mã thuộc nguồn đang chọn; đổi nguồn xóa mã đang chọn nếu không khớp.
 - Kiểm tra xung đột giáo viên/trợ giảng giới hạn trong cùng nhóm prefix. Cùng số bài và giờ giữa chương trình Live và bản Feed của chương trình được phép tạo. Trong cùng nguồn vẫn giữ kiểm tra trùng.
 - Quy tắc key Livestream giữ nguyên. Key Feed chứa mã chương trình `feed-...`, nên khác key Livestream mà không cần thêm namespace riêng.
-- Trigger INSERT/UPDATE/status giữ nguyên thân/payload/điều kiện cũ, chỉ thêm `AND NEW.code NOT LIKE 'feed-%'`. Service queue, resend, EVG, HMO matching, banner cũng nhận diện từ code. Các tác vụ khác như Teams/enrollment/attendance vẫn giữ nguyên.
+- Trigger INSERT/UPDATE/status giữ nguyên thân/payload/điều kiện cũ, chỉ thêm `AND NEW.code NOT LIKE 'feed-%'`. Service queue, resend, EVG, HMO matching, banner cũng nhận diện từ code. Cron tự động đồng bộ học viên chỉ xử lý nguồn Livestream; chương trình Feed bị loại trước khi lấy package/gọi API, thêm enrollment hoặc đánh dấu student_synced_at. Thao tác đồng bộ học viên thủ công và các tác vụ Teams/attendance vẫn giữ nguyên.
 - Mã chương trình Feed tối đa 30 ký tự, tính cả `feed-`, theo giới hạn hiện có của calendar.code. Không cắt/truncate mã tự động hoặc đổi quy tắc sinh mã.
 
 ## Migration cụ thể

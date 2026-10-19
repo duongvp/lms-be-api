@@ -9,6 +9,7 @@ test('cron đồng bộ học viên quét toàn bộ lịch trong ngày Việt N
   assert.equal(window.current.toISOString(), '2026-09-28T19:00:00.000Z');
   const where = calendarStudentSyncCalendarWhere(window.start, window.end);
   assert.deepEqual(where.start_time, { gte: window.start, lt: window.end });
+  assert.deepEqual(where.code, { not: { startsWith: 'feed-' } });
   assert.deepEqual(where.OR, [{ lesson_status: null }, { lesson_status: { not: 1 } }]);
   assert.ok(new Date('2026-09-28T18:30:00.000Z') >= where.start_time.gte);
   assert.ok(new Date('2026-09-28T18:30:00.000Z') < where.start_time.lt);

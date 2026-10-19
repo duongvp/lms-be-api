@@ -9,7 +9,8 @@ type ApiReply = { status: string; total?: number; last_page?: number; data?: Api
 const runMockedCron = async (
   mappings: Array<{ key: string; package_id: string }>,
   reply: (products: string[]) => ApiReply,
-  rejectWrites = false
+  rejectWrites = false,
+  programCodes = ['program-a', 'program-b']
 ) => {
   const originals = {
     execute: prisma.$executeRaw, query: prisma.$queryRaw,
@@ -20,8 +21,8 @@ const runMockedCron = async (
     token: process.env.HOCMAI_LIVE_USER_API_TOKEN,
   };
   const calendars = [
-    { id: 1, key: 'calendar-a', code: 'program-a', learn_number: 1, start_time: new Date('2026-09-30T18:00:00Z') },
-    { id: 2, key: 'calendar-b', code: 'program-b', learn_number: 1, start_time: new Date('2026-09-30T19:00:00Z') },
+    { id: 1, key: 'calendar-a', code: programCodes[0], learn_number: 1, start_time: new Date('2026-09-30T18:00:00Z') },
+    { id: 2, key: 'calendar-b', code: programCodes[1], learn_number: 1, start_time: new Date('2026-09-30T19:00:00Z') },
   ];
   const requests: string[][] = [];
   const inserted: Array<{ username: string; code: string }> = [];
@@ -159,4 +160,36 @@ test('cron retries by program when combined API returns fewer users than total',
   assert.equal(result.inserted, 2);
   assert.equal(result.failed, 0);
   assert.deepEqual(requests, [['a', 'b'], ['a'], ['b']]);
+});
+
+for (const feedCode of ['feed-program-b', 'FEED-program-b', 'FeEd-program-b']) {
+  test(`cron excludes ${feedCode} before fetching packages, inserting or marking synced`, async () => {
+    const { result, requests, inserted, marked } = await runMockedCron([
+      { key: 'calendar-a', package_id: 'a' },
+      { key: 'calendar-b', package_id: 'feed-only' },
+    ], products => ({ status: 'success', total: products.length, last_page: 1,
+      data: products.map(product_id => ({userid: product_id, username: product_id, name: 'Student', product_id})),
+    }), false, ['program-a', feedCode]);
+    assert.equal(result.status, 'completed');
+    assert.equal(result.calendars, 1);
+    assert.equal(result.programs, 1);
+    assert.equal(result.inserted, 1);
+    assert.deepEqual(requests, [['a']]);
+    assert.deepEqual(inserted.map(row => row.code), ['program-a']);
+    assert.deepEqual(marked, [1]);
+  });
+}
+
+test('cron with only Feed calendars performs no API requests or enrollment writes', async () => {
+  const { result, requests, inserted, marked } = await runMockedCron([
+    { key: 'calendar-a', package_id: 'feed-a' },
+    { key: 'calendar-b', package_id: 'feed-b' },
+  ], () => { throw new Error('Feed must not call HOCMAI'); }, false, ['feed-a', 'FEED-b']);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.calendars, 0);
+  assert.equal(result.programs, 0);
+  assert.equal(result.inserted, 0);
+  assert.deepEqual(requests, []);
+  assert.deepEqual(inserted, []);
+  assert.deepEqual(marked, []);
 });

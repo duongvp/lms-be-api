@@ -1,4 +1,5 @@
 import prisma from '../../lib/prisma';
+import { calendarSourceFromCode } from './calendar-source';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 import { logger } from '../../utils/logger';
 import { enqueueStudentSyncTeamsSummary } from '../teams-notifications';
@@ -31,6 +32,7 @@ export const calendarStudentSyncRegisteredAt = (now = new Date()) => {
 
 export const calendarStudentSyncCalendarWhere = (start: Date, end: Date) => ({
   start_time: { gte: start, lt: end },
+  code: { not: { startsWith: 'feed-' } },
   OR: [{ lesson_status: null }, { lesson_status: { not: 1 } }],
 });
 
@@ -64,12 +66,14 @@ export const runCalendarStudentSync = async (now = new Date()) => {
   const errors: Array<{ code: string; message: string }> = [];
   try {
     // Thời gian lịch được lưu theo Vietnam wall-clock; quét mọi buổi trong ngày,
-    // kể cả buổi đang học/đã kết thúc, nhưng không thêm học viên vào lịch nghỉ.
-    const calendars = await prisma.calendar.findMany({
+    // kể cả buổi đang học/đã kết thúc, loại lịch nghỉ và chương trình Feed.
+    const candidates = await prisma.calendar.findMany({
       where: calendarStudentSyncCalendarWhere(start, end),
       select: { id: true, code: true, key: true },
       orderBy: [{ code: 'asc' }, { learn_number: 'asc' }],
     });
+    // Giữ cùng quy tắc prefix không phân biệt hoa/thường, kể cả khi DB dùng collation phân biệt hoa/thường.
+    const calendars = candidates.filter(calendar => calendarSourceFromCode(calendar.code) !== 'feed');
     calendarsTotal = calendars.length;
     const byProgram = new Map<string, number[]>();
     calendars.forEach((calendar) => byProgram.set(calendar.code, [...(byProgram.get(calendar.code) || []), calendar.id]));

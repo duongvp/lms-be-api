@@ -52,3 +52,26 @@ test('calendar filters do not require a stored source column',async()=>{
   for(const call of calls) assert.equal(JSON.stringify(call).includes('calendar_source'),false);
  });
 });
+
+test('report selected IDs intersect program permissions and all calendar filters for count and rows', async () => {
+    await withEmptyList(async calls => {
+        await getCalendar({ calendar_ids: '4836,4837', calendar_source: 'feed', code: 'feed-QA' }, ['feed-QA'], true, true);
+        for (const call of calls.filter(c => c.where)) {
+            assert.ok(call.where.AND.some((condition: any) => JSON.stringify(condition.id?.in) === '[4836,4837]'));
+            assert.ok(call.where.AND.some((condition: any) => JSON.stringify(condition.id?.in) === '[]'), 'Program scope must not be replaced by selected IDs');
+            assert.ok(call.where.AND.some((condition: any) => condition.code?.startsWith === 'feed-'));
+        }
+    });
+});
+
+test('empty selected scope stays empty and invalid selected IDs fail before querying', async () => {
+    await withEmptyList(async calls => {
+        await getCalendar({ calendar_ids: '' }, null, true, true);
+        assert.ok(calls.filter(c => c.where).every(c => c.where.AND.some((condition: any) => JSON.stringify(condition.id?.in) === '[]')));
+        calls.length = 0;
+        for (const calendar_ids of ['bad', '1,-2', '0', '1.5']) {
+            await assert.rejects(getCalendar({ calendar_ids }, null, true, true), /calendar_ids/);
+        }
+        assert.equal(calls.length, 0);
+    });
+});

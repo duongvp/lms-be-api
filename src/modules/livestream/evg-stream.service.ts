@@ -1,4 +1,3 @@
-import { calendarSourceFromCode } from './calendar-source';
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { createEvgLiveStream } from '../../integrations/evg-live-stream.service';
@@ -7,8 +6,8 @@ import {
   excelDateSerialFromCalendarDate,
 } from './calendar-user-sync.service';
 import { resolveProgramTeacherBanner } from '../program-teacher-banners/program-teacher-banner.service';
+import { EVG_MIN_ROOM_COUNT, getCalendarEvgStatuses } from './evg-status';
 
-const EVG_MIN_ROOM_COUNT = 25;
 const EVG_PLAYBACK_BASE_URL = 'https://evg-stream.hocmai.net/live';
 export type EvgProvisionMode = 'skip_existing' | 'overwrite';
 
@@ -88,15 +87,16 @@ export const provisionCalendarEvgStream = async (
   const calendar = await prisma.calendar.findUnique({ where: { id: calendarId } });
   if (!calendar) throw new Error('Không tìm thấy lịch học');
 
-  const calendarSource = calendarSourceFromCode(calendar.code);
-  if (calendarSource === 'feed') throw new Error('Không tạo EVG Livestream cho lịch Feed');
   if (Number((calendar as { lesson_status?: number | null }).lesson_status ?? 0) === 1) {
     throw new Error('Không tạo EVG cho lịch đã nghỉ học');
   }
 
   if (!['skip_existing', 'overwrite'].includes(mode)) throw new Error('Chế độ xử lý EVG không hợp lệ');
   if (calendar.evg_stream && mode === 'skip_existing') {
-    return { skipped: true, operation: 'skipped', reason: 'Lịch học đã có EVG', calendar };
+    const statuses = await getCalendarEvgStatuses(prisma, [calendar]);
+    if (statuses.get(calendar.id)?.evg_provisioned) {
+      return { skipped: true, operation: 'skipped', reason: 'Lịch học đã có EVG và cấu hình phòng đầy đủ', calendar };
+    }
   }
   const manualBannerUrl = normalizeBannerUrlOverride(bannerUrlOverride);
   const configuredBanner = manualBannerUrl || await resolveProgramTeacherBanner(prisma, calendar.code, calendar.teacher);
@@ -114,7 +114,7 @@ export const provisionCalendarEvgStream = async (
   const result = await prisma.$transaction(async (tx) => {
     const latest = await tx.calendar.findUnique({ where: { id: calendarId } });
     if (!latest) throw new Error('Lịch học không còn tồn tại');
-    if (mode === 'skip_existing' && latest.evg_stream) {
+    if (mode === 'skip_existing' && latest.evg_stream && latest.evg_stream !== calendar.evg_stream) {
       throw new Error('Lịch học vừa được tạo EVG bởi một yêu cầu khác');
     }
 

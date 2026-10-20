@@ -16,6 +16,7 @@ import {
 import { getPublicGoogleSheetCsv } from '../../integrations/google-sheet-csv';
 import { getSheetExportJob, startSheetExportJob } from '../../integrations/google-sheet-export-job';
 import { previewAutoSchedule as buildAutoSchedulePreview } from './auto-schedule.service';
+import { getCalendarRoomReport as buildRoomReport, buildCalendarRoomReportWorkbook } from './calendar-room-report.service';
 import {
   importCalendarFromSheet,
   updateCalendarsFromSheet,
@@ -34,6 +35,30 @@ const getChangeActor = (req: Request): livestreamService.CalendarChangeActor => 
   userId: Number(req.user?.userId),
   username: String(req.user?.username || ''),
 });
+
+const roomReportContext = (req: Request, exportMode: boolean) => {
+  const viewScope = getProgramScopeFilter(req.user, 'calendar.view');
+  const exportScope = exportMode ? getProgramScopeFilter(req.user, 'calendar.export') : null;
+  const scope = viewScope === null ? exportScope : exportScope === null ? viewScope : viewScope.filter((code) => exportScope.includes(code));
+  const isAdmin = Boolean(req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin'));
+  return (query: any) => livestreamService.getCalendar(query, scope, isAdmin, true);
+};
+
+export const getRoomReport = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await buildRoomReport(req.query, roomReportContext(req, false)) });
+  } catch (error) { next(error); }
+};
+
+export const exportRoomReport = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const report = await buildRoomReport(req.query, roomReportContext(req, true), true);
+    const file = buildCalendarRoomReportWorkbook(report.data, report.group_by);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="bao-cao-lop-hoc.xlsx"');
+    res.send(file);
+  } catch (error) { next(error); }
+};
 
 const conflictErrorResponse = (res: Response, err: any) => res.status(400).json({
   success: false,

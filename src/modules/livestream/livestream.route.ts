@@ -148,6 +148,8 @@ router.get(
   livestreamController.getCalendar
 );
 router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
+router.get('/room-report', authorize(['calendar.view']), authorizeCalendarList, livestreamController.getRoomReport);
+router.get('/room-report/export', authorize(['calendar.view']), authorize(['calendar.export']), authorizeCalendarList, livestreamController.exportRoomReport);
 router.post('/export/google-sheet', authorize(['calendar.export']), livestreamController.exportGoogleSheet);
 router.get('/export/google-sheet/:jobId', authorize(['calendar.export']), livestreamController.exportGoogleSheetProgress);
 router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);

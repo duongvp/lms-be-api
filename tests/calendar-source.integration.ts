@@ -119,7 +119,9 @@ const makePayload=(code:string,source?:string)=>({code,learn_number:1,system_typ
  assert.equal(Number(await countQueue(autoCreated.calendars[0].key!)),1);assert.equal(Number(await countQueue(autoCreated.calendars[1].key!)),0);
  await prisma.lessons.create({data:{subject_code:'feed-QA-AUTO',subject_name:'Feed QA',learn_number:1,grade:8,lesson_name:'QA lesson'}});
  assert.equal((await services.getProgramLessonsForScheduling('feed-QA-AUTO'))[0].scheduled_count,1);
- await assert.rejects(services.provisionCalendarEvgStream(feed.id),/Feed/);
+ await prisma.calendar.update({where:{id:feed.id},data:{evg_stream:'qa-feed-evg'}});
+ await assert.rejects(services.provisionCalendarEvgStream(feed.id,'qa-admin'),/Chưa cấu hình banner/);
+ assert.equal((await prisma.calendar.findUnique({where:{id:feed.id}}))?.evg_stream,'qa-feed-evg','Missing banner must not change an incomplete EVG record');
  const resend=await services.resendCalendarsToHocmai([live.id,feed.id]);assert.ok(resend.skipped_ids.includes(feed.id));
  const makeup=await services.rescheduleSession(feed.id,{mode:'makeup',reason:'QA',new_session:{start_time:'2032-02-01T08:00:00Z',end_time:'2032-02-01T09:00:00Z'}},actor);
  assert.equal(makeup.created_session.code,'feed-QA-TWIN');assert.equal(Number(await countQueue(makeup.created_session.key!)),0);

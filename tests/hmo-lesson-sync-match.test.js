@@ -26,6 +26,35 @@ const row = (calendarId, startTime, teacher, lessonName = title, lessonCount = 0
   teacher,
 });
 
+test('Feed tự ghép tên bài trong session chuyên đề hoặc không có tên session', () => {
+  for (const sectionName of ['Trạm tiếp sức tri thức', undefined]) {
+    const result = matchCalendarsForCourse([
+      { ...row(1, '2026-10-14T22:00:00Z', 'Nguyễn Thị Mai'), subject_code: 'feed-tramtiepsuctrithuc', source_lesson_name: 'Bài giảng' },
+    ], [
+      { lessonId: 'a', name: 'Bài giảng_Cô Mai', sectionName },
+      { lessonId: 'b', name: 'Bài giảng_Cô Lan', sectionName },
+    ]);
+    assert.equal(result.get(1).lessonId, 'a');
+  }
+});
+
+test('Feed không tự ghép khi nhiều session chuyên đề cùng khớp', () => {
+  const result = matchCalendarsForCourse([
+    { ...row(1, '2026-10-14T22:00:00Z', ''), subject_code: 'feed-topic', source_lesson_name: 'Bài giảng' },
+  ], ['a', 'b'].map((id) => ({ lessonId: id, name: 'Bài giảng', sectionId: id, sectionName: 'Chuyên đề' })));
+  assert.equal(result.get(1).ambiguityReason, 'SESSION_UNCERTAIN');
+});
+
+test('Feed vẫn ưu tiên session đúng tháng, không lấy session tháng khác làm fallback', () => {
+  const feedRow = { ...row(1, '2026-10-14T22:00:00Z', ''), subject_code: 'feed-topic', source_lesson_name: 'Bài giảng' };
+  const options = [
+    { lessonId: 'oct', name: 'Bài giảng', sectionName: 'Tháng 10/2026' },
+    { lessonId: 'topic', name: 'Bài giảng', sectionName: 'Chuyên đề' },
+  ];
+  assert.equal(matchCalendarsForCourse([feedRow], options).get(1).lessonId, 'oct');
+  assert.equal(matchCalendarsForCourse([{ ...feedRow, start_time: '2026-11-14' }], options.slice(0, 1)).get(1).ambiguityReason, 'SESSION_UNCERTAIN');
+});
+
 test('Lịch 2 của bài 67 không lấy nhầm Lesson cùng tên thuộc bài 81', () => {
   const result = matchCalendarsForCourse([
     row(2997, '2027-02-25T18:00:00.000Z', 'Dương Thùy Linh'),

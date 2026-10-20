@@ -1,16 +1,123 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import {
   buildEvgPlaybackUrl,
   buildEvgStreamName,
   extractEvgStreamAlias,
   resolveEvgRoomIds,
+  provisionCalendarEvgStream,
+  provisionCalendarsEvgBulk,
 } from '../src/modules/livestream/evg-stream.service';
 import {
   buildCalendarRoomClassId,
   excelDateSerialFromCalendarDate,
 } from '../src/modules/livestream/calendar-user-sync.service';
 import { createEvgLiveStream } from '../src/integrations/evg-live-stream.service';
+import prisma from '../src/lib/prisma';
+
+const mockEvgProvisioning = (context: TestContext, calendars: any[]) => {
+  const env = { EVG_AUTH_KEY: 'test-key', EVG_CALLBACK_EVENT_URL: 'https://example.test/callback', EVG_REQUEST_INTERVAL_MS: '0' };
+  const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  context.after(() => {
+    for (const key of Object.keys(env)) {
+      if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+    }
+  });
+  const requests: string[] = [];
+  const rooms: any[] = [];
+  const configs: any[] = [];
+  const originalRooms = prisma.stream.findMany;
+  const originalConfigs = prisma.room_config.findMany;
+  prisma.stream.findMany = (async () => rooms) as typeof prisma.stream.findMany;
+  prisma.room_config.findMany = (async () => configs) as typeof prisma.room_config.findMany;
+  context.after(() => {
+    prisma.stream.findMany = originalRooms;
+    prisma.room_config.findMany = originalConfigs;
+  });
+  context.mock.method(globalThis, 'fetch', async (_url: unknown, options: any) => {
+    const name = JSON.parse(options.body).name;
+    requests.push(name);
+    return new Response(JSON.stringify({ success: true, name, id: requests.length, stream_alias: `alias-${requests.length}`, stream_key: `key-${requests.length}` }), { status: 200 });
+  });
+  const findCalendar = async ({ where }: any) => calendars.find((calendar) => calendar.id === where.id) || null;
+  const originalFindUnique = prisma.calendar.findUnique;
+  prisma.calendar.findUnique = findCalendar as typeof prisma.calendar.findUnique;
+  context.after(() => { prisma.calendar.findUnique = originalFindUnique; });
+  const tx = {
+    calendar: {
+      findUnique: findCalendar,
+      update: async ({ where, data }: any) => Object.assign(calendars.find((calendar) => calendar.id === where.id), data),
+    },
+    stream: { findMany: async () => [], upsert: async (data: any) => { rooms.push(data.create); return data.create; } },
+    users: { findMany: async () => [] },
+    room_config: { findUnique: async () => null, upsert: async (data: any) => { configs.push(data.create); return data.create; } },
+  };
+  context.mock.method(prisma, '$transaction', async (operation: any) => operation(tx));
+  return { requests, rooms, configs };
+};
+
+const evgCalendar = (id: number, code: string) => ({ id, code, learn_number: 1, start_time: new Date('2026-10-14T22:00:00Z'), teacher: 'teacher-a', lesson_status: 0, evg_stream: null as string | null });
+
+test('Feed tạo EVG, stream cho 25 phòng và room_config giống Livestream; bỏ qua khi đã có EVG', async (context) => {
+  const calendar = evgCalendar(1, 'feed-tramtiepsuctrithuc');
+  const { requests, rooms, configs } = mockEvgProvisioning(context, [calendar]);
+  const result = await provisionCalendarEvgStream(1, 'admin', 'skip_existing', 'https://example.test/banner.jpg');
+  assert.equal(result.skipped, false);
+  assert.equal(requests.length, 1);
+  assert.match(requests[0], /^feed-tramtiepsuctrithuc-1-/);
+  assert.equal(rooms.length, 25);
+  assert.ok(rooms.every((room) => room.code === calendar.code && room.stream_key.includes('alias-1')));
+  assert.equal(configs[0].code, calendar.code);
+  assert.equal(configs[0].config.stream_key, 'key-1');
+  assert.equal(calendar.evg_stream, '1');
+  assert.equal((await provisionCalendarEvgStream(1, 'admin', 'skip_existing')).skipped, true);
+  assert.equal(requests.length, 1);
+});
+
+test('Feed có thể ghi đè EVG hiện có', async (context) => {
+  const calendar = { ...evgCalendar(1, 'feed-tsa'), evg_stream: 'old-stream' };
+  const { requests } = mockEvgProvisioning(context, [calendar]);
+  const result = await provisionCalendarEvgStream(1, 'admin', 'overwrite', 'https://example.test/banner.jpg');
+  assert.equal(result.operation, 'overwritten');
+  assert.equal(requests.length, 1);
+  assert.equal(calendar.evg_stream, '1');
+});
+
+test('chỉ có evg_stream nhưng chưa có phòng thì skip_existing vẫn tạo đủ cấu hình', async (context) => {
+  const calendar = { ...evgCalendar(1, 'feed-tsa-1-2027'), evg_stream: 'old-stream', channel_name: 'old-name', lesson_link: 'old-key' };
+  const { requests, rooms, configs } = mockEvgProvisioning(context, [calendar]);
+  const result = await provisionCalendarEvgStream(1, 'admin', 'skip_existing', 'https://example.test/banner.jpg');
+  assert.equal(result.skipped, false);
+  assert.equal(requests.length, 1);
+  assert.equal(rooms.length, 25);
+  assert.equal(configs.length, 1);
+});
+
+test('thiếu banner không gọi EVG và không thay đổi trạng thái, kể cả khi ghi đè EVG cũ', async (context) => {
+  const calendars = [evgCalendar(1, 'feed-tsa-1-2027'), { ...evgCalendar(2, 'feed-tsa-1-2027'), evg_stream: 'existing-stream' }];
+  const original = calendars.map((calendar) => ({ ...calendar }));
+  const { requests, rooms, configs } = mockEvgProvisioning(context, calendars);
+  context.mock.method(prisma, '$queryRaw', async () => []);
+  for (const calendar of calendars) {
+    await assert.rejects(provisionCalendarEvgStream(calendar.id, 'admin', 'overwrite'), /Chưa cấu hình banner/);
+  }
+  assert.deepEqual(calendars, original);
+  assert.equal(requests.length, 0);
+  assert.equal(rooms.length, 0);
+  assert.equal(configs.length, 0);
+});
+
+test('hàng loạt tạo EVG cho cả Feed và Livestream, vẫn chặn lịch nghỉ học', async (context) => {
+  const calendars = [evgCalendar(1, 'feed-tsa'), evgCalendar(2, 'tsa'), { ...evgCalendar(3, 'feed-canceled'), lesson_status: 1 }];
+  const { requests, rooms } = mockEvgProvisioning(context, calendars);
+  const result = await provisionCalendarsEvgBulk([1, 2, 3], 'admin', 'overwrite', 'https://example.test/banner.jpg');
+  assert.equal(result.succeeded, 2);
+  assert.equal(result.failed, 1);
+  assert.match(result.results[2].error!, /đã nghỉ học/);
+  assert.equal(requests.length, 2);
+  assert.equal(rooms.length, 50);
+});
 
 test('tên EVG dùng cùng Excel Date Serial với class_id', () => {
   const startTime = new Date('2026-09-20T19:30:00.000Z');

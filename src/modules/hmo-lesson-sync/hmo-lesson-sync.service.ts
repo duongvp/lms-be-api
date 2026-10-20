@@ -2,6 +2,7 @@ import prisma from '../../lib/prisma';
 import { fetchHocmaiCourseOutlines } from '../../integrations/hocmai-course-outline.service';
 import { logger } from '../../utils/logger';
 import { reconcileCalendarMappingsAndEnqueue } from '../livestream/hocmai-sync-queue.service';
+import { calendarSourceFromCode } from '../livestream/calendar-source';
 
 type TriggerType = 'cron' | 'manual';
 export type Candidate = {
@@ -139,6 +140,7 @@ export const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Cand
         sessionQuality: sessionMatchQuality(row.start_time, candidate.sectionName),
         sessionKey: candidate.sectionId
           || `index:${candidate.sectionIndex ?? "unknown"}:${candidate.sectionName || ""}`,
+        nonMonthlySession: !sectionMonthYear(candidate.sectionName),
       };
     }).filter((item): item is NonNullable<typeof item> => Boolean(item)).sort((left, right) => (
       right.teacherMatchQuality - left.teacherMatchQuality
@@ -158,11 +160,17 @@ export const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Cand
     : undefined;
   const evaluated = rawEvaluated.map(({ row, index, teacher, allMatches }) => {
     const exactSessionMatches = allMatches.filter((item) => item.sessionQuality === 2);
-    const sessionMatches = exactSessionMatches.length
+    let sessionMatches = exactSessionMatches.length
       ? exactSessionMatches
       : inferredSessionKey
         ? allMatches.filter((item) => item.sessionKey === inferredSessionKey)
         : [];
+    if (!sessionMatches.length && calendarSourceFromCode(row.subject_code || row.code) === 'feed') {
+      let fallback = allMatches.filter((item) => item.nonMonthlySession && item.exactTitle);
+      const bestQuality = fallback[0]?.teacherMatchQuality;
+      fallback = fallback.filter((item) => item.teacherMatchQuality === bestQuality);
+      if (new Set(fallback.map((item) => item.sessionKey)).size === 1) sessionMatches = fallback;
+    }
     if (!sessionMatches.length && allMatches.length) {
       return {
         row,
@@ -389,7 +397,7 @@ const executeRun = async (runId: bigint) => {
             const ambiguous = match?.errorCode === 'AMBIGUOUS';
             const message = ambiguous
               ? match?.ambiguityReason === 'SESSION_UNCERTAIN'
-                ? `Course ${pair.courseId} không có session Tháng M/YYYY khớp ngày lịch; cần chọn Session/Lesson ID thủ công.`
+                ? `Course ${pair.courseId} chưa xác định được session phù hợp theo ngày lịch hoặc tên bài và giáo viên; cần chọn Session/Lesson ID thủ công.`
                 : `Course ${pair.courseId} có ${match?.candidateCount || 2} tên bài gần giống cùng khớp; cần chọn thủ công.`
               : `Course ${pair.courseId} không có Lesson ID phù hợp sau khi phân theo tên bài, giáo viên và session.`;
             await addIssue(runId, row, ambiguous ? 'AMBIGUOUS' : 'NO_MATCH', message, pair);

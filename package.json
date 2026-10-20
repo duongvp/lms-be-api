@@ -19,6 +19,8 @@
     "test:google-sheet": "tsx --test tests/google-sheet-csv.test.ts tests/google-sheet-write.test.ts",
     "test:classroom-assignment": "tsx --test tests/classroom-assignment.test.ts",
     "test:livestream-bulk-conflict": "tsx --test tests/livestream-bulk-conflict.test.ts",
+    "test:calendar-room-report": "node --import tsx tests/calendar-room-report.test.ts",
+    "test:calendar-room-report:integration": "node --import tsx tests/calendar-room-report.integration.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed": "tsx prisma/seed.ts",
     "db:quiz-rbac": "tsx prisma/scripts/syncQuizRbac.ts",

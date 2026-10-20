@@ -21,6 +21,7 @@ import {
   enqueueManyCalendarTeamsNotifications,
 } from '../teams-notifications';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
+import { getCalendarEvgStatuses } from './evg-status';
 import {
   ensureCalendarTeachingUsers,
   ensureCalendarScanTeachingUsers,  
@@ -3199,12 +3200,19 @@ export const assertCalendarIdsInProgram = async (ids: number[], programCode: str
 export const getCalendar = async (
   query: any,
   allowedPrograms: string[] | null = null,
-  allowAllPrograms = false
+  allowAllPrograms = false,
+  rawRowsOnly = false,
 ) => {
   const calendarSource = resolveCalendarSource(query.calendar_source);
   const page = normalizeNumber(query.page, 'page') ?? 1;
   const limit = normalizeNumber(query.limit, 'limit') ?? 10;
   const calendarId = normalizeNumber(query.calendar_id, 'calendar_id');
+  const calendarIds = query.calendar_ids === undefined ? undefined : Array.from(new Set(
+    String(query.calendar_ids).split(',').filter((value) => value.trim() !== '').map(Number)
+  ));
+  if (calendarIds && calendarIds.some((id) => !Number.isSafeInteger(id) || id < 1)) {
+    throw new Error('calendar_ids phải là danh sách ID lịch nguyên dương');
+  }
 
   if (page < 1) throw new Error('page phải lớn hơn 0');
   // Bảng Quản lý lịch học cho phép người dùng theo dõi tối đa 300 buổi/trang.
@@ -3327,6 +3335,7 @@ export const getCalendar = async (
     ],
   };
   if (calendarId !== undefined) where.id = calendarId;
+  if (calendarIds) where.AND = [...(Array.isArray(where.AND) ? where.AND : []), { id: { in: calendarIds } }];
 
   if (keyword) {
     where.OR = [
@@ -3414,9 +3423,10 @@ export const getCalendar = async (
       where,
       skip,
       take,
-      orderBy,
+      orderBy: rawRowsOnly ? [...orderBy, { id: 'asc' }] : orderBy,
     }),
   ]);
+  if (rawRowsOnly) return { total, page, limit, data };
   const canceledIds = data
     .filter((record) => Number(record.lesson_status) === 1)
     .map((record) => record.id);
@@ -3485,6 +3495,7 @@ export const getCalendar = async (
     .map((record) => record.key)
     .filter((key): key is string => Boolean(key));
   const mappingsByKey = await loadMappingsByKeys(prisma, mappingKeys);
+  const evgStatuses = await getCalendarEvgStatuses(prisma, data);
   return {
     total,
     page,
@@ -3494,6 +3505,7 @@ export const getCalendar = async (
       const isCancelled = Number(record.lesson_status) === 1;
       return {
         ...record,
+        ...evgStatuses.get(record.id),
         calendar_source: calendarSourceFromCode(record.code),
         // Chỉ hiển thị đã chia lớp khi có lịch sử phân lớp được lưu.
         // Không suy diễn từ thời điểm bắt đầu của lịch vì lịch cũ có thể chưa từng được chia.

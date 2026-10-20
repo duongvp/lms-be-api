@@ -84,7 +84,6 @@ const syncFutureStreams = async (
     FROM calendar calendar_row
     JOIN teacher_profiles profile ON profile.id = ${teacherProfileId}
     WHERE calendar_row.code = ${programCode}
-      AND calendar_row.code NOT LIKE 'feed-%'
       AND calendar_row.start_time >= NOW()
       AND (
         LOWER(calendar_row.teacher) = LOWER(profile.username)

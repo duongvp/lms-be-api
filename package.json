@@ -19,6 +19,7 @@
     "test:google-sheet": "tsx --test tests/google-sheet-csv.test.ts tests/google-sheet-write.test.ts",
     "test:classroom-assignment": "tsx --test tests/classroom-assignment.test.ts",
     "test:livestream-bulk-conflict": "tsx --test tests/livestream-bulk-conflict.test.ts",
+    "test:evg-recordings": "node --import tsx tests/evg-recordings.test.ts",
     "test:calendar-room-report": "node --import tsx tests/calendar-room-report.test.ts",
     "test:calendar-room-report:integration": "node --import tsx tests/calendar-room-report.integration.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -29,7 +30,8 @@
     "test:hmo-lesson-sync-match": "npm run build && node tests/hmo-lesson-sync-match.test.js",
     "test:calendar-source": "node --import tsx --test tests/calendar-source.test.ts",
     "test:calendar-source:integration": "node --import tsx tests/calendar-source.integration.ts",
-    "db:calendar-source-rollback-triggers": "tsx prisma/scripts/rollbackCalendarSourceTriggers.ts"
+    "db:calendar-source-rollback-triggers": "tsx prisma/scripts/rollbackCalendarSourceTriggers.ts",
+    "test:calendar-detail-report": "node --import tsx --test tests/calendar-detail-report.test.ts tests/calendar-detail-report-auth.test.ts"
   },
   "keywords": [],
   "author": "",

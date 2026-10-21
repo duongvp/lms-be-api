@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import * as livestreamController from './livestream.controller';
 import registrationAuditRouter from './calendar-registration-audit.route';
+import { createCalendarDetailReportRouter } from './calendar-detail-report.route';
 import authMiddleware from '../auth/auth.middleware';
 import prisma from '../../lib/prisma';
 import { Prisma } from '@prisma/client';
@@ -133,6 +134,10 @@ const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
 ));
 
 router.use(authenticate);
+router.use('/room-report/calendars/:calendarId', createCalendarDetailReportRouter(async req => {
+  const request = req as typeof req & { detailProgramCodes?: string[] };
+  return request.detailProgramCodes ??= await calendarCodesByIds([req.params.calendarId]);
+}));
 router.use('/students/registration-audits', registrationAuditRouter);
 
 router.get(
@@ -149,6 +154,7 @@ router.get(
 );
 router.get('/export', authorize(['calendar.export']), livestreamController.exportFile);
 router.get('/room-report', authorize(['calendar.view']), authorizeCalendarList, livestreamController.getRoomReport);
+router.get('/room-report/live-times', authorize(['calendar.view']), authorizeCalendarList, livestreamController.getRoomReportLiveTimes);
 router.get('/room-report/export', authorize(['calendar.view']), authorize(['calendar.export']), authorizeCalendarList, livestreamController.exportRoomReport);
 router.post('/export/google-sheet', authorize(['calendar.export']), livestreamController.exportGoogleSheet);
 router.get('/export/google-sheet/:jobId', authorize(['calendar.export']), livestreamController.exportGoogleSheetProgress);

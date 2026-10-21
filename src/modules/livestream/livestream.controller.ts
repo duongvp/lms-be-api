@@ -16,7 +16,7 @@ import {
 import { getPublicGoogleSheetCsv } from '../../integrations/google-sheet-csv';
 import { getSheetExportJob, startSheetExportJob } from '../../integrations/google-sheet-export-job';
 import { previewAutoSchedule as buildAutoSchedulePreview } from './auto-schedule.service';
-import { getCalendarRoomReport as buildRoomReport, buildCalendarRoomReportWorkbook } from './calendar-room-report.service';
+import { getCalendarRoomReport as buildRoomReport, getCalendarRoomReportSchedules, getCalendarRoomReportLiveTimes, buildCalendarRoomReportWorkbook } from './calendar-room-report.service';
 import {
   importCalendarFromSheet,
   updateCalendarsFromSheet,
@@ -46,8 +46,14 @@ const roomReportContext = (req: Request, exportMode: boolean) => {
 
 export const getRoomReport = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    res.json({ success: true, data: await buildRoomReport(req.query, roomReportContext(req, false)) });
+    const build = req.query.include_attendance === 'false' ? getCalendarRoomReportSchedules : buildRoomReport;
+    res.json({ success: true, data: await build(req.query, roomReportContext(req, false)) });
   } catch (error) { next(error); }
+};
+
+export const getRoomReportLiveTimes = async (req: Request, res: Response, next: NextFunction) => {
+  try { res.json({ success: true, data: await getCalendarRoomReportLiveTimes(req.query, roomReportContext(req, false)) }); }
+  catch (error) { next(error); }
 };
 
 export const exportRoomReport = async (req: Request, res: Response, next: NextFunction) => {

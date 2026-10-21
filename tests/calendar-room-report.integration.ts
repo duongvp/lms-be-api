@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PrismaClient } from '@prisma/client';
-import { getCalendarRoomReport } from '../src/modules/livestream/calendar-room-report.service';
+import { getCalendarRoomReport as buildCalendarRoomReport } from '../src/modules/livestream/calendar-room-report.service';
 import { buildCalendarRoomClassId } from '../src/modules/livestream/calendar-user-sync.service';
+
+const getCalendarRoomReport = (...args: Parameters<typeof buildCalendarRoomReport>) => buildCalendarRoomReport(
+  args[0], args[1], args[2], args[3], args[4] ?? (async () => new Map()),
+);
 
 const databaseUrl = process.env.TEST_CALENDAR_ROOM_REPORT_DATABASE_URL;
 test('MySQL: session EVG, room lịch sử, HS học/tổng HS và biên giờ được tổng hợp đúng', { skip: !databaseUrl }, async (context) => {
@@ -61,23 +65,73 @@ test('MySQL: session EVG, room lịch sử, HS học/tổng HS và biên giờ �
     ('teacher-a','Teacher',${calendar.code},1,'2026-10-14 21:20:00',2),
     ('carol','103 - Carol','other-program',1,'2026-10-14 21:10:00',2)`;
   const report = await getCalendarRoomReport({ calendar_source: 'feed', group_by: 'room' }, async () => ({ total: 1, data: [calendar] }), false, client);
-  assert.equal(report.data.length, 6);
-  const find = (sessionId: string, roomId: number | null) => report.data.find((row) => row.session_id === sessionId && row.room_id === roomId)!;
-  assert.equal(find('a', 2).attended_students, 1);
-  assert.equal(find('a', 2).added_students, 1);
-  assert.equal(find('a', 1).attended_students, 0, 'Logs at 21:30 must not count in the session ending at 21:30');
-  assert.equal(find('a', null).added_students, 1);
-  assert.equal(find('b', 1).attended_students, 1);
-  assert.equal(find('b', 2).attended_students, 0);
-  assert.equal(find('a', 1).actual_start_time, '2026-10-14T20:58:00.000Z');
-  assert.equal(find('a', 1).actual_end_time, '2026-10-14T21:30:00.000Z');
-  assert.equal(report.data.filter((row) => row.session_id === 'a').reduce((sum, row) => sum + row.added_students, 0), 3, 'Teacher enrollment must be excluded');
-  assert.ok(report.data.every((row) => row.session_id !== 'previous' && row.session_id !== 'other'));
+  assert.equal(report.data.length, 2);
+  const find = (roomId: number | null) => report.data.find((row) => row.room_id === roomId)!;
+  assert.equal(find(2).attended_students, 1);
+  assert.equal(find(2).added_students, 1);
+  assert.equal(find(1).attended_students, 1);
+  assert.equal(find(null), undefined, 'class_id của lịch khác không được đưa vào nhóm chưa chia room');
+  assert.equal(find(1).actual_start_time, '2026-10-14T20:58:00.000Z');
+  assert.equal(find(1).actual_end_time, '2026-10-14T22:00:00.000Z');
+  assert.equal(report.data.reduce((sum, row) => sum + row.added_students, 0), 2, 'Roster chỉ tính một lần qua các phiên, loại nhân sự');
   const summary = await getCalendarRoomReport({ calendar_source: 'feed' }, async () => ({ total: 1, data: [calendar] }), false, client);
-  assert.equal(summary.data.length, 2);
-  assert.deepEqual(summary.data.map((row) => [row.session_id, row.attended_students, row.added_students]), [
-    ['a', 1, 3], ['b', 1, 3],
-  ]);
+  assert.equal(summary.data.length, 1);
+  assert.deepEqual(summary.data.map((row) => [row.attended_students, row.added_students]), [[2, 2]]);
+
+  // Cùng chương trình nhưng roster và chuyên cần của buổi 2 khác buổi 1.
+  const secondCalendar = { ...calendar, id: 6003, learn_number: 2, evg_stream: null, channel_name: null,
+    start_time: new Date('2026-10-15T21:00:00Z'), end_time: new Date('2026-10-15T22:00:00Z') };
+  const secondRoom = buildCalendarRoomClassId(calendar.code, secondCalendar.start_time, 2, 1);
+  await client.$executeRaw`INSERT INTO users(id, username, student_hmid, code, learn_number, room_id, class_id) VALUES
+    (10,'alice','101',${calendar.code},2,1,${secondRoom}),
+    (11,'dave','104',${calendar.code},2,1,${secondRoom}),
+    (12,'erin','105',${calendar.code},2,NULL,NULL),
+    (13,'teacher-a',NULL,${calendar.code},2,1,${secondRoom}),
+    (14,'assigned-assistant',NULL,${calendar.code},2,1,${secondRoom}),
+    (15,'frank','106',${calendar.code},2,NULL,NULL)`;
+  await client.$executeRaw`INSERT INTO users_logs(username,name,code,learn_number,created_at,status) VALUES
+    ('alice','101 - Alice',${calendar.code},2,'2026-10-15 21:05:00',2),
+    ('alice','101 - Alice',${calendar.code},2,'2026-10-15 21:10:00',2),
+    ('dave','104 - Dave',${calendar.code},2,'2026-10-15 21:05:00',2),
+    ('dave','104 - Dave',${calendar.code},2,'2026-10-15 21:06:00',1),
+    ('dave','104 - Dave',${calendar.code},2,'2026-10-15 21:11:00',2),
+    ('alice','101 - Alice',${calendar.code},1,'2026-10-14 21:45:00',2)`;
+  const both = async () => ({ total: 2, data: [calendar, secondCalendar] });
+  const bothReport = await getCalendarRoomReport({ group_by: 'room' }, both, false, client);
+  assert.ok(bothReport.data.filter((row) => row.calendar_id === calendar.id).every((row) => row.lesson_attended_students === 2 && row.lesson_added_students === 3), 'Alice học cả hai phiên chỉ được tính một lần trong tổng buổi 1');
+  assert.ok(bothReport.data.filter((row) => row.calendar_id === secondCalendar.id).every((row) => row.lesson_attended_students === 1 && row.lesson_added_students === 4), 'Buổi 2 dùng roster riêng, không tính giáo viên/trợ giảng hoặc ghép chuỗi khi join lại');
+  const roomFiltered = await getCalendarRoomReport({ group_by: 'room', room_id: 1 }, both, true, client);
+  assert.ok(roomFiltered.data.every((row) => row.lesson_added_students === (row.calendar_id === calendar.id ? 3 : 4)), 'Lọc room không làm mất HS ở room khác/chưa chia room trong tổng buổi');
+  assert.equal(roomFiltered.data.find((row) => row.calendar_id === secondCalendar.id)!.added_students, 2);
+
+  // Lịch học lại cùng số bài nhưng ngày khác: phải dựa vào class_id,
+  // không chỉ code + learn_number. Class_id sai hậu tố cũng không được nhận.
+  const repeatedCalendar = { ...calendar, id: 6004, evg_stream: null, channel_name: null,
+    start_time: new Date('2026-10-15T21:00:00Z'), end_time: new Date('2026-10-15T22:00:00Z') };
+  const repeatedClass = buildCalendarRoomClassId(calendar.code, repeatedCalendar.start_time, 1, 12);
+  await client.$executeRaw`INSERT INTO users(id, username, student_hmid, code, learn_number, room_id, class_id) VALUES
+    (16,'dora','116',${calendar.code},1,12,${repeatedClass}),
+    (17,'bad-class','117',${calendar.code},1,12,${repeatedClass + 'junk'})`;
+  await client.$executeRaw`INSERT INTO users_logs(username,name,code,learn_number,created_at,status) VALUES
+    ('dora','116 - Dora',${calendar.code},1,'2026-10-14 21:05:00',2),
+    ('dora','116 - Dora',${calendar.code},1,'2026-10-14 21:10:00',2),
+    ('dora','116 - Dora',${calendar.code},1,'2026-10-15 21:05:00',2),
+    ('dora','116 - Dora',${calendar.code},1,'2026-10-15 21:10:00',2),
+    ('bad-class','117 - Bad Class',${calendar.code},1,'2026-10-15 21:05:00',2),
+    ('bad-class','117 - Bad Class',${calendar.code},1,'2026-10-15 21:10:00',2)`;
+  const repeated = await getCalendarRoomReport({ group_by: 'room' }, async () => ({ total: 2, data: [calendar, repeatedCalendar] }), false, client);
+  const repeatedRows = repeated.data.filter((row) => row.calendar_id === repeatedCalendar.id);
+  assert.equal(repeatedRows.length, 1);
+  assert.deepEqual([repeatedRows[0].room_id, repeatedRows[0].attended_students, repeatedRows[0].added_students], [12, 1, 1]);
+  assert.deepEqual([repeatedRows[0].lesson_attended_students, repeatedRows[0].lesson_added_students], [4, 5]);
+  assert.ok(repeated.data.filter((row) => row.calendar_id === calendar.id).every((row) => row.lesson_added_students === 5));
+  const selectedRepeated = await getCalendarRoomReport({ calendar_ids: String(repeatedCalendar.id), start_time: '2026-10-15' }, async (query) => {
+    if (query.keyword === calendar.code) return { total: 2, data: [calendar, repeatedCalendar] };
+    return { total: 1, data: [repeatedCalendar] };
+  }, false, client);
+  assert.equal(selectedRepeated.data.length, 1);
+  assert.deepEqual([selectedRepeated.data[0].attended_students, selectedRepeated.data[0].lesson_attended_students, selectedRepeated.data[0].lesson_added_students], [1, 4, 5], 'Chỉ hiển thị lịch 2 nhưng tổng phải hợp nhất cả lịch 1 ngoài ngày/ID đang lọc, không đếm Dora hai lần');
+
 
   const scenarios: Array<{ label: string; events: Array<[string, number, string?]>; attended: number }> = [
     { label: 'join, hai heartbeat liên tiếp đủ 10 phút', events: [['21:00', 1], ['21:05', 2], ['21:10', 2]], attended: 1 },
@@ -102,10 +156,10 @@ test('MySQL: session EVG, room lịch sử, HS học/tổng HS và biên giờ �
         VALUES (${username},'101 - Alice',${calendar.code},1,${createdAt},${status})`;
     }
     const result = await getCalendarRoomReport({}, async () => ({ total: 1, data: [calendar] }), false, client);
-    assert.equal(result.data.find((row) => row.session_id === 'a')!.attended_students, scenario.attended, scenario.label);
-    assert.ok(result.data.every((row) => row.added_students === 3), `${scenario.label}: tổng HS không thay đổi`);
+    assert.equal(result.data[0].attended_students, scenario.attended, scenario.label);
+    assert.ok(result.data.every((row) => row.added_students === 2), `${scenario.label}: tổng HS theo class_id không thay đổi`);
     if (scenario.label === 'không ghép heartbeat qua hai phiên học') {
-      assert.equal(result.data.find((row) => row.session_id === 'b')!.attended_students, 0, scenario.label);
+      assert.equal(result.data[0].attended_students, 0, scenario.label);
     }
   }
 
@@ -129,7 +183,7 @@ test('MySQL: session EVG, room lịch sử, HS học/tổng HS và biên giờ �
   } } as any;
   const sharedReport = await getCalendarRoomReport({}, async () => ({ total: 3, data: shared }), false, sharedClient);
   assert.equal(logReads, 3, 'mỗi dải giờ chỉ đọc một lần chung cho các buổi');
-  assert.deepEqual(sharedReport.data.map((row) => [row.attended_students, row.added_students]), [[1, 3], [0, 1], [0, 3]]);
+  assert.deepEqual(sharedReport.data.map((row) => [row.attended_students, row.added_students]), [[1, 2], [0, 0], [0, 1]]);
   await client.$executeRaw`INSERT INTO users_logs(username,name,code,learn_number,created_at,status)
     VALUES ('alice','101 - Alice',${calendar.code},1,'2026-10-14 20:59:00',1)`;
   const resetReport = await getCalendarRoomReport({}, async () => ({ total: 3, data: shared }), false, client);

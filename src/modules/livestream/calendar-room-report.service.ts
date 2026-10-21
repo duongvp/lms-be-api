@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { loadEvgRecordingTimes, summarizeLiveRecordingRanges, type LiveRecordingTimes } from '../../integrations/evg-recordings.service';
 import * as XLSX from 'xlsx-js-style';
 import prisma from '../../lib/prisma';
 import ApiError from '../../utils/ApiError';
@@ -6,7 +7,7 @@ import { buildCalendarRoomClassId } from './calendar-user-sync.service';
 import { calendarSourceFromCode } from './calendar-source';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 
-type ReportCalendar = {
+export type ReportCalendar = {
   id: number; code: string; learn_number: number; lesson_name?: string | null;
   teacher?: string | null; assistant_teacher?: string | null; system_type?: string | null; start_time: Date; end_time: Date;
   evg_stream?: string | null; channel_name?: string | null; lesson_status?: number | null;
@@ -17,8 +18,8 @@ export type ReportWindow = {
   actual_start_time: Date | null; actual_end_time: Date | null; from: Date; to: Date;
 };
 type RoomCount = { window_id: string; room_id: number | null; added_students: number | bigint; attended_students: number | bigint };
-type ReportEnrollment = { window_id: string; user_id: number; username: string; student_hmid: string | null; room_id: number | null };
-type ReportActivity = { window_id: string; activity_id: bigint | number; created_at: Date; status: number | null; username: string; name?: string | null; student_hmid?: string | null };
+export type ReportEnrollment = { window_id: string; user_id: number; username: string; student_hmid: string | null; room_id: number | null; belongs_to_calendar?: number | bigint | boolean };
+export type ReportActivity = { window_id: string; activity_id: bigint | number; created_at: Date; status: number | null; username: string; name?: string | null; student_hmid?: string | null };
 type LogActivity = Omit<ReportActivity, 'window_id'> & { code: string; learn_number: number };
 
 /** Các buổi trùng giờ dùng một lần quét log theo index thời gian đang có. */
@@ -35,7 +36,7 @@ export const groupReportWindows = (windows: ReportWindow[]) => {
 };
 
 /** Hai status=2 liên tiếp; status=1 (join lại) hoặc status khác ngắt chuỗi. */
-const createAttendanceCounter = (enrollments: ReportEnrollment[]) => {
+export const createAttendanceCounter = (enrollments: ReportEnrollment[], onMatch?: (student: ReportEnrollment, activity: ReportActivity) => void) => {
   const normalize = (value: string | null) => (value || '').trim().toLowerCase();
   const byUsername = new Map<string, number[]>();
   const byHmid = new Map<string, number[]>();
@@ -66,12 +67,14 @@ const createAttendanceCounter = (enrollments: ReportEnrollment[]) => {
       for (const index of matches) {
         if (activity.status === 2 && previous[index] === 2) attended.add(index);
         previous[index] = activity.status;
+        onMatch?.(enrollments[index], activity);
       }
     }
   };
-  const result = (): RoomCount[] => {
+  const result = (include: (student: ReportEnrollment) => boolean = () => true): RoomCount[] => {
     const counts = new Map<string, RoomCount>();
     enrollments.forEach((student, index) => {
+      if (!include(student)) return;
       const key = JSON.stringify([student.window_id, student.room_id]);
       const count = counts.get(key) || { window_id: student.window_id, room_id: student.room_id, added_students: 0, attended_students: 0 };
       count.added_students = Number(count.added_students) + 1;
@@ -80,7 +83,8 @@ const createAttendanceCounter = (enrollments: ReportEnrollment[]) => {
     });
     return [...counts.values()];
   };
-  return { add, result };
+  const attendedEnrollments = () => [...attended].map((index) => enrollments[index]);
+  return { add, result, attendedEnrollments };
 };
 
 export const countConsecutiveAttendance = (enrollments: ReportEnrollment[], activities: ReportActivity[]): RoomCount[] => {
@@ -94,7 +98,10 @@ export type CalendarRoomReportRow = {
   scheduled_start_time: string; scheduled_end_time: string; session_id: string | null;
   actual_start_time: string | null; actual_end_time: string | null;
   room_id: number | null; class_id: string | null; added_students: number; attended_students: number;
+  lesson_added_students: number; lesson_attended_students: number;
+  live_recording?: LiveRecordingTimes;
 };
+type SessionRoomReportRow = Omit<CalendarRoomReportRow, 'lesson_added_students' | 'lesson_attended_students'>;
 const iso = (value: Date | null) => value?.toISOString() ?? null;
 
 /** Gộp webhook mở/đóng cùng session, không dùng giờ kế hoạch làm giờ thực tế. */
@@ -119,7 +126,7 @@ export const buildReportWindows = (calendars: ReportCalendar[], callbacks: Callb
   }));
 });
 
-export const assembleRoomReport = (windows: ReportWindow[], counts: RoomCount[]): CalendarRoomReportRow[] => windows.flatMap((window) => {
+export const assembleRoomReport = (windows: ReportWindow[], counts: RoomCount[]): SessionRoomReportRow[] => windows.flatMap((window) => {
   const roomCounts = counts.filter((count) => count.window_id === window.key)
     .sort((left, right) => {
       if (left.room_id == null) return right.room_id == null ? 0 : 1;
@@ -143,7 +150,7 @@ export const assembleRoomReport = (windows: ReportWindow[], counts: RoomCount[])
 });
 
 /** Mỗi học sinh thuộc đúng một room (hoặc chưa chia) trong một session. */
-export const assembleProgramReport = (windows: ReportWindow[], counts: RoomCount[]): CalendarRoomReportRow[] => {
+export const assembleProgramReport = (windows: ReportWindow[], counts: RoomCount[]): SessionRoomReportRow[] => {
   const totals = new Map<string, RoomCount>();
   for (const count of counts) {
     const total = totals.get(count.window_id) || { window_id: count.window_id, room_id: null, added_students: 0, attended_students: 0 };
@@ -154,7 +161,7 @@ export const assembleProgramReport = (windows: ReportWindow[], counts: RoomCount
   return assembleRoomReport(windows, [...totals.values()]).map((row, index) => ({ ...row, key: windows[index].key }));
 };
 
-const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, groupByRoom = false) => {
+export const loadReportWindows = async (calendars: ReportCalendar[], client = prisma) => {
   if (!calendars.length) return [];
   const channelIds = Array.from(new Set(calendars.map((calendar) => calendar.evg_stream).filter(Boolean)));
   const channelNames = Array.from(new Set(calendars.map((calendar) => calendar.channel_name).filter(Boolean)));
@@ -192,7 +199,12 @@ const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, gro
        AND (MAX(callback.end_on) IS NULL OR MAX(callback.end_on) > c.start_time)
   `);
   // Calendar timestamps và webhook times được đọc theo các thành phần UTC của DB.
-  const windows = buildReportWindows(calendars, callbacks);
+  return buildReportWindows(calendars, callbacks);
+};
+
+const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, groupByRoom = false) => {
+  if (!calendars.length) return [];
+  const windows = await loadReportWindows(calendars, client);
   const windowSql = Prisma.join(windows.map((window) => Prisma.sql`
     SELECT ${window.key} AS window_id, ${window.calendar.id} AS calendar_id, ${window.calendar.code} AS code,
            ${window.calendar.learn_number} AS learn_number, ${window.from} AS start_time, ${window.to} AS end_time,
@@ -262,6 +274,9 @@ const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, gro
     ), enrollments AS (
       SELECT w.window_id, w.calendar_id, w.code, w.learn_number, w.start_time, w.end_time,
              student.id AS user_id, student.username, student.student_hmid,
+             CASE WHEN assigned.user_id IS NOT NULL
+                    OR student.class_id = CONCAT(w.class_prefix, CASE WHEN student.room_id > 0 THEN student.room_id ELSE 1 END)
+                  THEN 1 ELSE 0 END AS belongs_to_calendar,
              COALESCE(assigned.new_room_id,
                CASE WHEN student.room_id > 0 AND student.class_id = CONCAT(w.class_prefix, student.room_id) THEN student.room_id ELSE NULL END) AS room_id
       FROM report_windows w
@@ -269,7 +284,7 @@ const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, gro
       LEFT JOIN ranked_assignments assigned ON assigned.calendar_id = w.calendar_id AND assigned.user_id = student.id AND assigned.rank_number = 1
       WHERE LOWER(TRIM(student.username)) <> w.teacher_username
         AND FIND_IN_SET(LOWER(TRIM(student.username)), w.assistant_usernames) = 0
-    ) SELECT window_id, user_id, username, student_hmid, room_id FROM enrollments
+    ) SELECT window_id, user_id, username, student_hmid, room_id, belongs_to_calendar FROM enrollments
   `);
   // Không JOIN OR + LOWER/TRIM với từng enrollment: đọc danh mục nhân sự một lần
   // rồi tra cứu bằng Set, vẫn loại cả username và HMID, kể cả profile vô hiệu hóa.
@@ -281,7 +296,32 @@ const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, gro
   const staffHmids = new Set(staff.map((profile) => normalizeStaff(profile.student_hmid)).filter(Boolean));
   const enrollments = candidates.filter((student) => !staffUsernames.has(normalizeStaff(student.username))
     && !staffHmids.has(normalizeStaff(student.student_hmid)));
-  const counts: RoomCount[] = [];
+  const calendarByWindow = new Map(windows.map((window) => [window.key, window.calendar.id]));
+  const calendarRooms = new Map<number, Map<number | null, { added: Set<number>; attended: Set<number> }>>();
+  const rememberCalendarStudent = (student: ReportEnrollment, attended = false) => {
+    if (!student.belongs_to_calendar) return;
+    const calendarId = calendarByWindow.get(student.window_id)!;
+    const rooms = calendarRooms.get(calendarId) || new Map();
+    const roomId = student.room_id == null ? null : Number(student.room_id);
+    const room = rooms.get(roomId) || { added: new Set<number>(), attended: new Set<number>() };
+    room.added.add(student.user_id);
+    if (attended) room.attended.add(student.user_id);
+    rooms.set(roomId, room);
+    calendarRooms.set(calendarId, rooms);
+  };
+  // Cột tổng giữ toàn bộ roster code + learn_number, không lọc class_id/room.
+  // Tổng chuyên cần hợp nhất qua mọi lịch cùng bài; không ghép chuỗi qua phiên.
+  // Dùng user_id để một HS có mặt ở nhiều phiên chỉ được tính một lần.
+  const lessonKey = (code: string, learnNumber: number) => JSON.stringify([code.toLowerCase(), Number(learnNumber)]);
+  const lessonTotals = new Map<string, { added: Set<number>; attended: Set<number> }>();
+  const lessonByWindow = new Map(windows.map((window) => [window.key, lessonKey(window.calendar.code, window.calendar.learn_number)]));
+  for (const student of enrollments) {
+    rememberCalendarStudent(student);
+    const key = lessonByWindow.get(student.window_id)!;
+    const total = lessonTotals.get(key) || { added: new Set<number>(), attended: new Set<number>() };
+    total.added.add(student.user_id);
+    lessonTotals.set(key, total);
+  }
   const enrolledKeys = new Set(enrollments.map((student) => student.window_id));
   const activeWindows = windows.filter((window) => enrolledKeys.has(window.key) && window.from < window.to);
   const identity = (code: string, learnNumber: number) => JSON.stringify([code.toLowerCase(), learnNumber]);
@@ -295,40 +335,102 @@ const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, gro
       if (matches) matches.push(window);
       else byProgram.set(key, [window]);
     }
-    const programs = [...byProgram.values()].map(([window]) => Prisma.sql`(${window.calendar.code}, ${window.calendar.learn_number})`);
     const counter = createAttendanceCounter(roster);
-    // Quét chung cho các chương trình trùng giờ; chia theo giờ để giới hạn
-    // bộ nhớ mà không đọc lặp dải thời gian. Giữ chuỗi status qua các phần đọc.
+    const chunks: Array<{ from: Date; to: Date }> = [];
     for (let from = group.from.getTime(); from < group.to.getTime(); from += 3_600_000) {
-      const to = Math.min(from + 3_600_000, group.to.getTime());
-      const logs = await client.$queryRaw<LogActivity[]>(Prisma.sql`
-        SELECT id AS activity_id, created_at, status, username, code, learn_number,
-               TRIM(SUBSTRING_INDEX(name, ' - ', 1)) AS student_hmid
-        FROM users_logs
-        WHERE created_at >= ${new Date(from)} AND created_at < ${new Date(to)}
-          AND (code, learn_number) IN (${Prisma.join(programs)})
-      `);
-      const activities: ReportActivity[] = [];
-      for (const activity of logs) {
-        for (const window of byProgram.get(identity(activity.code, Number(activity.learn_number))) || []) {
-          // Vẫn xét đúng biên giờ của từng phiên, không ghép chuỗi qua phiên khác.
-          if (activity.created_at >= window.from && activity.created_at < window.to) {
-            activities.push({ ...activity, window_id: window.key });
+      chunks.push({ from: new Date(from), to: new Date(Math.min(from + 3_600_000, group.to.getTime())) });
+    }
+    // Chỉ đọc chương trình còn có phiên trong từng khung giờ, không kéo log
+    // sau khi buổi đó kết thúc. Đọc tối đa hai phần song song, tiêu thụ đúng
+    // thứ tự để không thay đổi quy tắc hai heartbeat liên tiếp qua ranh giới giờ.
+    for (let offset = 0; offset < chunks.length; offset += 2) {
+      const batches = await Promise.all(chunks.slice(offset, offset + 2).map(async ({ from, to }) => {
+        const active = group.windows.filter((window) => window.from < to && window.to > from);
+        const programs = new Map(active.map((window) => [identity(window.calendar.code, window.calendar.learn_number),
+          Prisma.sql`(${window.calendar.code}, ${window.calendar.learn_number})`]));
+        if (!active.length) return [] as LogActivity[];
+        const windowsSql = active.map((window) => Prisma.sql`(
+          code = ${window.calendar.code} AND learn_number = ${window.calendar.learn_number}
+          AND created_at >= ${window.from > from ? window.from : from}
+          AND created_at < ${window.to < to ? window.to : to}
+        )`);
+        return client.$queryRaw<LogActivity[]>(Prisma.sql`
+          SELECT id AS activity_id, created_at, status, username, code, learn_number,
+                 TRIM(SUBSTRING_INDEX(name, ' - ', 1)) AS student_hmid
+          FROM users_logs
+          WHERE created_at >= ${from} AND created_at < ${to}
+            AND (code, learn_number) IN (${Prisma.join([...programs.values()])})
+            AND (${Prisma.join(windowsSql, ' OR ')})
+        `);
+      }));
+      for (const logs of batches) {
+        const activities: ReportActivity[] = [];
+        for (const activity of logs) {
+          for (const window of byProgram.get(identity(activity.code, Number(activity.learn_number))) || []) {
+            if (activity.created_at >= window.from && activity.created_at < window.to) activities.push({ ...activity, window_id: window.key });
           }
         }
+        counter.add(activities);
       }
-      counter.add(activities);
     }
-    counts.push(...counter.result());
+    // Chuyên cần kiểm tra riêng từng phiên, sau đó hợp nhất HS theo lịch/room.
+    // Không cộng số lượng giữa các phiên vì cùng một HS có thể học nhiều phiên.
+    for (const student of counter.attendedEnrollments()) {
+      rememberCalendarStudent(student, true);
+      lessonTotals.get(lessonByWindow.get(student.window_id)!)!.attended.add(student.user_id);
+    }
   }
-  // Buổi chưa bắt đầu/không có cửa sổ hợp lệ vẫn phải có tổng enrollment.
-  const activeKeys = new Set(activeWindows.map((window) => window.key));
-  counts.push(...countConsecutiveAttendance(enrollments.filter((student) => !activeKeys.has(student.window_id)), []));
-  return groupByRoom ? assembleRoomReport(windows, counts) : assembleProgramReport(windows, counts);
+  // Mỗi calendar chỉ sinh một dòng tổng hợp (hoặc một dòng cho mỗi room),
+  // kể cả EVG ngắt/kết nối lại và tạo nhiều live_session_id.
+  const calendarsById = new Map<number, ReportWindow>();
+  for (const window of windows) {
+    const previous = calendarsById.get(window.calendar.id);
+    if (!previous) {
+      calendarsById.set(window.calendar.id, { ...window, key: String(window.calendar.id) });
+    } else {
+      previous.session_id = null;
+      if (window.actual_start_time && (!previous.actual_start_time || window.actual_start_time < previous.actual_start_time)) previous.actual_start_time = window.actual_start_time;
+      if (window.actual_end_time && (!previous.actual_end_time || window.actual_end_time > previous.actual_end_time)) previous.actual_end_time = window.actual_end_time;
+    }
+  }
+  const counts: RoomCount[] = [];
+  for (const [calendarId, rooms] of calendarRooms) {
+    for (const [roomId, students] of rooms) counts.push({
+      window_id: String(calendarId), room_id: roomId,
+      added_students: students.added.size, attended_students: students.attended.size,
+    });
+  }
+  const calendarWindows = [...calendarsById.values()];
+  const rows = groupByRoom ? assembleRoomReport(calendarWindows, counts) : assembleProgramReport(calendarWindows, counts);
+  return rows.map((row): CalendarRoomReportRow => ({
+    ...row,
+    lesson_added_students: lessonTotals.get(lessonKey(row.code, row.learn_number))?.added.size || 0,
+    lesson_attended_students: lessonTotals.get(lessonKey(row.code, row.learn_number))?.attended.size || 0,
+  }));
 };
 
 type CalendarLister = (query: any) => Promise<{ total: number; data: ReportCalendar[] }>;
-export const getCalendarRoomReport = async (query: any, listCalendars: CalendarLister, exportAll = false, client = prisma) => {
+/** Fast first paint: only authorized calendar metadata; no attendance, sibling scan or EVG. */
+export const getCalendarRoomReportSchedules = async (query: any, listCalendars: CalendarLister) => {
+  if (query.group_by !== undefined && !['program', 'room'].includes(query.group_by)) throw new ApiError('Cách hiển thị báo cáo không hợp lệ', 400);
+  const page = Number(query.page ?? 1);
+  if (!Number.isSafeInteger(page) || page < 1) throw new ApiError('Trang báo cáo không hợp lệ', 400);
+  const result = await listCalendars({ ...query, page, limit: 20 });
+  return {
+    group_by: query.group_by === 'room' ? 'room' as const : 'program' as const,
+    total_schedules: result.total, page, limit: 20, rooms: [] as Array<number | null>,
+    data: result.data.map(calendar => ({
+      key: `${calendar.id}:pending`, calendar_id: calendar.id, code: calendar.code,
+      calendar_source: calendarSourceFromCode(calendar.code), learn_number: calendar.learn_number,
+      lesson_name: calendar.lesson_name || '', teacher: calendar.teacher || '', system_type: calendar.system_type || '', lesson_status: Number(calendar.lesson_status || 0),
+      scheduled_start_time: calendar.start_time.toISOString(), scheduled_end_time: calendar.end_time.toISOString(),
+      session_id: null, actual_start_time: null, actual_end_time: null, room_id: null, class_id: null,
+      attendance_status: 'pending' as const,
+      added_students: null, attended_students: null, lesson_added_students: null, lesson_attended_students: null,
+    })),
+  };
+};
+export const getCalendarRoomReport = async (query: any, listCalendars: CalendarLister, exportAll = false, client = prisma, loadRecordings = loadEvgRecordingTimes) => {
   if (query.group_by !== undefined && !['program', 'room'].includes(query.group_by)) throw new ApiError('Cách hiển thị báo cáo không hợp lệ', 400);
   const groupByRoom = query.group_by === 'room' || query.room_id !== undefined;
   const roomId = query.room_id === undefined ? undefined : query.room_id === 'unassigned' ? null : Number(query.room_id);
@@ -338,20 +440,79 @@ export const getCalendarRoomReport = async (query: any, listCalendars: CalendarL
   if (!Number.isSafeInteger(page) || page < 1) throw new ApiError('Trang báo cáo không hợp lệ', 400);
   const first = await listCalendars({ ...query, page, limit });
   if (exportAll && first.total > 2000) throw new ApiError('Báo cáo Excel tối đa 2.000 buổi. Vui lòng thu hẹp bộ lọc.', 400);
+  // Lọc ngày/ID/trang chỉ quyết định dòng được hiển thị. Cột tổng cần cả
+  // các lịch cùng code + số bài ngoài bộ lọc (ví dụ lịch 1 ở ngày khác).
+  // Dùng lại lister có kiểm tra quyền; không đọc lịch của chương trình khác.
+  const cachedRows = new Map<number, CalendarRoomReportRow[]>();
+  const displayedCalendars = new Map<number, ReportCalendar>();
+  const loadRows = async (selected: ReportCalendar[]) => {
+    for (const calendar of selected) displayedCalendars.set(calendar.id, calendar);
+    const missing = selected.filter((calendar) => !cachedRows.has(calendar.id));
+    if (missing.length) {
+      const expanded = new Map(missing.map((calendar) => [calendar.id, calendar]));
+      const programs = new Map<string, Set<number>>();
+      for (const calendar of missing) {
+        const numbers = programs.get(calendar.code) || new Set<number>();
+        numbers.add(calendar.learn_number);
+        programs.set(calendar.code, numbers);
+      }
+      // code_exact lọc theo mã đề cương của lesson liên kết, có thể khác
+      // calendar.code. Tìm theo keyword rồi kiểm tra calendar.code chính xác;
+      // lister vẫn giữ nguyên giới hạn quyền chương trình của người dùng.
+      const programEntries = [...programs.entries()];
+      for (let offset = 0; offset < programEntries.length; offset += 2) {
+        const relatedCalendars = await Promise.all(programEntries.slice(offset, offset + 2).map(async ([code, numbers]) => {
+          const matches: ReportCalendar[] = [];
+          let relatedPage = 1;
+          let relatedTotal: number;
+          do {
+            const related = await listCalendars({
+              calendar_source: calendarSourceFromCode(code), keyword: code,
+              learn_numbers: [...numbers].join(','), page: relatedPage, limit: 300,
+            });
+            relatedTotal = related.total;
+            for (const calendar of related.data) {
+              if (calendar.code === code && numbers.has(Number(calendar.learn_number))) matches.push(calendar);
+            }
+            relatedPage++;
+          } while ((relatedPage - 1) * 300 < relatedTotal);
+          return matches;
+        }));
+        for (const calendar of relatedCalendars.flat()) expanded.set(calendar.id, calendar);
+      }
+      const calculated = await queryRoomReport([...expanded.values()], client, groupByRoom);
+      for (const calendar of expanded.values()) cachedRows.set(calendar.id, []);
+      for (const row of calculated) cachedRows.get(row.calendar_id)!.push(row);
+    }
+    return selected.flatMap((calendar) => cachedRows.get(calendar.id) || []);
+  };
   const rows: CalendarRoomReportRow[] = [];
-  rows.push(...await queryRoomReport(first.data, client, groupByRoom));
+  rows.push(...await loadRows(first.data));
   if (exportAll) {
     for (let nextPage = 2; (nextPage - 1) * limit < first.total; nextPage++) {
       const next = await listCalendars({ ...query, page: nextPage, limit });
-      rows.push(...await queryRoomReport(next.data, client, groupByRoom));
+      rows.push(...await loadRows(next.data));
     }
   }
+  const recordingTimes = query.include_recordings === false || query.include_recordings === 'false'
+    ? new Map<number, LiveRecordingTimes>() : await loadRecordings([...displayedCalendars.values()]);
+  for (const row of rows) row.live_recording = recordingTimes.get(row.calendar_id);
   return {
     group_by: groupByRoom ? 'room' as const : 'program' as const,
     total_schedules: first.total, page, limit,
     rooms: Array.from(new Set(rows.map((row) => row.room_id))).sort((left, right) => (left || 0) - (right || 0)),
     data: roomId === undefined ? rows : rows.filter((row) => row.room_id === roomId),
   };
+};
+
+export const getCalendarRoomReportLiveTimes = async (query: any, listCalendars: CalendarLister, loadRecordings = loadEvgRecordingTimes) => {
+  const ids = [...new Set(String(query.calendar_ids ?? '').split(',').filter(Boolean).map(Number))];
+  if (!ids.length || ids.length > 300 || ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) throw new ApiError('Cần chọn từ 1 đến 300 lịch hợp lệ', 400);
+  // Dùng lister có phân quyền; chỉ đọc lịch đang hiển thị, không quét users_logs.
+  const selected = await listCalendars({ ...query, calendar_ids: ids.join(','), page: 1, limit: 300 });
+  const calendars = selected.data.filter((calendar) => ids.includes(calendar.id));
+  const times = await loadRecordings(calendars);
+  return calendars.map((calendar) => ({ calendar_id: calendar.id, live_recording: times.get(calendar.id) }));
 };
 
 export const buildCalendarRoomReportWorkbook = (rows: CalendarRoomReportRow[], groupBy: 'program' | 'room' = 'program') => {
@@ -367,15 +528,27 @@ export const buildCalendarRoomReportWorkbook = (rows: CalendarRoomReportRow[], g
     'HS học': row.attended_students, 'Tổng HS được thêm': row.added_students,
     'Tỷ lệ học (%)': row.added_students ? Math.round(row.attended_students * 1000 / row.added_students) / 10 : 0,
     'Trạng thái buổi': row.lesson_status === 1 ? 'Nghỉ/Hủy' : 'Bình thường',
-  })), { header: ['Hệ thống', 'Chương trình', 'Buổi học', 'Tên bài', 'Giáo viên', ...(groupBy === 'room' ? ['Room'] : []), 'Ngày live', 'Khung giờ', 'HS học', 'Tổng HS được thêm', 'Tỷ lệ học (%)', 'Trạng thái buổi'] });
-  const columnCount = groupBy === 'room' ? 12 : 11;
+    'Tổng HS học / Tổng HS được thêm': `${row.lesson_attended_students} / ${row.lesson_added_students}`,
+    'Tỷ lệ tổng HS học (%)': row.lesson_added_students ? Math.round(row.lesson_attended_students * 1000 / row.lesson_added_students) / 10 : 0,
+    'Khung giờ live thật': (() => {
+      const range = summarizeLiveRecordingRanges(row.live_recording?.ranges || []);
+      if (!range) return row.live_recording?.status === 'error' ? 'Không tải được dữ liệu EVG' : 'Chưa có dữ liệu';
+      const endDay = range.end_time.slice(0, 10) !== range.start_time.slice(0, 10) ? ` (${liveDate(range.end_time)})` : '';
+      return `${range.start_time.slice(11, 16)} - ${range.end_time.slice(11, 16)}${endDay}`;
+    })(),
+  })), { header: ['Hệ thống', 'Chương trình', 'Buổi học', 'Tên bài', 'Giáo viên', ...(groupBy === 'room' ? ['Room'] : []), 'Ngày live', 'Khung giờ', 'HS học', 'Tổng HS được thêm', 'Tỷ lệ học (%)', 'Trạng thái buổi', 'Tổng HS học / Tổng HS được thêm', 'Tỷ lệ tổng HS học (%)', 'Khung giờ live thật'] });
+  const columnCount = groupBy === 'room' ? 15 : 14;
   for (let index = 0; index < rows.length; index++) {
-    const cell = sheet[XLSX.utils.encode_cell({ r: index + 1, c: columnCount - 2 })];
+    const cell = sheet[XLSX.utils.encode_cell({ r: index + 1, c: columnCount - 5 })];
     cell.z = 'General';
   }
-  const widths = [12, 26, 9, 50, 26, ...(groupBy === 'room' ? [10] : []), 14, 18, 10, 13, 12, 18];
+  const widths = [12, 26, 9, 50, 26, ...(groupBy === 'room' ? [10] : []), 14, 18, 10, 13, 12, 18, 24, 14, 32];
   sheet['!cols'] = widths.map((wch) => ({ wch }));
-  sheet['!rows'] = [{ hpt: 34 }];
+  sheet['!rows'] = [{ hpt: 46 }];
+  rows.forEach((row, index) => {
+    sheet[XLSX.utils.encode_cell({ r: index + 1, c: columnCount - 1 })].s = { alignment: { wrapText: true, vertical: 'center' } };
+    sheet['!rows']![index + 1] = { hpt: 20 };
+  });
   for (let column = 0; column < columnCount; column++) {
     sheet[XLSX.utils.encode_cell({ r: 0, c: column })].s = {
       font: { bold: true, color: { rgb: 'FFFFFF' } },
@@ -388,10 +561,12 @@ export const buildCalendarRoomReportWorkbook = (rows: CalendarRoomReportRow[], g
   const guide = XLSX.utils.aoa_to_sheet([
     ['Quy ước', 'Diễn giải'],
     ['Ngày live / Khung giờ', 'Ngày và giờ bắt đầu - kết thúc theo lịch học, giữ nguyên giờ Việt Nam trong dữ liệu lịch.'],
+    ['Khung giờ live thật', 'Lấy start_on / finish_on từ bản ghi MP4 EVG qua evg_stream của lịch. Chọn bản ghi bắt đầu đúng ngày lịch, giữ giờ Việt Nam, gộp giờ bắt đầu sớm nhất và kết thúc muộn nhất theo HH:mm; ghi thêm ngày nếu kết thúc qua nửa đêm. Thiếu/lỗi dữ liệu để trống giờ, không lấy giờ dự kiến hoặc webhook thay thế.'],
     ['HS học', 'Có ít nhất 2 ghi nhận chuyên cần liên tiếp, mỗi 5 phút (~10 phút học); join lại sẽ ngắt chuỗi. Nếu thiếu giờ thực tế, dùng khung giờ lịch.'],
-    ['Tổng HS được thêm', 'Danh sách enrollment hiện có của chương trình + buổi, loại giáo viên/trợ giảng.'],
-    ['Phạm vi', groupBy === 'room' ? 'Hiển thị từng room, áp dụng bộ lọc room đã chọn. Room theo lịch sử chia của đúng buổi.' : 'Gộp tất cả room và học sinh chưa chia room của chương trình trong buổi học.'],
-    ['Tổng hợp', groupBy === 'room' ? 'Một dòng cho mỗi room trong một phiên học. Số HS có thể lặp giữa các phiên học.' : 'Một dòng cho mỗi chương trình trong một phiên học. Số HS có thể lặp giữa các phiên học.'],
+    ['HS học / Tổng HS được thêm', 'Chỉ tính học sinh có class_id đúng code + ngày Excel + số bài + room của lịch; dùng lịch sử phân lớp của calendar khi đã chia lại. Loại giáo viên/trợ giảng.'],
+    ['Tổng HS học / Tổng HS được thêm', 'Toàn bộ roster hiện có cùng chương trình + số bài, gồm lịch 1 và lịch 2; không lọc class_id/room. Hợp nhất HS đủ chuyên cần qua tất cả các lịch cùng chương trình + số bài, kể cả lịch ngoài trang/bộ lọc ngày. Mỗi HS chỉ tính một lần; không ghép chuỗi chuyên cần giữa các phiên. Loại giáo viên/trợ giảng.'],
+    ['Phạm vi', groupBy === 'room' ? 'Hiển thị từng room, áp dụng bộ lọc room đã chọn. Room theo lịch sử chia của đúng buổi.' : 'Gộp các room của học sinh thuộc đúng lịch theo class_id hoặc lịch sử phân lớp.'],
+    ['Tổng hợp', groupBy === 'room' ? 'Một dòng cho mỗi lịch + room, hợp nhất HS học qua các phiên EVG và không đếm trùng.' : 'Một dòng cho mỗi lịch, hợp nhất HS học qua các phiên EVG và không đếm trùng.'],
   ]);
   guide['!cols'] = [{ wch: 24 }, { wch: 100 }];
   guide['!rows'] = [{ hpt: 28 }];

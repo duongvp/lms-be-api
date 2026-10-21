@@ -175,6 +175,10 @@ async function main() {
   // Thêm một vài permission đặc thù (nếu cần)
   // Ví dụ: duyệt, hủy, bắt đầu, kết thúc...
   permissionsData.push(
+    { code: 'calendar.report.detail.view', name: 'Xem báo cáo chi tiết buổi học', description: 'Danh sách và chuyên cần từng học sinh theo lịch' },
+    { code: 'calendar.report.chat.view', name: 'Xem chat trong báo cáo', description: 'Nội dung chat được lưu theo buổi học' },
+    { code: 'calendar.report.moderation.view', name: 'Xem kiểm duyệt trong báo cáo', description: 'Bản ghi hạn chế và ẩn/khôi phục chat' },
+    { code: 'calendar.report.detail.export', name: 'Xuất báo cáo chi tiết', description: 'Yêu cầu thêm quyền xem và calendar.export' },
     { code: 'users.reset_password', name: 'Đặt lại mật khẩu', description: 'Cho phép đặt lại mật khẩu người dùng' },
     { code: 'teacher_profile.status', name: 'Thay đổi trạng thái nhân sự', description: 'Kích hoạt hoặc vô hiệu hóa nhân sự giảng dạy' },
     { code: 'calendar.teacher.manage', name: 'Quản lý phân công', description: 'Gán, thay đổi hoặc gỡ giáo viên và trợ giảng trong lịch học' },
@@ -237,7 +241,8 @@ async function main() {
       permissions: allPermissions
         .filter(p => (
           (
-            !p.code.includes('.delete')
+            !p.code.startsWith('calendar.report.')
+            && !p.code.includes('.delete')
             && !p.code.includes('.import')
             && !p.code.includes('.export')
           )
@@ -263,7 +268,7 @@ async function main() {
       },
       permissions: allPermissions
         .filter(p =>
-          p.code.startsWith('calendar.') ||
+          (p.code.startsWith('calendar.') && !p.code.startsWith('calendar.report.')) ||
           p.code === 'lessons.view' ||
           p.code.startsWith('quiz.') ||
           p.code.startsWith('stream.') ||

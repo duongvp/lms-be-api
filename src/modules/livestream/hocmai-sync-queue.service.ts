@@ -73,8 +73,22 @@ const insertQueue = async (
     key: string;
     action: string;
     payload: unknown;
+    waitForCreate?: boolean;
   }
 ) => {
+  if (input.waitForCreate) {
+    // The external worker only consumes status=0. LMS releases status=4
+    // after the create job for this canceled key has actually succeeded.
+    await tx.$executeRaw`
+      INSERT INTO hocmai_sync_queue (
+        c_key, action, payload, status, operation_id, sequence_no
+      ) VALUES (
+        ${input.key}, ${input.action}, ${JSON.stringify(input.payload)},
+        4, ${input.operationId}, ${input.sequenceNo}
+      )
+    `;
+    return;
+  }
   await tx.$executeRaw`
     INSERT INTO hocmai_sync_queue (
       c_key,
@@ -121,7 +135,8 @@ const enqueueStatus = async (
   tx: TransactionClient,
   operationId: string,
   sequenceNo: number,
-  session: any
+  session: any,
+  waitForCreate = false
 ) => {
   const calendar = await loadCalendarForSync(tx, Number(session.id));
   if (calendarSourceFromCode(calendar.code) === 'feed') return false;
@@ -135,6 +150,7 @@ const enqueueStatus = async (
     sequenceNo,
     key,
     action: 'update-status-lesson',
+    waitForCreate,
     payload: {
       c_key: key,
       status: String(calendar.lesson_status ?? 0),
@@ -300,7 +316,6 @@ export const reconcileCalendarMappingsAndEnqueue = async (
 };
 
 /**
- * Tạo lại queue từ ảnh chụp dữ liệu calendar hiện tại. Hàm chỉ đọc calendar /
  * mapping và INSERT hocmai_sync_queue, không ghi hay chạm updated_at calendar.
  */
 export const enqueueCalendarsSyncBulk = async (
@@ -422,7 +437,7 @@ export const enqueueRescheduleSync = async (
       tx, operationId, sequenceNo++, 'create', canceledSession,
       { lesson_status: 0, lesson_noti: '' }
     );
-    await enqueueStatus(tx, operationId, sequenceNo++, canceledSession);
+    await enqueueStatus(tx, operationId, sequenceNo++, canceledSession, true);
     if (!result.created_session) {
       throw new Error('Thiếu lịch mới để tạo queue dời lịch HMO');
     }
@@ -435,7 +450,7 @@ export const enqueueRescheduleSync = async (
       tx, operationId, sequenceNo++, 'create', canceledSession,
       { lesson_status: 0, lesson_noti: '' }
     );
-    await enqueueStatus(tx, operationId, sequenceNo++, canceledSession);
+    await enqueueStatus(tx, operationId, sequenceNo++, canceledSession, true);
     for (const shiftedSession of result.shifted_sessions || []) {
       await enqueueCalendar(tx, operationId, sequenceNo++, 'update', shiftedSession);
     }

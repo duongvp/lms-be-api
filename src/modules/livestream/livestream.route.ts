@@ -273,6 +273,12 @@ router.post(
   livestreamController.resendToHocmai
 );
 router.post(
+  '/:id/hocmai-canceled-status/retry',
+  authorize(['calendar.update']),
+  authorizePrograms('calendar.update', calendarCodeById),
+  livestreamController.retryCanceledHocmaiStatus
+);
+router.post(
   '/students/sync',
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),

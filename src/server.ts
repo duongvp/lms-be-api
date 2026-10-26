@@ -7,6 +7,7 @@ import { startCalendarSheetExportWorker } from './modules/livestream/calendar-sh
 import { startCalendarAttendanceSyncWorker } from './modules/livestream/calendar-attendance-sync.worker';
 import { startCalendarTeachingUserSyncWorker } from './modules/livestream/calendar-teaching-user-sync.worker';
 import { startCalendarStudentSyncWorker } from './modules/livestream/calendar-student-sync.worker';
+import { startCanceledStatusGate } from './modules/livestream/hocmai-canceled-status.worker';
 
 const PORT = process.env.PORT || 5000;
 
@@ -20,7 +21,9 @@ const stopCalendarSheetExportWorker = startCalendarSheetExportWorker();
 const stopCalendarAttendanceSyncWorker = startCalendarAttendanceSyncWorker();
 const stopCalendarTeachingUserSyncWorker = startCalendarTeachingUserSyncWorker();
 const stopCalendarStudentSyncWorker = startCalendarStudentSyncWorker();
+const stopCanceledStatusGate = startCanceledStatusGate();
 const shutdown = () => {
+  stopCanceledStatusGate();
   stopCalendarStudentSyncWorker();
   stopCalendarTeachingUserSyncWorker();
   stopCalendarAttendanceSyncWorker();

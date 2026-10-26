@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import * as livestreamService from './livestream.service';
+import { retryCanceledCalendarStatus } from './hocmai-canceled-status.service';
 import { assertLivestreamCalendarSource, calendarSourceFromCode } from './calendar-source';
 import FieldPermissionService from '../roles/field-permission.service';
 import { calendarSheetExportTask } from './calendar-sheet-export.service';
@@ -188,6 +189,15 @@ export const resendToHocmai = async (req: Request, res: Response): Promise<void>
     });
   } catch (err: any) {
     conflictErrorResponse(res, err);
+  }
+};
+
+export const retryCanceledHocmaiStatus = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await retryCanceledCalendarStatus(req.params.id);
+    res.status(200).json({ success: true, data: result });
+  } catch (error: any) {
+    conflictErrorResponse(res, error);
   }
 };
 

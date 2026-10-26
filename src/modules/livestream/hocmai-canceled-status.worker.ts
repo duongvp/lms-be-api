@@ -16,7 +16,7 @@ export const createCanceledStatusCheck = (release = releaseReadyCanceledStatuses
 
 let started = false;
 export const startCanceledStatusGate = () => {
-  if (started || process.env.HOCMAI_CANCELED_STATUS_GATE_ENABLED === 'false') return () => {};
+  if (started) return () => {};
   started = true;
   let stopped = false;
   let timer: NodeJS.Timeout | undefined;

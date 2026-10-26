@@ -301,7 +301,7 @@ export const swapSessionTimes = async (req: Request, res: Response, next: NextFu
     const result = await livestreamService.swapSessionTimes(req.body, getChangeActor(req));
     res.status(200).json({ success: true, data: result });
   } catch (err: any) {
-    res.status(400).json({ success: false, message: err.message });
+    conflictErrorResponse(res, err);
   }
 };
 

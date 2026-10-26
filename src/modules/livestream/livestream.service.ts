@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { assertCalendarSourceUnchanged, calendarSourceFromCode, resolveCalendarSource } from './calendar-source';
 import { calendarTimeNotification } from './calendar-time-notification';
+import { swapTimeValue } from './calendar-swap-time';
 import { Prisma } from '@prisma/client';
 import ApiError from '../../utils/ApiError';
 import prisma from '../../lib/prisma';
@@ -1179,6 +1180,7 @@ const describeConflictSchedule = (schedule: {
 };
 
 export type ScheduleConflict = {
+  swap_target?: { label: 'A' | 'B'; id: number; start_time: Date; end_time: Date };
   calendar_source?: string;
   id: number;
   code: string | null;
@@ -1478,6 +1480,39 @@ export const validateBulkScheduleConflicts = async (
   if (conflicts.size) throw new ScheduleConflictError(Array.from(conflicts.values()).sort(
     (left, right) => left.start_time.getTime() - right.start_time.getTime() || left.id - right.id
   ));
+};
+
+/** Report each swap conflict against the schedule being moved, including both A and B. */
+export const validateSwapScheduleConflicts = async (
+  candidates: [BulkConflictCandidate, BulkConflictCandidate],
+  client: any = prisma
+) => {
+  const conflicts: ScheduleConflict[] = [];
+  const collect = (error: unknown, target: BulkConflictCandidate, index: number, internal = false) => {
+    if (!(error instanceof ScheduleConflictError)) throw error;
+    for (const conflict of error.conflicts) {
+      // Internal validation lists both schedules. For A, the conflicting schedule is B.
+      if (internal && conflict.id === target.id) continue;
+      conflicts.push({ ...conflict, swap_target: {
+        label: index === 0 ? 'A' : 'B', id: target.id,
+        start_time: target.start_time, end_time: target.end_time,
+      } });
+    }
+  };
+  try {
+    validateBulkFinalStateConflicts(candidates);
+  } catch (error) {
+    candidates.forEach((target, index) => collect(error, target, index, true));
+  }
+  for (const [index, target] of candidates.entries()) {
+    try {
+      await checkConflict({ ...target, code: target.code ?? undefined,
+        ignoredIds: candidates.map(item => item.id), client });
+    } catch (error) {
+      collect(error, target, index);
+    }
+  }
+  if (conflicts.length) throw new ScheduleConflictError(conflicts);
 };
 
 
@@ -2475,13 +2510,6 @@ export const rescheduleSession = async (
   )
 ));
 
-const swapTimeValue = (value: unknown, fallback: Date, label: string) => {
-  if (value === undefined || value === null || value === '') return new Date(fallback);
-  const parsed = new Date(String(value));
-  if (Number.isNaN(parsed.getTime())) throw new Error(`${label} không hợp lệ`);
-  return parsed;
-};
-
 /** Hoán đổi vị trí thời gian của hai buổi, giữ nguyên toàn bộ nội dung và phân công. */
 export const swapSessionTimes = async (
   payload: any,
@@ -2512,31 +2540,19 @@ export const swapSessionTimes = async (
       const firstEnd = swapTimeValue(payload?.first_end_time, second.end_time, 'Giờ kết thúc lịch thứ nhất');
       const secondStart = swapTimeValue(payload?.second_start_time, first.start_time, 'Giờ bắt đầu lịch thứ hai');
       const secondEnd = swapTimeValue(payload?.second_end_time, first.end_time, 'Giờ kết thúc lịch thứ hai');
-      const ignoredIds = [firstId, secondId];
 
-      const finalSessions: BulkConflictCandidate[] = [
+      const finalSessions: [BulkConflictCandidate, BulkConflictCandidate] = [
         { ...first, assistant_teacher: (first as any).assistant_teacher, start_time: firstStart, end_time: firstEnd },
         { ...second, assistant_teacher: (second as any).assistant_teacher, start_time: secondStart, end_time: secondEnd },
       ];
-      validateBulkFinalStateConflicts(finalSessions);
-      for (const session of finalSessions) {
-        await checkConflict({
-          calendar_source: calendarSourceFromCode(session.code),
-          teacher: session.teacher,
-          assistant_teacher: session.assistant_teacher,
-          code: session.code || undefined,
-          start_time: session.start_time,
-          end_time: session.end_time,
-          ignoredIds,
-          client: tx,
-        });
-      }
+      await validateSwapScheduleConflicts(finalSessions, tx);
 
       const operationId = crypto.randomUUID();
       const reason = String(payload?.reason || 'Hoán đổi lịch học').trim().slice(0, 500);
       const updatedFirst = await updateCalendarRecord(tx, firstId, {
         start_time: firstStart,
         end_time: firstEnd,
+        lesson_noti: reason,
       });
       const updatedSecond = await updateCalendarRecord(tx, secondId, {
         start_time: secondStart,

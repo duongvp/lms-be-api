@@ -156,3 +156,56 @@ test('trong lô có cặp hợp lệ vẫn chặn lịch thứ ba khác bài và
     return true;
   });
 });
+
+test('thông báo lệch giờ kết thúc nêu rõ cả hai giờ như trường hợp 21:30–22:30 và 21:30–23:30', async () => {
+  await assert.rejects(check({
+    allow_shared_staff_schedule: true, start_time: at('21:30'), end_time: at('22:30'),
+  }, [{ ...existing, start_time: at('21:30'), end_time: at('23:30') }]), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    assert.match(error.message, /Đã bật cho phép trùng nhưng chưa đủ điều kiện/);
+    assert.match(error.message, /Giờ kết thúc không khớp: lịch đang thao tác 02\/11\/2026 22:30; lịch đối chiếu 02\/11\/2026 23:30/);
+    assert.doesNotMatch(error.message, /Giờ bắt đầu không khớp|Tên bài không khớp/);
+    assert.equal(error.conflicts[0].shared_schedule_mismatch?.length, 1);
+    return true;
+  });
+});
+
+test('thông báo liệt kê đầy đủ tên bài, giờ bắt đầu và giờ kết thúc chưa khớp', async () => {
+  await assert.rejects(check({
+    allow_shared_staff_schedule: true, lesson_name: 'Bài mới', start_time: at('08:30'), end_time: at('10:30'),
+  }), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    assert.match(error.message, /Tên bài không khớp: lịch đang thao tác “Bài mới”; lịch đối chiếu “Phương trình bậc hai”/);
+    assert.match(error.message, /Giờ bắt đầu không khớp: lịch đang thao tác 02\/11\/2026 08:30; lịch đối chiếu 02\/11\/2026 08:00/);
+    assert.match(error.message, /Giờ kết thúc không khớp: lịch đang thao tác 02\/11\/2026 10:30; lịch đối chiếu 02\/11\/2026 10:00/);
+    return true;
+  });
+});
+
+test('thông báo cùng chương trình nêu rõ điều kiện khác chương trình', async () => {
+  await assert.rejects(check({ allow_shared_staff_schedule: true, code: existing.code }), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    assert.match(error.message, /Hai lịch cùng chương trình “PROGRAM-B”/);
+    return true;
+  });
+});
+
+test('khi không bật tùy chọn, giữ thông báo trùng thông thường', async () => {
+  await assert.rejects(check(), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    assert.doesNotMatch(error.message, /Đã bật cho phép trùng|không khớp/);
+    assert.equal(error.conflicts[0].shared_schedule_mismatch, undefined);
+    return true;
+  });
+});
+
+test('sửa hàng loạt nêu đúng giờ của lịch đang thao tác và lịch đối chiếu trong lô', () => {
+  const left = { ...bulkCandidates[0], end_time: at('09:30') };
+  const right = bulkCandidates[1];
+  assert.throws(() => validateBulkFinalStateConflicts([left, right], sharedOptions), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    const rightConflict = error.conflicts.find(item => item.id === right.id)!;
+    assert.match(rightConflict.shared_schedule_mismatch!.join('\n'), /Giờ kết thúc không khớp: lịch đang thao tác 02\/11\/2026 09:30; lịch đối chiếu 02\/11\/2026 10:00/);
+    return true;
+  });
+});

@@ -1192,6 +1192,7 @@ export type ScheduleConflict = {
   end_time: Date;
   staff_type: 'teacher' | 'assistant' | 'course';
   username: string;
+  shared_schedule_mismatch?: string[];
 };
 
 export class ScheduleConflictError extends Error {
@@ -1201,6 +1202,9 @@ export class ScheduleConflictError extends Error {
     const lines = conflicts.map((conflict) => (
       `• ${conflict.staff_type === 'course' ? 'Khóa học' : conflict.staff_type === 'teacher' ? 'Giáo viên' : 'Trợ giảng'} “${conflict.username}”: `
       + describeConflictSchedule(conflict)
+      + (conflict.shared_schedule_mismatch?.length
+        ? `\n  Đã bật cho phép trùng nhưng chưa đủ điều kiện:\n${conflict.shared_schedule_mismatch.map((reason) => `  - ${reason}`).join('\n')}`
+        : '')
     ));
     super(`Lịch đang cập nhật bị trùng với ${conflicts.length} lịch:\n${lines.join('\n')}`);
     this.name = 'ScheduleConflictError';
@@ -1247,6 +1251,35 @@ const isSharedStaffSession = (
   && scheduleMinute(left.start_time) === scheduleMinute(right.start_time)
   && scheduleMinute(left.end_time) === scheduleMinute(right.end_time);
 
+// Explain rejected opt-in requests without changing conflict eligibility.
+const sharedStaffMismatchReasons = (
+  requested: SharedStaffSchedule,
+  existing: SharedStaffSchedule,
+  options: SharedStaffScheduleOptions
+): string[] | undefined => {
+  if (options.allow_shared_staff_schedule !== true) return undefined;
+  const reasons: string[] = [];
+  if (!requested.code || !existing.code) {
+    reasons.push('Thiếu mã chương trình để đối chiếu buổi học chung.');
+  } else if (requested.code === existing.code) {
+    reasons.push(`Hai lịch cùng chương trình “${requested.code}”; chỉ cho phép buổi học chung giữa các chương trình khác nhau.`);
+  }
+  const requestedTitle = normalizeSharedLessonTitle(requested.lesson_name);
+  const existingTitle = normalizeSharedLessonTitle(existing.lesson_name);
+  if (!requestedTitle || !existingTitle) {
+    reasons.push('Thiếu tên bài học; cần có tên bài ở cả hai lịch để đối chiếu.');
+  } else if (requestedTitle !== existingTitle) {
+    reasons.push(`Tên bài không khớp: lịch đang thao tác “${requested.lesson_name}”; lịch đối chiếu “${existing.lesson_name}”.`);
+  }
+  if (scheduleMinute(requested.start_time) !== scheduleMinute(existing.start_time)) {
+    reasons.push(`Giờ bắt đầu không khớp: lịch đang thao tác ${formatScheduleDateTime(requested.start_time)}; lịch đối chiếu ${formatScheduleDateTime(existing.start_time)}.`);
+  }
+  if (scheduleMinute(requested.end_time) !== scheduleMinute(existing.end_time)) {
+    reasons.push(`Giờ kết thúc không khớp: lịch đang thao tác ${formatScheduleDateTime(requested.end_time)}; lịch đối chiếu ${formatScheduleDateTime(existing.end_time)}.`);
+  }
+  return reasons;
+};
+
 // 1.3 & 5 Kiểm tra trùng lặp
 export const checkConflict = async ({
   calendar_source,
@@ -1285,6 +1318,9 @@ export const checkConflict = async ({
   const isSharedSession = (session: SharedStaffSchedule) => isSharedStaffSession(
     { code, lesson_name, start_time, end_time }, session, { allow_shared_staff_schedule }
   );
+  const mismatchReasons = (session: SharedStaffSchedule) => sharedStaffMismatchReasons(
+    { code, lesson_name, start_time, end_time }, session, { allow_shared_staff_schedule }
+  );
 
   if (teacher) {
     const possibleTeacherConflicts = await client.calendar.findMany({
@@ -1313,6 +1349,7 @@ export const checkConflict = async ({
         end_time: session.end_time,
         staff_type: 'teacher' as const,
         username: teacher,
+        shared_schedule_mismatch: mismatchReasons(session),
       }));
     conflicts.push(...teacherConflicts);
   }
@@ -1355,6 +1392,7 @@ export const checkConflict = async ({
           end_time: session.end_time,
           staff_type: 'assistant',
           username,
+          shared_schedule_mismatch: mismatchReasons(session),
         });
       }
     }
@@ -1400,6 +1438,7 @@ export const checkConflict = async ({
       end_time: session.end_time,
       staff_type: 'course' as const,
       username: code,
+      shared_schedule_mismatch: mismatchReasons(session),
     })));
   }
   const uniqueConflicts = Array.from(new Map(
@@ -1442,6 +1481,7 @@ export const validateBulkFinalStateConflicts = (
         lesson_name: candidate.lesson_name ?? null,
         staff_type,
         username,
+        shared_schedule_mismatch: sharedStaffMismatchReasons(candidate === left ? right : left, candidate, options),
       });
     }
   };

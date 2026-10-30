@@ -716,6 +716,8 @@ const prepareCalendarCreateData = async (
   assertCalendarSourceUnchanged(data, input);
   const calendarSource = calendarSourceFromCode(data.code);
   delete data.calendar_source;
+  // Request-only opt-in; never persist it on calendar records.
+  delete data.allow_shared_staff_schedule;
   const skipTeacherProfileValidation = data.skip_teacher_profile_validation === true;
   delete data.skip_teacher_profile_validation;
   if (!skipTeacherProfileValidation) {
@@ -1222,8 +1224,31 @@ const timeRangesOverlap = (
 ) => scheduleMinute(leftStart) < scheduleMinute(rightEnd)
   && scheduleMinute(leftEnd) > scheduleMinute(rightStart);
 
+type SharedStaffScheduleOptions = { allow_shared_staff_schedule?: unknown };
+type SharedStaffSchedule = {
+  code?: string | null;
+  lesson_name?: string | null;
+  start_time: Date;
+  end_time: Date;
+};
+const normalizeSharedLessonTitle = (value: unknown) => typeof value === 'string'
+  ? value.normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase() : '';
+
+// Compare each pair independently; an unrelated overlap must still reject
+// the entire request, even when another pair is a valid shared session.
+const isSharedStaffSession = (
+  left: SharedStaffSchedule,
+  right: SharedStaffSchedule,
+  options: SharedStaffScheduleOptions
+) => options.allow_shared_staff_schedule === true
+  && Boolean(left.code && right.code && left.code !== right.code)
+  && Boolean(normalizeSharedLessonTitle(left.lesson_name))
+  && normalizeSharedLessonTitle(left.lesson_name) === normalizeSharedLessonTitle(right.lesson_name)
+  && scheduleMinute(left.start_time) === scheduleMinute(right.start_time)
+  && scheduleMinute(left.end_time) === scheduleMinute(right.end_time);
+
 // 1.3 & 5 Kiểm tra trùng lặp
-const checkConflict = async ({
+export const checkConflict = async ({
   calendar_source,
   teacher,
   assistant_teacher,
@@ -1233,6 +1258,8 @@ const checkConflict = async ({
   end_time,
   id,
   ignoredIds = [],
+  lesson_name,
+  allow_shared_staff_schedule,
   client = prisma,
 }: {
   calendar_source?: string,
@@ -1244,6 +1271,8 @@ const checkConflict = async ({
   end_time: Date,
   id?: number,
   ignoredIds?: number[],
+  lesson_name?: string | null,
+  allow_shared_staff_schedule?: unknown,
   client?: any,
 }) => {
   ensureValidTimeRange(start_time, end_time);
@@ -1253,6 +1282,9 @@ const checkConflict = async ({
     ...(id ? [id] : []),
   ].filter((value) => Number.isInteger(value) && value > 0)));
   const conflicts: ScheduleConflict[] = [];
+  const isSharedSession = (session: SharedStaffSchedule) => isSharedStaffSession(
+    { code, lesson_name, start_time, end_time }, session, { allow_shared_staff_schedule }
+  );
 
   if (teacher) {
     const possibleTeacherConflicts = await client.calendar.findMany({
@@ -1269,7 +1301,8 @@ const checkConflict = async ({
       }
     });
     const teacherConflicts: ScheduleConflict[] = possibleTeacherConflicts
-      .filter((session: any) => timeRangesOverlap(start_time, end_time, session.start_time, session.end_time))
+      .filter((session: any) => timeRangesOverlap(start_time, end_time, session.start_time, session.end_time)
+        && !isSharedSession(session))
       .map((session: any) => ({
         calendar_source: source,
         id: Number(session.id),
@@ -1309,6 +1342,7 @@ const checkConflict = async ({
     const assistantConflicts: ScheduleConflict[] = [];
     for (const session of overlappingSessions) {
       if (!timeRangesOverlap(start_time, end_time, session.start_time, session.end_time)) continue;
+      if (isSharedSession(session)) continue;
       const assigned = new Set(parseAssistantTeachers(session.assistant_teacher));
       for (const username of assistantTeachers.filter((item) => assigned.has(item))) {
         assistantConflicts.push({
@@ -1392,7 +1426,10 @@ const schedulesOverlap = (left: BulkConflictCandidate, right: BulkConflictCandid
 );
 
 /** Kiểm tra xung đột trên trạng thái cuối của cả lô, không dựa vào trạng thái tạm khi UPDATE tuần tự. */
-export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidate[]) => {
+export const validateBulkFinalStateConflicts = (
+  candidates: BulkConflictCandidate[],
+  options: SharedStaffScheduleOptions = {}
+) => {
   candidates.forEach((candidate) => ensureValidTimeRange(candidate.start_time, candidate.end_time));
   candidates = candidates.filter((candidate) => Number(candidate.lesson_status) !== 1);
   const conflicts = new Map<number, ScheduleConflict>();
@@ -1414,6 +1451,7 @@ export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidat
       const left = candidates[leftIndex];
       const right = candidates[rightIndex];
       if (calendarSourceFromCode(left.code) !== calendarSourceFromCode(right.code) || !schedulesOverlap(left, right)) continue;
+      if (isSharedStaffSession(left, right, options)) continue;
       if (left.teacher && right.teacher && left.teacher === right.teacher) {
         addPair(left, right, 'teacher', left.teacher);
       }
@@ -1425,6 +1463,7 @@ export const validateBulkFinalStateConflicts = (candidates: BulkConflictCandidat
       const left = candidates[leftIndex];
       const right = candidates[rightIndex];
       if (calendarSourceFromCode(left.code) !== calendarSourceFromCode(right.code) || !schedulesOverlap(left, right)) continue;
+      if (isSharedStaffSession(left, right, options)) continue;
       const rightAssistants = new Set(parseAssistantTeachers(right.assistant_teacher));
       const conflictAssistant = parseAssistantTeachers(left.assistant_teacher)
         .find((username) => rightAssistants.has(username));
@@ -1451,7 +1490,8 @@ export const validateBulkScheduleConflicts = async (
   candidates: BulkConflictCandidate[],
   ignoredIds: number[],
   client: any = prisma,
-  now = getVietnamWallClockDate()
+  now = getVietnamWallClockDate(),
+  options: SharedStaffScheduleOptions = {}
 ) => {
   // Lịch cũ có thể trùng từ trước. Khi sửa mapping HMO, không để xung đột
   // lịch sử chặn cập nhật; chỉ kiểm tra xung đột cho buổi chưa bắt đầu.
@@ -1465,14 +1505,17 @@ export const validateBulkScheduleConflicts = async (
     }
   };
   try {
-    validateBulkFinalStateConflicts(candidates);
+    validateBulkFinalStateConflicts(candidates, options);
   } catch (error) {
     collect(error);
   }
   for (const candidate of candidates) {
     if (Number(candidate.lesson_status) === 1) continue;
     try {
-      await checkConflict({ ...candidate, code: candidate.code ?? undefined, ignoredIds, client });
+      await checkConflict({
+        ...candidate, code: candidate.code ?? undefined, ignoredIds, client,
+        allow_shared_staff_schedule: options.allow_shared_staff_schedule,
+      });
     } catch (error) {
       collect(error);
     }
@@ -1535,6 +1578,8 @@ export const createSingle = async (data: any, changeActor?: CalendarChangeActor)
       code: calendarData.code,
       start_time: calendarData.start_time,
       end_time: calendarData.end_time,
+      lesson_name: calendarData.lesson_name,
+      allow_shared_staff_schedule: data.allow_shared_staff_schedule,
       client: tx,
     });
 
@@ -1868,6 +1913,8 @@ export const createBulk = async (config: any, changeActor?: CalendarChangeActor)
           code: calendarData.code,
           start_time: calendarData.start_time,
           end_time: calendarData.end_time,
+          lesson_name: calendarData.lesson_name,
+          allow_shared_staff_schedule: config.allow_shared_staff_schedule,
           client: tx,
         });
         const calendar = await createCalendarRecord(tx, calendarData);
@@ -4014,7 +4061,9 @@ export const updateBulk = async (
             end_time: endTime,
           };
         });
-        await validateBulkScheduleConflicts(finalCandidates, normalizedIds, tx);
+        await validateBulkScheduleConflicts(finalCandidates, normalizedIds, tx, undefined, {
+          allow_shared_staff_schedule: config.allow_shared_staff_schedule,
+        });
         const teamsEvents: Array<Parameters<typeof enqueueCalendarTeamsNotification>[1]> = [];
         const applyUpdates = async () => {
           for (const idStr of ids) {
@@ -4180,7 +4229,9 @@ export const updateBulk = async (
           end_time: endTime,
         });
       }
-      await validateBulkScheduleConflicts(finalCandidates, normalizedIds, tx);
+      await validateBulkScheduleConflicts(finalCandidates, normalizedIds, tx, undefined, {
+        allow_shared_staff_schedule: config.allow_shared_staff_schedule,
+      });
       const results: any[] = [];
       const teachingProfileCache = new Map<string, any[]>();
       const teamsEvents: Array<Parameters<typeof enqueueCalendarTeamsNotification>[1]> = [];

@@ -150,7 +150,7 @@ export const commitAutoSchedule = async (req: Request, res: Response, next: Next
   try {
     const preview = buildAutoSchedulePreview(req.body);
     const calendars = preview.calendars.map(({ auto_schedule, ...calendar }) => calendar);
-    const data = await livestreamService.createBulk({ calendars }, getChangeActor(req));
+    const data = await livestreamService.createBulk({ calendars, allow_shared_staff_schedule: req.body?.allow_shared_staff_schedule }, getChangeActor(req));
     res.status(201).json({ success: true, data: { ...preview, calendars: data } });
   } catch (error) {
     next(error);

@@ -30,6 +30,7 @@ type AutoScheduleBlock = Partial<AutoScheduleLesson> & {
 };
 
 export type AutoSchedulePayload = {
+  allow_shared_staff_schedule?: boolean;
   calendar_source?: CalendarSource;
   program_code: string;
   system_type: 'topclass' | 'topuni';

@@ -11,6 +11,8 @@
     "test:calendar-import:integration": "node tests/calendar-import.integration.js",
     "test:quiz": "tsx --test tests/quiz.validation.test.ts",
     "test:auto-schedule": "tsx --test tests/auto-schedule.test.ts",
+    "test:shared-staff-schedule": "node --import tsx tests/shared-staff-schedule.test.ts",
+    "test:shared-staff-schedule:integration": "node --import tsx tests/shared-staff-schedule.integration.ts",
     "test:calendar-user-sync": "tsx --test tests/calendar-user-sync.test.ts",
     "test:calendar-user-sync-cron": "tsx --test tests/calendar-teaching-user-sync-worker.test.ts",
     "test:calendar-attendance-cron": "tsx --test tests/calendar-attendance-sync-worker.test.ts",

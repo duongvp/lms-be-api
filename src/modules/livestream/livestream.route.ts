@@ -125,6 +125,7 @@ const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
       'mode',
       'course_end_time',
       'allow_past',
+      'allow_shared_staff_schedule',
     ].includes(field))
     .map((field) => {
       if (field === 'room') return 'channel_name';

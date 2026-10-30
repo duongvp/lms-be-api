@@ -1974,7 +1974,12 @@ export const createBulk = async (config: any, changeActor?: CalendarChangeActor)
         createdCalendars.push(calendar);
       } catch (error: any) {
         const lessonLabel = cal.lesson_name ? ` (${cal.lesson_name})` : '';
-        throw new Error(`Buổi ${index + 1}${lessonLabel}: ${error.message || 'Không thể tạo lịch học'}`);
+        const message = `Buổi ${index + 1}${lessonLabel}: ${error.message || 'Không thể tạo lịch học'}`;
+        if (error instanceof ScheduleConflictError) {
+          error.message = message;
+          throw error;
+        }
+        throw new Error(message);
       }
     }
 

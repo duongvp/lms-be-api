@@ -153,7 +153,11 @@ export const commitAutoSchedule = async (req: Request, res: Response, next: Next
     const data = await livestreamService.createBulk({ calendars, allow_shared_staff_schedule: req.body?.allow_shared_staff_schedule }, getChangeActor(req));
     res.status(201).json({ success: true, data: { ...preview, calendars: data } });
   } catch (error) {
-    next(error);
+    if (error instanceof livestreamService.ScheduleConflictError) {
+      conflictErrorResponse(res, error);
+    } else {
+      next(error);
+    }
   }
 };
 

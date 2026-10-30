@@ -118,6 +118,7 @@ global.fetch = async () => { throw new Error('External requests forbidden in int
       await controller.commitAutoSchedule({ body, user: { userId: 1, username: 'qa-admin' } } as any,
         res as any, ((value: any) => { error = value; }) as any);
       if (error) throw error;
+      if (response?.success === false) throw Object.assign(new Error(response.message), { conflicts: response.conflicts });
       return response;
     };
     await run('auto create: actual controller forwards flag into transactional bulk create', async () => {

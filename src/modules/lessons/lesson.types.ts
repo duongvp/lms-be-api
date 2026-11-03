@@ -1,4 +1,5 @@
 export interface LessonListQuery {
+  taught_status?: "taught" | "untaught";
   calendar_source?: 'livestream' | 'feed';
   page?: number;
   limit?: number;

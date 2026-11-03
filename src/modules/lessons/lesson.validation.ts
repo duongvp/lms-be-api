@@ -92,6 +92,10 @@ export const validateLessonListQuery = (query: any): LessonListQuery => {
 
   const sortBy = stringOrUndefined(query.sort_by);
   const sortOrder = stringOrUndefined(query.sort_order);
+  const taughtStatus = query.taught_status === '' ? undefined : query.taught_status;
+  if (taughtStatus !== undefined && taughtStatus !== 'taught' && taughtStatus !== 'untaught') {
+    throw new ApiError('taught_status chỉ hỗ trợ taught hoặc untaught', 400);
+  }
   const courseCode = stringOrUndefined(query.course_code);
   const subjectCode = stringOrUndefined(query.subject_code);
   if (sortBy && !SORTABLE_FIELDS.has(sortBy)) {
@@ -124,6 +128,7 @@ export const validateLessonListQuery = (query: any): LessonListQuery => {
     from_learn_number: fromLearnNumber,
     to_learn_number: toLearnNumber,
     keyword: stringOrUndefined(query.keyword),
+    taught_status: taughtStatus,
     calendar_source: query.calendar_source === undefined ? undefined : resolveCalendarSource(query.calendar_source),
     course_code: courseCode,
     status: optionalInteger(query.status, 'status'),

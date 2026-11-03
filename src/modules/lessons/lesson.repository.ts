@@ -137,6 +137,16 @@ const syncCalendarSlotsAfterLessonReorder = async (
 const syncCalendarFromLesson = async (tx: any, lessonId: bigint) =>
   syncCalendarsFromLessons(tx, [lessonId]);
 
+const pastLessonCalendarWhere = (query: LessonListQuery) => {
+  const source = query.calendar_source === undefined ? undefined : resolveCalendarSource(query.calendar_source);
+  const sourceClause = source === undefined ? '' : source === 'feed'
+    ? " AND calendar.code LIKE 'feed-%'"
+    : " AND calendar.code NOT LIKE 'feed-%'";
+  return `(calendar.session_id = lessons.id
+    OR (calendar.code = lessons.subject_code AND calendar.learn_number = lessons.learn_number))
+    AND calendar.start_time <= NOW()${sourceClause}`;
+};
+
 const buildWhere = (query: LessonListQuery) => {
   const clauses: string[] = ['status = ?'];
   const values: any[] = [query.status ?? 1];
@@ -164,6 +174,10 @@ const buildWhere = (query: LessonListQuery) => {
   if (query.to_learn_number !== undefined) {
     clauses.push('learn_number <= ?');
     values.push(query.to_learn_number);
+  }
+  if (query.taught_status) {
+    const exists = query.taught_status === 'taught' ? 'EXISTS' : 'NOT EXISTS';
+    clauses.push(`${exists} (SELECT 1 FROM calendar WHERE ${pastLessonCalendarWhere(query)})`);
   }
   if (query.keyword) {
     clauses.push('lesson_name LIKE ?');
@@ -196,10 +210,7 @@ export const findLessons = async (query: LessonListQuery) => {
       ) AS scheduled_count, (
         SELECT COUNT(*)
         FROM calendar
-        WHERE (calendar.session_id = lessons.id
-          OR (calendar.code = lessons.subject_code
-            AND calendar.learn_number = lessons.learn_number))
-          AND calendar.start_time <= NOW()${sourceClause}
+        WHERE ${pastLessonCalendarWhere(query)}
       ) AS past_scheduled_count`
     : `lessons.${LESSON_COLUMNS}`;
   const selectValues = values;
@@ -299,10 +310,10 @@ export const findLessonProgramByCode = async (programCode: string) => {
 
 export const findLessonCourseMappings = async (programCode: string) =>
   prisma.$queryRawUnsafe<any[]>(
-    `SELECT mapping.id, mapping.lesson_id, mapping.package_id, mapping.course_id,
+    `SELECT mapping.id, lesson.id AS lesson_id, mapping.package_id, mapping.course_id,
             lesson.learn_number, lesson.lesson_name
-     FROM lesson_course_mapping AS mapping
-     INNER JOIN lessons AS lesson ON lesson.id = mapping.lesson_id
+     FROM lessons AS lesson
+     LEFT JOIN lesson_course_mapping AS mapping ON lesson.id = mapping.lesson_id
      WHERE lesson.subject_code = ? AND lesson.status <> 0
      ORDER BY lesson.learn_number ASC, mapping.package_id ASC, mapping.course_id ASC`,
     programCode

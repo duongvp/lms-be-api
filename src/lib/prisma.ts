@@ -26,9 +26,25 @@ const buildDatabaseUrl = () => {
 
 const createPrismaClient = () => {
   const datasourceUrl = buildDatabaseUrl();
-  return datasourceUrl
+  const client = datasourceUrl
     ? new PrismaClient({ datasources: { db: { url: datasourceUrl } } })
     : new PrismaClient();
+  // Calendar behaves as physically removed for existing callers. Only lifecycle
+  // operations explicitly providing deleted_at may read/write deleted records.
+  client.$use(async (params, next) => {
+    if (params.model === "calendar" && [
+      "findUnique", "findUniqueOrThrow", "findFirst", "findFirstOrThrow",
+      "findMany", "count", "aggregate", "groupBy", "update", "updateMany",
+    ].includes(params.action)) {
+      params.args ??= {};
+      params.args.where ??= {};
+      if (!Object.prototype.hasOwnProperty.call(params.args.where, "deleted_at")) {
+        params.args.where.deleted_at = null;
+      }
+    }
+    return next(params);
+  });
+  return client;
 };
 
 const prisma = globalForPrisma.prisma ?? createPrismaClient();

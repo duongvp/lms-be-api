@@ -238,7 +238,7 @@ async function insert(job: AuditJob, allowed: string[] | null) {
       `;
       if (!uniqueIndexes.length) throw new ApiError('Bảng users thiếu ràng buộc duy nhất theo username/chương trình/buổi hoặc lớp. Chưa bổ sung dữ liệu; cần quản trị viên kiểm tra cấu trúc bảng.', 409);
       // Lock schedule identity while validating the snapshot and inserting.
-      await tx.$queryRaw(Prisma.sql`SELECT id FROM calendar WHERE id IN (${Prisma.join(job.ids)}) FOR SHARE`);
+      await tx.$queryRaw(Prisma.sql`SELECT id FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE id IN (${Prisma.join(job.ids)}) FOR SHARE`);
       await tx.$queryRaw(Prisma.sql`SELECT id FROM package_lesson_mapping WHERE \`key\` IN (${Prisma.join(job.targets.map(target => target.key))}) FOR SHARE`);
       const targets = await loadTargets(job.ids, tx);
       assertScope(targets, allowed);

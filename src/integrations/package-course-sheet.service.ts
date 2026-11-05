@@ -176,8 +176,8 @@ const downloadRows = async () => {
   return rowsByCourseId;
 };
 
-const getRowsByCourseId = async () => {
-  if (cache && cache.expiresAt > Date.now()) return cache.rowsByCourseId;
+const getRowsByCourseId = async (forceRefresh = false) => {
+  if (!forceRefresh && cache && cache.expiresAt > Date.now()) return cache.rowsByCourseId;
 
   try {
     // Nhiều request mở modal cùng lúc chỉ tạo một kết nối tới Google Sheet.
@@ -192,7 +192,7 @@ const getRowsByCourseId = async () => {
   } catch (error) {
     // Nếu sheet tạm thời lỗi, tiếp tục dùng snapshot gần nhất thay vì làm gián
     // đoạn tạo lịch. Lần khởi động đầu tiên vẫn bắt buộc đọc sheet thành công.
-    if (cache) return cache.rowsByCourseId;
+    if (!forceRefresh && cache) return cache.rowsByCourseId;
     throw error;
   } finally {
     refreshPromise = null;
@@ -213,8 +213,8 @@ export const resolvePackagesByCourseId = async (courseIdInput: unknown) => {
   return rows;
 };
 
-export const listPackageCoursesFromSheet = async () => (
-  Array.from((await getRowsByCourseId()).values())
+export const listPackageCoursesFromSheet = async (forceRefresh = false) => (
+  Array.from((await getRowsByCourseId(forceRefresh)).values())
     .flat()
     .sort((left, right) => (
       left.course_id.localeCompare(right.course_id, undefined, { numeric: true })

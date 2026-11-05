@@ -17,7 +17,7 @@ type CanceledCalendar = {
 const lockCalendar = async (tx: Tx, id: number) => {
   const rows = await tx.$queryRaw<CanceledCalendar[]>`
     SELECT id, \`key\`, code, lesson_status, lesson_noti
-    FROM calendar WHERE id = ${id} FOR UPDATE
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE id = ${id} FOR UPDATE
   `;
   return rows[0];
 };
@@ -148,7 +148,7 @@ export const releaseReadyCanceledStatuses = async (
   const candidates = await client.$queryRaw<Array<{ queue_id: number; calendar_id: number }>>`
     SELECT q.id AS queue_id, c.id AS calendar_id
     FROM hocmai_sync_queue AS q
-    JOIN calendar AS c ON c.\`key\` = q.c_key AND c.lesson_status = 1
+    JOIN calendar c ON c.deleted_at IS NULL AND c.\`key\` = q.c_key AND c.lesson_status = 1
     JOIN hocmai_sync_queue AS created ON created.id = COALESCE(
       CAST(JSON_UNQUOTE(JSON_EXTRACT(
         CASE WHEN JSON_VALID(q.payload) THEN q.payload ELSE '{}' END,

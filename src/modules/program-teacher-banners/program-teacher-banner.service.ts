@@ -81,7 +81,7 @@ const syncFutureStreams = async (
   UPDATE stream stream_row
   JOIN (
     SELECT DISTINCT calendar_row.code, calendar_row.learn_number
-    FROM calendar calendar_row
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
     JOIN teacher_profiles profile ON profile.id = ${teacherProfileId}
     WHERE calendar_row.code = ${programCode}
       AND calendar_row.start_time >= NOW()
@@ -155,7 +155,7 @@ export const getBannerOptions = async (programCode?: string, teacherProfileId?: 
     ? await prisma.$queryRaw<Array<{ code: string; subject_name: string | null }>>(Prisma.sql`
         SELECT calendar_row.code,
           COALESCE(MAX(lesson.subject_name), MAX(calendar_row.subject), calendar_row.code) subject_name
-        FROM calendar calendar_row
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         JOIN teacher_profiles profile ON profile.id = ${teacherProfileId}
           AND (
             LOWER(calendar_row.teacher) = LOWER(profile.username)
@@ -171,7 +171,7 @@ export const getBannerOptions = async (programCode?: string, teacherProfileId?: 
     : await prisma.$queryRaw<Array<{ code: string; subject_name: string | null }>>(Prisma.sql`
         SELECT calendar_row.code,
           COALESCE(MAX(lesson.subject_name), MAX(calendar_row.subject), calendar_row.code) subject_name
-        FROM calendar calendar_row
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         LEFT JOIN (
           SELECT subject_code, MAX(subject_name) subject_name
           FROM lessons WHERE status <> 0 GROUP BY subject_code
@@ -182,7 +182,7 @@ export const getBannerOptions = async (programCode?: string, teacherProfileId?: 
   const teachersRaw = programCode
     ? await prisma.$queryRaw<Array<{ id: bigint; username: string; display_name: string | null }>>(Prisma.sql`
         SELECT DISTINCT profile.id, profile.username, profile.display_name
-        FROM calendar calendar_row
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         JOIN teacher_profiles profile ON
           LOWER(calendar_row.teacher) = LOWER(profile.username)
           OR LOWER(calendar_row.teacher) = LOWER(profile.display_name)

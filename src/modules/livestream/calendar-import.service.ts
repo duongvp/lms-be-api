@@ -527,7 +527,7 @@ const validateDatabaseDuplicates = async (
       c.start_time,
       c.end_time
     FROM package_lesson_mapping plm
-    INNER JOIN calendar c ON c.\`key\` = plm.\`key\`
+    INNER JOIN calendar c ON c.deleted_at IS NULL AND c.\`key\` = plm.\`key\`
     WHERE c.start_time BETWEEN ${minStart} AND ${maxStart}
       AND c.end_time BETWEEN ${minEnd} AND ${maxEnd}
       AND (${Prisma.join(conditions, ' OR ')})
@@ -925,7 +925,7 @@ export const updateCalendarsFromSheet = async (
       await tx.$executeRawUnsafe(
         `UPDATE calendar
          SET ${assignments}, updated_at = CURRENT_TIMESTAMP
-         WHERE \`key\` IN (${keyPlaceholders})`,
+         WHERE deleted_at IS NULL AND \`key\` IN (${keyPlaceholders})`,
         ...caseValues,
         ...changedRows.map((update) => update.key)
       );

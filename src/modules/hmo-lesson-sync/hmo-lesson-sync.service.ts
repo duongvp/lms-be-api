@@ -277,7 +277,7 @@ const executeRun = async (runId: bigint) => {
         c.lesson_name, lcm.package_id, lcm.course_id,
         plm.lesson_id AS mapped_hmo_lesson_id,
         (c.start_time > NOW() AND COALESCE(c.lesson_status, 0) <> 1) AS is_target
-      FROM calendar c
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS c
       INNER JOIN lessons l ON l.id = c.session_id AND l.status <> 0
       LEFT JOIN teacher_profiles tp ON tp.username = c.teacher
       LEFT JOIN lesson_course_mapping lcm ON lcm.lesson_id = l.id

@@ -1,3 +1,4 @@
+import { CALENDAR_KEY_REUSE, calendarStoreAction } from './calendar-lifecycle';
 import { calendarSourceFromCode } from './calendar-source';
 import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
@@ -13,12 +14,18 @@ type RescheduleResult = {
 
 const MANUAL_QUEUE_SESSION_VARIABLE = '@lms_manual_hocmai_queue';
 
+export const hasValidHocmaiLessonMapping = (mapping: { lesson_id?: unknown }) => (
+  String(mapping.lesson_id ?? '').trim() !== ''
+);
+
 const parseDocuments = (value: unknown) => {
   if (!value) return [];
   if (Array.isArray(value)) return value;
 
+  let clean = String(value).trim() || '[]';
+  if (clean !== '[]' && !clean.endsWith(']')) clean += ']';
   try {
-    const parsed = JSON.parse(String(value));
+    const parsed = JSON.parse(clean);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -43,7 +50,7 @@ const loadCalendarForSync = async (
       lesson_status,
       lesson_document,
       lesson_noti
-    FROM calendar
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
     WHERE id = ${calendarId}
     LIMIT 1
   `;
@@ -62,8 +69,9 @@ const loadPackagesForKey = async (
   SELECT package_id, lesson_id
   FROM package_lesson_mapping
   WHERE \`key\` = ${key}
+    AND lesson_id IS NOT NULL AND TRIM(lesson_id) != ''
   ORDER BY id ASC
-`;
+`.then(mappings => mappings.filter(hasValidHocmaiLessonMapping));
 
 const insertQueue = async (
   tx: TransactionClient,
@@ -111,7 +119,7 @@ const insertQueue = async (
 const buildCalendarPayload = (
   calendar: any,
   mappings: Array<{ package_id: unknown; lesson_id: unknown }>,
-  action: 'update' | 'create'
+  action: 'update' | 'create' | 'restore'
 ) => ({
   c_key: String(calendar.key || ''),
   code: calendar.code || '',
@@ -165,7 +173,7 @@ const enqueueCalendar = async (
   tx: TransactionClient,
   operationId: string,
   sequenceNo: number,
-  action: 'update' | 'create',
+  action: 'update' | 'create' | 'restore',
   session: any,
   payloadOverrides: Record<string, unknown> = {}
 ) => {
@@ -178,12 +186,14 @@ const enqueueCalendar = async (
   // Calendar được phép tồn tại trước khi BA gán section lesson_id bên HMO.
   // Không tạo một job chắc chắn lỗi/đẩy packages rỗng trong trạng thái này.
   if (!mappings.length) return false;
+  const reuse = session[CALENDAR_KEY_REUSE];
+  const storeAction = await calendarStoreAction(tx, key, reuse ? 'restore' : action);
   await insertQueue(tx, {
     operationId,
     sequenceNo,
     key,
-    action,
-    payload: buildCalendarPayload({ ...calendar, ...payloadOverrides }, mappings, action),
+    action: storeAction,
+    payload: buildCalendarPayload({ ...calendar, ...payloadOverrides }, mappings, storeAction),
   });
   return true;
 };
@@ -340,7 +350,7 @@ export const enqueueCalendarsSyncBulk = async (
       lesson_status,
       lesson_document,
       lesson_noti
-    FROM calendar
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
     WHERE id IN (${Prisma.join(ids)})
   `);
   const keys = calendars.map((calendar) => String(calendar.key || '')).filter(Boolean);
@@ -353,6 +363,7 @@ export const enqueueCalendarsSyncBulk = async (
     : [];
   const mappingsByKey = new Map<string, Array<{ package_id: string; lesson_id: string }>>();
   mappings.forEach((mapping) => {
+    if (!hasValidHocmaiLessonMapping(mapping)) return;
     const key = String(mapping.key || '');
     const current = mappingsByKey.get(key) || [];
     current.push({ package_id: mapping.package_id, lesson_id: mapping.lesson_id });
@@ -362,24 +373,25 @@ export const enqueueCalendarsSyncBulk = async (
   const queuedIds: number[] = [];
   const skippedIds: number[] = [];
   const rows: Prisma.hocmai_sync_queueCreateManyInput[] = [];
-  calendars.forEach((calendar) => {
+  for (const calendar of calendars) {
     const id = Number(calendar.id);
     const key = String(calendar.key || '');
     const calendarMappings = mappingsByKey.get(key) || [];
     if (calendarSourceFromCode(calendar.code) === 'feed' || !key || !calendarMappings.length) {
       skippedIds.push(id);
-      return;
+      continue;
     }
     queuedIds.push(id);
+    const action = await calendarStoreAction(tx, key, 'update');
     rows.push({
       c_key: key,
-      action: 'update',
-      payload: JSON.stringify(buildCalendarPayload(calendar, calendarMappings, 'update')),
+      action,
+      payload: JSON.stringify(buildCalendarPayload(calendar, calendarMappings, action)),
       status: 0,
       operation_id: operationId,
       sequence_no: rows.length + 1,
     });
-  });
+  }
   if (rows.length) await tx.hocmai_sync_queue.createMany({ data: rows });
 
   const foundIds = new Set(calendars.map((calendar) => Number(calendar.id)));

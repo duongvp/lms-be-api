@@ -368,7 +368,7 @@ const loadAssignmentContext = async (
 
   const schedulableRows = await client.$queryRaw(Prisma.sql`
     SELECT calendar_row.id
-    FROM calendar AS calendar_row
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
     LEFT JOIN lessons AS session_lesson
       ON session_lesson.id = calendar_row.session_id
      AND session_lesson.status <> 0

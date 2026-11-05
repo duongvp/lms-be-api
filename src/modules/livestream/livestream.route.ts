@@ -22,7 +22,7 @@ const calendarCodesByIds = async (ids: unknown[]) => {
   if (!validIds.length) return [];
   const rows = await prisma.$queryRaw<Array<{ program_code: string | null }>>(Prisma.sql`
     SELECT COALESCE(session_lesson.subject_code, legacy_lesson.subject_code,
-      CASE WHEN calendar_row.session_id IS NULL THEN calendar_row.code END) AS program_code
+      CASE WHEN calendar_row.session_id IS NULL OR calendar_row.deleted_at IS NOT NULL THEN calendar_row.code END) AS program_code
     FROM calendar AS calendar_row
     LEFT JOIN lessons AS session_lesson
       ON session_lesson.id = calendar_row.session_id AND session_lesson.status <> 0
@@ -141,6 +141,12 @@ router.use('/room-report/calendars/:calendarId', createCalendarDetailReportRoute
 }));
 router.use('/students/registration-audits', registrationAuditRouter);
 
+router.get(
+  '/filter-options/headers',
+  authorize(['calendar.view']),
+  authorizeCalendarList,
+  livestreamController.getCalendarHeaderFilterOptions
+);
 router.get(
   '/filter-options/teachers',
   authorize(['calendar.view']),
@@ -372,6 +378,12 @@ router.put(
   authorizePrograms('calendar.update', calendarCodeById),
   authorizeFields('calendar', () => ['lesson_status']),
   livestreamController.cancelSession
+);
+router.post(
+  '/:id/restore',
+  authorize(['calendar.delete']),
+  authorizePrograms('calendar.delete', calendarCodeById),
+  livestreamController.restoreSession
 );
 router.delete(
   '/:id',

@@ -28,7 +28,7 @@ export const syncCalendarsFromLessons = async (tx: any, lessonIds: bigint[]) => 
          END,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
-     WHERE lesson.status <> 0`,
+     WHERE calendar_row.deleted_at IS NULL AND lesson.status <> 0`,
     ...lessonIds
   );
 };
@@ -55,7 +55,7 @@ export const updateLessonProgramSubject = async (input: { programCode: string; s
   const subjectName = input.subjectName.trim();
   const calendarSubject = calendarSubjectName(subjectName, systemType, grade);
   const calendarRows = await tx.$queryRawUnsafe<Array<{ id: number }>>(
-    'SELECT id FROM calendar WHERE code = ? FOR UPDATE', input.programCode
+    'SELECT id FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE code = ? FOR UPDATE', input.programCode
   );
   const programCode = input.newProgramCode ?? input.programCode;
   if (programCode !== input.programCode && calendarRows.length) {
@@ -64,7 +64,7 @@ export const updateLessonProgramSubject = async (input: { programCode: string; s
   if (programCode !== input.programCode) {
     const duplicates = await tx.$queryRawUnsafe<Array<{ code: string }>>(
       `SELECT subject_code AS code FROM lessons WHERE subject_code = ?
-       UNION ALL SELECT code FROM calendar WHERE code = ?
+       UNION ALL SELECT code FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE code = ?
        UNION ALL SELECT scopeKey AS code FROM scope_resources WHERE scopeType = 'PROGRAM' AND scopeKey = ?`,
       programCode, programCode, programCode
     );
@@ -76,7 +76,7 @@ export const updateLessonProgramSubject = async (input: { programCode: string; s
   );
   if (programCode === input.programCode) {
     await tx.$executeRawUnsafe(
-      'UPDATE calendar SET subject = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE code = ?',
+      'UPDATE calendar SET subject = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE deleted_at IS NULL AND code = ?',
       calendarSubject, input.programCode
     );
   }
@@ -125,7 +125,7 @@ const syncCalendarSlotsAfterLessonReorder = async (
          END,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
-     WHERE calendar_row.code = ?
+     WHERE calendar_row.deleted_at IS NULL AND calendar_row.code = ?
        AND calendar_row.learn_number IN (${learnNumberPlaceholders})`,
     subjectCode,
     ...lessonIds,
@@ -203,7 +203,7 @@ export const findLessons = async (query: LessonListQuery) => {
   const selectSql = programCode
     ? `lessons.${LESSON_COLUMNS}, (
         SELECT COUNT(*)
-        FROM calendar
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
         WHERE (calendar.session_id = lessons.id
            OR (calendar.code = lessons.subject_code
              AND calendar.learn_number = lessons.learn_number))${sourceClause}
@@ -255,7 +255,7 @@ export const findLessonProgramOptions = async (allowedPrograms: string[] | null 
     calendar_count: bigint;
   }>>(
     `SELECT program.subject_code,
-            (SELECT COUNT(*) FROM calendar WHERE calendar.code = program.subject_code) AS calendar_count,
+            (SELECT COUNT(*) FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE calendar.code = program.subject_code) AS calendar_count,
             COALESCE(
              MAX(CASE
                 WHEN program.source_priority = 1
@@ -280,7 +280,7 @@ export const findLessonProgramOptions = async (allowedPrograms: string[] | null 
        WHERE subject_code IS NOT NULL AND TRIM(subject_code) <> ''
        UNION ALL
        SELECT code AS subject_code, subject AS subject_name, NULL AS grade, NULL AS system_type, 0 AS source_priority
-       FROM calendar
+       FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
        WHERE code IS NOT NULL AND TRIM(code) <> ''
      ) AS program
      GROUP BY program.subject_code
@@ -431,8 +431,7 @@ export const findPastScheduledLessonIds = async (
   const rows = await prisma.$queryRawUnsafe<Array<{ id: bigint }>>(
     `SELECT DISTINCT lesson.id
      FROM lessons AS lesson
-     INNER JOIN calendar AS calendar_row
-       ON (calendar_row.session_id = lesson.id
+     INNER JOIN calendar calendar_row ON calendar_row.deleted_at IS NULL AND (calendar_row.session_id = lesson.id
          OR (calendar_row.code = lesson.subject_code
            AND calendar_row.learn_number = lesson.learn_number))
      WHERE lesson.id IN (${placeholders})
@@ -610,7 +609,7 @@ export const importLessons = async (rows: LessonImportRow[], mode: LessonImportM
 
         const taughtRows = await tx.$queryRawUnsafe<Array<{ id: bigint }>>(
           `SELECT calendar_row.id
-           FROM calendar AS calendar_row
+           FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
            WHERE (calendar_row.session_id = ?
              OR (calendar_row.code = ? AND calendar_row.learn_number = ?))
              AND calendar_row.start_time <= NOW()
@@ -745,7 +744,7 @@ export const deleteLessonIfUnscheduled = async (id: bigint) => {
     if (!lesson) return { lesson: null, scheduledCount: 0 };
 
     const counts = await tx.$queryRawUnsafe<Array<{ total: bigint }>>(
-      'SELECT COUNT(*) AS total FROM calendar WHERE session_id = ?',
+      'SELECT COUNT(*) AS total FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE session_id = ?',
       id
     );
     const scheduledCount = Number(counts[0]?.total ?? 0);

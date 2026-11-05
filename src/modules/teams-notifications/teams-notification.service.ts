@@ -19,6 +19,9 @@ const stableCalendarSnapshot = (calendar: Record<string, any> | null) => {
   ];
   return Object.fromEntries(fields.map((field) => {
     const value = calendar[field];
+    // Raw SQL lifecycle reads can return BigInt values. Normalize the snapshot
+    // before both event fingerprinting and outbox payload serialization.
+    if (typeof value === 'bigint') return [field, value.toString()];
     return [field, value instanceof Date ? value.toISOString() : value ?? null];
   }));
 };

@@ -362,6 +362,15 @@ export const deleteSession = async (req: Request, res: Response, next: NextFunct
   }
 };
 
+export const restoreSession = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.restoreSession(Number(req.params.id), getChangeActor(req));
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(error.statusCode || 400).json({ success: false, message: error.message });
+  }
+};
+
 export const syncCalendarAttendance = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const data = await livestreamService.syncCalendarAttendance(req.body?.ids, req.body?.preview === true);
@@ -402,6 +411,16 @@ export const getCalendarTeacherFilterOptions = async (req: Request, res: Respons
   }
 };
 
+export const getCalendarHeaderFilterOptions = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.getCalendarHeaderFilterOptions(
+      req.query, getProgramScopeFilter(req.user, 'calendar.view'),
+      Boolean(req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin')),
+    );
+    res.status(200).json({ success: true, data });
+  } catch (error) { next(error); }
+};
+
 export const getCalendar = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const result = await livestreamService.getCalendar(
@@ -421,6 +440,8 @@ export const getCalendar = async (req: Request, res: Response, next: NextFunctio
         ...record,
         // id/can_modify là metadata phục vụ thao tác, không phải cột dữ liệu.
         id: source.id,
+        deleted_at: source.deleted_at ?? null,
+        can_restore: Boolean(source.deleted_at && source.key),
         calendar_source: calendarSourceFromCode(source.code),
         session_id: source.session_id == null ? null : String(source.session_id),
         can_modify: livestreamService.isSessionModifiable(source, now),

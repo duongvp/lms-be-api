@@ -462,7 +462,7 @@ const isStillAssigned = async (
 ) => {
   const rows = await client.$queryRaw(Prisma.sql`
     SELECT teacher, assistant_teacher, start_time
-    FROM calendar
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
     WHERE code = ${calendar.code}
       AND learn_number = ${calendar.learn_number}
       AND (lesson_status IS NULL OR lesson_status <> 1)

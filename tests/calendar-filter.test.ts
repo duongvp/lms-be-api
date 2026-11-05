@@ -33,7 +33,7 @@ test('legacy program scope uses stored code without requiring a curriculum lesso
         await getCalendar({code: 'QA'}, ['QA']);
         const sql = calls.find(c => c.kind === 'sql').text;
         assert.match(sql, /session_lesson\.subject_code IN/);
-        assert.match(sql, /calendar_row\.session_id IS NULL\s+AND calendar_row\.code IN/);
+        assert.match(sql, /\(calendar_row\.session_id IS NULL OR calendar_row\.deleted_at IS NOT NULL\)\s+AND calendar_row\.code IN/);
         assert.doesNotMatch(sql, /EXISTS/);
         assert.ok(calls.filter(c => c.where).every(c => c.where.AND.length > 0));
     });
@@ -43,6 +43,16 @@ test('invalid list source is rejected before any database query', async () => {
     await withEmptyList(async calls => {
         await assert.rejects(getCalendar({code: 'QA', calendar_source: 'bad'}), /calendar_source/);
         assert.deepEqual(calls, []);
+    });
+});
+
+test('calendar lists filter active and deleted rows using deleted_at', async () => {
+    await withEmptyList(async calls => {
+        await getCalendar({ code: 'QA' });
+        assert.ok(calls.filter(c => c.where).every(c => c.where.deleted_at === null));
+        calls.length = 0;
+        await getCalendar({ code: 'QA', deleted: true });
+        assert.ok(calls.filter(c => c.where).every(c => c.where.deleted_at?.not === null));
     });
 });
 

@@ -138,11 +138,11 @@ export const getDashboardOverview = async (
   const [summaryRows, todayRows, weeklyRows, upcomingRows, recentChanges, teamsRows, hocmaiRows, outlineQuizRows] = await runQueriesWithConcurrency([
     () => prisma.$queryRaw<SummaryRow[]>(Prisma.sql`
       SELECT
-        (SELECT COUNT(DISTINCT calendar_summary.code) FROM calendar AS calendar_summary
+        (SELECT COUNT(DISTINCT calendar_summary.code) FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_summary
           WHERE ${calendarRange}${calendarScoped('calendar_summary')}) AS courses,
         (SELECT COUNT(*) FROM lessons WHERE status = 1 AND ${lessonRange}${scoped('subject_code')}) AS lessons,
         (SELECT COUNT(*) FROM quiz_content WHERE (quiz_status <> 'disable' OR quiz_status IS NULL) AND updated_at >= ${from} AND updated_at <= ${to}${scoped('code')}) AS quizzes,
-        (SELECT COUNT(*) FROM calendar AS calendar_outline
+        (SELECT COUNT(*) FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_outline
           LEFT JOIN lessons AS session_lesson ON session_lesson.id = calendar_outline.session_id
           WHERE ${calendarRange}${calendarScoped('calendar_outline')}
             AND EXISTS (
@@ -151,7 +151,7 @@ export const getDashboardOverview = async (
                 AND quiz.learn_number = calendar_outline.learn_number
                 AND (quiz.quiz_status <> 'disable' OR quiz.quiz_status IS NULL)
             )) AS outlines_with_quiz,
-        (SELECT COUNT(*) FROM calendar AS calendar_outline
+        (SELECT COUNT(*) FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_outline
           LEFT JOIN lessons AS session_lesson ON session_lesson.id = calendar_outline.session_id
           WHERE ${calendarRange}${calendarScoped('calendar_outline')}
             AND NOT EXISTS (
@@ -172,14 +172,14 @@ export const getDashboardOverview = async (
         SUM(CASE WHEN COALESCE(lesson_status, 0) <> 1 AND start_time <= NOW() AND end_time >= NOW() THEN 1 ELSE 0 END) AS ongoing,
         SUM(CASE WHEN COALESCE(lesson_status, 0) <> 1 AND end_time < NOW() THEN 1 ELSE 0 END) AS completed,
         SUM(CASE WHEN lesson_status = 1 THEN 1 ELSE 0 END) AS cancelled
-      FROM calendar AS calendar_today
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_today
       WHERE ${calendarRange}${calendarScoped('calendar_today')}
     `),
     () => prisma.$queryRaw<Array<{ date: string; total: bigint; cancelled: bigint }>>(Prisma.sql`
       SELECT DATE_FORMAT(start_time, '%Y-%m-%d') AS date,
         COUNT(*) AS total,
         SUM(CASE WHEN lesson_status = 1 THEN 1 ELSE 0 END) AS cancelled
-      FROM calendar AS calendar_weekly
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_weekly
       WHERE ${calendarRange}${calendarScoped('calendar_weekly')}
       GROUP BY DATE_FORMAT(start_time, '%Y-%m-%d')
       ORDER BY DATE_FORMAT(start_time, '%Y-%m-%d') ASC
@@ -201,7 +201,7 @@ export const getDashboardOverview = async (
         DATE_FORMAT(start_time, '%Y-%m-%d %H:%i:%s') AS start_time,
         DATE_FORMAT(end_time, '%Y-%m-%d %H:%i:%s') AS end_time,
         channel_name
-      FROM calendar AS calendar_upcoming
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_upcoming
       WHERE ${upcomingTodayRange}${calendarScoped('calendar_upcoming')}
         AND COALESCE(lesson_status, 0) <> 1
       ORDER BY start_time ASC, id ASC
@@ -258,7 +258,7 @@ export const getDashboardOverview = async (
                  AND quiz.learn_number = calendar_outline.learn_number
                  AND (quiz.quiz_status <> 'disable' OR quiz.quiz_status IS NULL)
              ) THEN 1 ELSE 0 END AS has_quiz
-      FROM calendar AS calendar_outline
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_outline
       LEFT JOIN lessons AS session_lesson ON session_lesson.id = calendar_outline.session_id
       WHERE ${calendarRange}${calendarScoped('calendar_outline')}
       ORDER BY calendar_outline.code ASC, calendar_outline.learn_number ASC, calendar_outline.start_time ASC, calendar_outline.id ASC

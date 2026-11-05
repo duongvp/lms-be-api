@@ -1,3 +1,4 @@
+import { CALENDAR_KEY_REUSE, claimDeletedCalendarKey, auditCalendarKeyReuse, writeCalendarLifecycleLog } from './calendar-lifecycle';
 import crypto from 'crypto';
 import { assertCalendarSourceUnchanged, calendarSourceFromCode, resolveCalendarSource } from './calendar-source';
 import { calendarTimeNotification } from './calendar-time-notification';
@@ -13,6 +14,7 @@ import {
   enqueueCalendarSync,
   enqueueCalendarsSyncBulk,
   enqueueRescheduleSync,
+  hasValidHocmaiLessonMapping,
   reconcileCalendarMappingsAndEnqueue,
   withManualHocmaiQueue,
 } from './hocmai-sync-queue.service';
@@ -22,6 +24,7 @@ import {
   enqueueManyCalendarTeamsNotifications,
 } from '../teams-notifications';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
+import { buildCalendarColumnFilters } from './calendar-column-filters';
 import { getCalendarEvgStatuses } from './evg-status';
 import {
   ensureCalendarTeachingUsers,
@@ -216,8 +219,8 @@ const parseAssistantTeachers = (value: unknown): string[] => {
   const rawValues = Array.isArray(value) ? value : String(value).split(',');
   const usernames = Array.from(new Set(
     rawValues
-      .map((item) => String(item).trim())
-      .filter(Boolean)
+      .map((item) => String(item ?? '').trim())
+      .filter(username => Boolean(username) && !/^(?:\[null\]|null|-)$/i.test(username))
   ));
 
   if (usernames.some((username) => username.length > 120)) {
@@ -332,6 +335,9 @@ const createCalendarRecord = async (
   data: any,
   previousTeachingCalendar: any | null = null
 ) => {
+  if (Object.prototype.hasOwnProperty.call(data, 'deleted_at')) {
+    throw new Error('Trạng thái xóa chỉ được thay đổi qua thao tác xóa/khôi phục lịch');
+  }
   const skipTeacherUserSync = data.skip_teacher_user_sync === true;
   assertCalendarSourceUnchanged(data, data);
   const prismaData = { ...data };
@@ -349,8 +355,10 @@ const createCalendarRecord = async (
   // Hai cột này đã có trong Prisma schema, vì vậy ghi ngay trong INSERT.
   // Trước đây mỗi calendar phải UPDATE hai lần rồi SELECT lại, khiến bulk
   // create phát sinh thêm tới 3 round-trip DB cho từng buổi.
+  const reuse = await claimDeletedCalendarKey(client, prismaData.key);
   const created = await client.calendar.create({ data: prismaData });
   const result = { ...created };
+  if (reuse) Object.defineProperty(result, CALENDAR_KEY_REUSE, { value: reuse });
   if (!skipTeacherUserSync) {
     await syncCalendarTeachingUsers(client, previousTeachingCalendar, result);
   }
@@ -364,6 +372,9 @@ const updateCalendarRecord = async (
   preloadedBefore?: any,
   allowSourceChange = false
 ) => {
+  if (Object.prototype.hasOwnProperty.call(data, 'deleted_at')) {
+    throw new Error('Trạng thái xóa chỉ được thay đổi qua thao tác xóa/khôi phục lịch');
+  }
   const before = preloadedBefore || await client.calendar.findUnique({ where: { id } });
   if (!before) throw new Error('Not found');
   assertCalendarSourceUnchanged(before, data);
@@ -396,14 +407,14 @@ const updateCalendarRecord = async (
     await client.$executeRaw`
       UPDATE calendar
       SET assistant_teacher = ${assistantTeacher}
-      WHERE id = ${id}
+      WHERE deleted_at IS NULL AND id = ${id}
     `;
   }
   if (hasSessionId) {
     await client.$executeRaw`
       UPDATE calendar
       SET session_id = ${sessionId}
-      WHERE id = ${id}
+      WHERE deleted_at IS NULL AND id = ${id}
     `;
   }
   // Các cột legacy assistant_teacher/session_id không nằm trong Prisma model.
@@ -556,7 +567,7 @@ const ensureAfterStartOnSameDate = (value: Date, previousStart: Date) => {
 };
 
 export const isSessionModifiable = (session: any, now = new Date()) => {
-  if (Number(session.lesson_status) === 1) return false;
+  if (session.deleted_at || Number(session.lesson_status) === 1) return false;
 
   const startTime = session.start_time ? new Date(session.start_time) : null;
   return Boolean(
@@ -1080,7 +1091,7 @@ const generateUniqueCanceledKey = async (
 
   let canceledNumber = 1;
   let key = `${normalizedKey}_huy`;
-  while (await tx.calendar.findFirst({ where: { key } })) {
+  while (await tx.calendar.findFirst({ where: { key, deleted_at: {} } })) {
     canceledNumber += 1;
     key = `${normalizedKey}_huy${canceledNumber}`;
   }
@@ -1358,7 +1369,7 @@ export const checkConflict = async ({
   if (assistantTeachers.length) {
     const overlappingSessions = await client.$queryRaw(Prisma.sql`
       SELECT id, code, learn_number, lesson_name, start_time, end_time, assistant_teacher
-      FROM calendar
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
       WHERE ${source === 'feed' ? Prisma.sql`code LIKE 'feed-%'` : Prisma.sql`code NOT LIKE 'feed-%'`}
         AND start_time < ${end_time}
         AND end_time > ${start_time}
@@ -1625,8 +1636,9 @@ export const createSingle = async (data: any, changeActor?: CalendarChangeActor)
 
     const calendar = await createCalendarRecord(tx, calendarData);
     await createPackageLessonMappingForCalendar(tx, calendar, resolvedMappings);
+    await auditCalendarKeyReuse(tx, calendar, changeActor);
     if (resolvedMappings.length) {
-      await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'create', calendar);
+      await enqueueCalendarSync(tx, calendar[CALENDAR_KEY_REUSE]?.operationId ?? crypto.randomUUID(), 1, 'create', calendar);
     }
     await enqueueCalendarTeamsNotification(tx, {
       eventType: 'created',
@@ -1652,7 +1664,7 @@ export const getProgramLessonsForScheduling = async (programCode: string, source
     SELECT lesson.id, lesson.learn_number, lesson.lesson_name, lesson.system_type,
       (
         SELECT COUNT(*)
-        FROM calendar AS calendar_row
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         WHERE calendar_row.code = ${code}
           AND (
             calendar_row.session_id = lesson.id
@@ -1661,7 +1673,7 @@ export const getProgramLessonsForScheduling = async (programCode: string, source
       ) AS scheduled_count,
       (
         SELECT COUNT(*)
-        FROM calendar AS calendar_row
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         WHERE calendar_row.code = ${code}
           AND calendar_row.start_time <= NOW()
           AND (
@@ -1702,7 +1714,7 @@ export const getSchedulingPrograms = async (allowedPrograms: string[] | null = n
       WHERE subject_code IS NOT NULL AND TRIM(subject_code) <> ''
       UNION ALL
       SELECT code, subject AS subject_name
-      FROM calendar
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
       WHERE code IS NOT NULL AND TRIM(code) <> ''
     ) AS program
     GROUP BY program.code
@@ -1963,8 +1975,9 @@ export const createBulk = async (config: any, changeActor?: CalendarChangeActor)
           calendar,
           resolvedMappingsByIndex[index]
         );
+        await auditCalendarKeyReuse(tx, calendar, changeActor);
         if (resolvedMappingsByIndex[index].length) {
-          await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'create', calendar);
+          await enqueueCalendarSync(tx, calendar[CALENDAR_KEY_REUSE]?.operationId ?? crypto.randomUUID(), 1, 'create', calendar);
         }
         teamsEvents.push({
           eventType: 'created',
@@ -2028,8 +2041,9 @@ export const createValidatedCalendarImport = async (
               });
               const calendar = await createCalendarRecord(tx, calendarData);
               await createPackageLessonMappingForCalendar(tx, calendar, row.mappings);
+              await auditCalendarKeyReuse(tx, calendar, changeActor);
               if (row.mappings.length) {
-                await enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'create', calendar);
+                await enqueueCalendarSync(tx, calendar[CALENDAR_KEY_REUSE]?.operationId ?? crypto.randomUUID(), 1, 'create', calendar);
               }
               await enqueueCalendarTeamsNotification(tx, {
                 eventType: 'created', after: calendar, actor: changeActor,
@@ -2072,7 +2086,7 @@ export const createValidatedInternalCalendarImport = async (
       }>>(Prisma.sql`
         SELECT code, system_type, learn_number,
                MAX(COALESCE(lesson_count, -1)) AS max_count
-        FROM calendar
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
         WHERE code IN (${Prisma.join(codes)})
         GROUP BY code, system_type, learn_number
       `);
@@ -2116,6 +2130,12 @@ export const createValidatedInternalCalendarImport = async (
         };
       }));
 
+      const reusedKeys = new Map<string, any>();
+      for (const calendar of prepared) {
+        const reuse = await claimDeletedCalendarKey(tx, calendar.key);
+        if (reuse) reusedKeys.set(calendar.key, reuse);
+      }
+
       const placeholders = prepared.map(() => (
         '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
       )).join(', ');
@@ -2150,6 +2170,13 @@ export const createValidatedInternalCalendarImport = async (
       const createdCalendars = await tx.calendar.findMany({
         where: { key: { in: prepared.map((calendar) => calendar.key) } },
       });
+      for (const calendar of createdCalendars) {
+        const reuse = reusedKeys.get(calendar.key!);
+        if (reuse) {
+          Object.defineProperty(calendar, CALENDAR_KEY_REUSE, { value: reuse });
+          await auditCalendarKeyReuse(tx, calendar, changeActor);
+        }
+      }
       const createdByKey = new Map(
         createdCalendars
           .filter((calendar) => calendar.key)
@@ -2457,7 +2484,7 @@ const rescheduleSessionInTransaction = async (
       throw new Error('Buổi học không ở trạng thái nghỉ học');
     }
     const latestChange = await tx.calendar_change_logs.findFirst({
-      where: { calendar_id: current.id },
+      where: { calendar_id: current.id, action: { notIn: ['delete', 'restore'] } },
       orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
     });
     if (!latestChange || latestChange.action !== 'cancel') {
@@ -2517,6 +2544,8 @@ const rescheduleSessionInTransaction = async (
             ...(result.shifted_sessions || []),
             result.created_session,
           ];
+
+    for (const session of affectedSessions) await auditCalendarKeyReuse(tx, session, actor);
 
     await writeCalendarChangeLog(tx, {
       operationId,
@@ -2883,32 +2912,98 @@ export const cancelSession = async (
 export const deleteSession = async (
   id: number,
   changeActor?: CalendarChangeActor
-) =>
-  withCalendarTriggerErrorHint(() => prisma.$transaction(async (tx) => {
-    const current = await tx.calendar.findUnique({ where: { id } });
-    if (!current) throw new Error("Not found");
-    await hydrateAssistantTeachers(tx, [current]);
-    assertCanUpdateSession(current);
+) => withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => withManualHocmaiQueue(tx, async () => {
+  const rows = await tx.$queryRaw<any[]>`SELECT * FROM calendar WHERE id = ${id} FOR UPDATE`;
+  const current = rows[0];
+  if (!current) throw new Error('Không tìm thấy lịch học');
+  // Deleting an already deleted row is a no-op and does not create another queue job.
+  if (current.deleted_at) return current;
+  assertCanUpdateSession(current);
+  const actor = normalizeChangeActor(changeActor);
+  const mappings = current.key ? await tx.package_lesson_mapping.findMany({ where: { key: current.key } }) : [];
+  const operationId = crypto.randomUUID();
+  await syncCalendarTeachingUsers(tx, current, { ...current, lesson_status: 1 });
+  const deleted = await tx.calendar.update({
+    where: { id, deleted_at: null }, data: { deleted_at: getVietnamWallClockDate(), updated_at: new Date() },
+  });
+  await writeCalendarLifecycleLog(tx, {
+    operationId, action: 'delete', before: current, after: deleted,
+    mappingsBefore: mappings, mappingsAfter: mappings, actor, reason: 'Xóa lịch học',
+    lessonBefore: current.session_id == null ? undefined : await tx.lessons.findUnique({ where: { id: BigInt(current.session_id) } }),
+  });
+  if (current.key && calendarSourceFromCode(current.code) !== 'feed'
+    && mappings.some(hasValidHocmaiLessonMapping)) {
+    await tx.hocmai_sync_queue.create({ data: {
+      c_key: current.key, action: 'delete', payload: JSON.stringify({ c_key: current.key, action: 'delete' }),
+      status: 0, operation_id: operationId, sequence_no: 1,
+    } });
+  }
+  await enqueueCalendarTeamsNotification(tx, { eventType: 'deleted', before: current, actor });
+  return deleted;
+})));
 
-    if (current.key) {
-      await tx.package_lesson_mapping.deleteMany({
-        where: { key: current.key },
-      });
+export const restoreSession = async (id: number, changeActor?: CalendarChangeActor) =>
+  withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => withManualHocmaiQueue(tx, async () => {
+    const rows = await tx.$queryRaw<any[]>`SELECT * FROM calendar WHERE id = ${id} FOR UPDATE`;
+    const current = rows[0];
+    if (!current) throw new Error('Không tìm thấy lịch học');
+    if (!current.deleted_at) throw new Error('Lịch học không ở trạng thái đã xóa');
+    const actor = normalizeChangeActor(changeActor);
+    const deletion = await tx.calendar_change_logs.findFirst({
+      where: { calendar_id: id, action: 'delete' }, orderBy: { id: 'desc' },
+    });
+    const snapshot = deletion?.before_data as any;
+    const key = String(deletion?.old_key || current.key || '');
+    // A released key has already been reused: self restore must never overwrite it.
+    if (!key || !current.key || current.key !== key) {
+      throw new Error('Key của lịch đã được tái sử dụng; không thể khôi phục đè lên lịch khác');
     }
-
-    // Xóa lịch cũng phải thu hồi user room_id = 1 giống thao tác nghỉ học.
-    await syncCalendarTeachingUsers(tx, current, {
-      ...current,
-      lesson_status: 1,
+    const desired = { ...current, ...(snapshot?.source_session || {}), id, key, deleted_at: null };
+    desired.session_id = desired.session_id == null ? null : BigInt(desired.session_id);
+    desired.start_time = new Date(desired.start_time);
+    desired.end_time = new Date(desired.end_time);
+    assertCanUpdateSession(desired);
+    const lesson = desired.session_id == null ? null : await tx.lessons.findFirst({
+      where: { id: desired.session_id, status: { not: 0 } },
     });
-    const deleted = await tx.calendar.delete({ where: { id } });
-    await enqueueCalendarTeamsNotification(tx, {
-      eventType: 'deleted',
-      before: current,
-      actor: changeActor,
+    const lessonSnapshot = snapshot?.lesson_snapshot;
+    const curriculumChanged = lessonSnapshot && lesson && [
+      'subject_code', 'learn_number', 'lesson_name', 'subject_name', 'grade', 'system_type',
+    ].some(field => String((lesson as any)[field] ?? '') !== String(lessonSnapshot[field] ?? ''));
+    if (desired.session_id != null && (!lesson || lesson.subject_code !== desired.code
+      || lesson.learn_number !== desired.learn_number || curriculumChanged)) {
+      throw new Error('Đề cương đã thay đổi hoặc bài học đã bị xóa; không thể khôi phục nguyên trạng lịch này');
+    }
+    await assertLessonCountAvailable(tx, desired.code, desired.system_type, desired.learn_number,
+      Number(desired.lesson_count ?? 0), calendarSourceFromCode(desired.code));
+    await checkConflict({ ...desired, client: tx });
+    const mappings = Array.isArray(snapshot?.mappings) ? snapshot.mappings :
+      await tx.package_lesson_mapping.findMany({ where: { key } });
+    // Legacy calendars without a curriculum link may still have valid HMO mappings.
+    if (desired.session_id != null) await assertMappingsBelongToCalendarLesson(tx, desired, mappings);
+    const restoredFields: any = {};
+    for (const field of Object.values(Prisma.CalendarScalarFieldEnum)) {
+      if (!['id', 'key', 'deleted_at', 'created_at', 'updated_at'].includes(field) && desired[field] !== undefined) {
+        restoredFields[field] = desired[field];
+      }
+    }
+    const restored = await tx.calendar.update({
+      where: { id, deleted_at: { not: null } },
+      data: { ...restoredFields, deleted_at: null, updated_at: new Date() },
     });
-    return deleted;
-  }));
+    await tx.package_lesson_mapping.deleteMany({ where: { key } });
+    await createPackageLessonMappingForCalendar(tx, restored, mappings);
+    await syncCalendarTeachingUsers(tx, null, restored);
+    const operationId = crypto.randomUUID();
+    await writeCalendarLifecycleLog(tx, {
+      operationId, action: 'restore', before: current, after: restored,
+      mappingsBefore: mappings, mappingsAfter: mappings, actor,
+      restoreType: 'self', reason: 'Khôi phục lịch học đã xóa nhầm',
+    });
+    await enqueueCalendarSync(tx, operationId, 1, 'restore', restored);
+    await enqueueCalendarTeamsNotification(tx, { eventType: 'created', after: restored, actor });
+    return restored;
+  })));
 
 const CALENDAR_SYSTEM_TYPES = ['topclass', 'event', 'phaken', 'topuni'];
 const CALENDAR_SORT_FIELDS = [
@@ -2967,7 +3062,7 @@ const getCalendarIdsForPrograms = async (programs: string[]) => {
      AND session_lesson.status <> 0
     WHERE session_lesson.subject_code IN (${Prisma.join(programs)})
        OR (
-         calendar_row.session_id IS NULL
+         (calendar_row.session_id IS NULL OR calendar_row.deleted_at IS NOT NULL)
          AND calendar_row.code IN (${Prisma.join(programs)})
        )
   `);
@@ -3027,6 +3122,34 @@ export const getCalendarTeacherFilterOptions = async (
     .map((row) => String(row.teacher || '').trim())
     .filter(Boolean)
     .map((teacher) => ({ value: teacher, label: teacher }));
+};
+
+export const getCalendarHeaderFilterOptions = async (
+  query: any, allowedPrograms: string[] | null = null, allowAllPrograms = false,
+) => {
+  // Use the exact same scope as the list, without applying pagination.
+  const { where } = await buildCalendarListQuery(query, allowedPrograms, allowAllPrograms);
+  const rows = await prisma.calendar.findMany({
+    where, select: { id: true, start_time: true, end_time: true, lesson_status: true },
+  });
+  const assistantValues = new Set<string>();
+  for (let offset = 0; offset < rows.length; offset += 500) {
+    const assistants = await prisma.$queryRaw<Array<{ assistant_teacher: string | null }>>(Prisma.sql`
+      SELECT DISTINCT assistant_teacher FROM calendar
+      WHERE id IN (${Prisma.join(rows.slice(offset, offset + 500).map(row => row.id))})
+    `);
+    for (const row of assistants) {
+      const values = parseAssistantTeachers(row.assistant_teacher);
+      (values.length ? values : ['-']).forEach(value => assistantValues.add(value));
+    }
+  }
+  const now = getVietnamWallClockDate();
+  return {
+    live_dates: Array.from(new Set(rows.map(row => row.start_time.toISOString().slice(0, 10)))).sort(),
+    assistant_teachers: Array.from(assistantValues).sort(),
+    progress_statuses: Array.from(new Set(rows.map(row => Number(row.lesson_status) === 1
+      ? 'cancelled' : row.start_time > now ? 'upcoming' : row.end_time < now ? 'completed' : 'ongoing'))),
+  };
 };
 
 export type HocmaiAttendanceUser = { user_id: string; c_key: string; calendar_join: string; action?: 'delete' };
@@ -3305,11 +3428,10 @@ export const assertCalendarIdsInProgram = async (ids: number[], programCode: str
 };
 
 // 3. Lấy danh sách lịch
-export const getCalendar = async (
+const buildCalendarListQuery = async (
   query: any,
   allowedPrograms: string[] | null = null,
   allowAllPrograms = false,
-  rawRowsOnly = false,
 ) => {
   const calendarSource = resolveCalendarSource(query.calendar_source);
   const page = normalizeNumber(query.page, 'page') ?? 1;
@@ -3367,6 +3489,7 @@ export const getCalendar = async (
   const toLearnNumber = normalizeNumber(query.to_learn_number, 'to_learn_number');
   const startTime = normalizeDate(query.start_time, 'start_time');
   const endTime = normalizeDate(query.end_time, 'end_time');
+  const columnFilters = buildCalendarColumnFilters(query, getVietnamWallClockDate());
   if (!exactCode && !code && !allowAllPrograms) {
     throw new Error('Vui lòng chọn Chương trình');
   }
@@ -3395,7 +3518,7 @@ export const getCalendar = async (
     throw new Error('system_type không hợp lệ');
   }
 
-  if (timeStatuses.some((status) => !['upcoming', 'ongoing', 'completed'].includes(status))) {
+  if (timeStatuses.some((status) => !['upcoming', 'ongoing', 'completed', 'cancelled'].includes(status))) {
     throw new Error('time_status không hợp lệ');
   }
 
@@ -3436,7 +3559,11 @@ export const getCalendar = async (
   const programCondition: Prisma.calendarWhereInput | null = scopedCalendarIds === null
     ? null
     : { id: { in: scopedCalendarIds } };
+  if (query.deleted !== undefined && !['true', 'false', true, false].includes(query.deleted)) {
+    throw new Error('deleted chỉ nhận true hoặc false');
+  }
   const where: Prisma.calendarWhereInput = {
+    deleted_at: query.deleted === 'true' || query.deleted === true ? { not: null } : null,
     AND: [
       { code: calendarSource === 'feed' ? { startsWith: 'feed-' } : { not: { startsWith: 'feed-' } } },
       ...(programCondition ? [programCondition] : []),
@@ -3486,23 +3613,13 @@ export const getCalendar = async (
       ...(endTime ? { lte: endTime } : {}),
     };
   }
-  if (timeStatuses.length && timeStatuses.length < 3) {
-    const now = getVietnamWallClockDate();
-    const timeConditions: Prisma.calendarWhereInput[] = timeStatuses.map((status) => (
-      status === 'upcoming'
-        ? { start_time: { gt: now } }
-        : status === 'completed'
-          ? { end_time: { lt: now } }
-          : {
-              AND: [
-                { start_time: { lte: now } },
-                { end_time: { gte: now } },
-              ],
-            }
-    ));
+  if (timeStatuses.length) {
+    const { conditions } = buildCalendarColumnFilters(
+      { progress_statuses: timeStatuses.join(',') }, getVietnamWallClockDate(),
+    );
     where.AND = [
       ...(Array.isArray(where.AND) ? where.AND : []),
-      { OR: timeConditions },
+      ...conditions,
     ];
   }
   if (weekdays.length && weekdays.length < 7) {
@@ -3519,6 +3636,25 @@ export const getCalendar = async (
     ];
   }
 
+  if (columnFilters.assistantCondition) {
+    const assistantRows = await prisma.$queryRaw<Array<{ id: number }>>(Prisma.sql`
+      SELECT id FROM calendar WHERE ${columnFilters.assistantCondition}
+    `);
+    columnFilters.conditions.push({ id: { in: assistantRows.map(row => Number(row.id)) } });
+  }
+  where.AND = [...(Array.isArray(where.AND) ? where.AND : []), ...columnFilters.conditions];
+
+  return { where, page, limit, skip, take, sortFields, requestedSortOrders };
+};
+
+export const getCalendar = async (
+  query: any,
+  allowedPrograms: string[] | null = null,
+  allowAllPrograms = false,
+  rawRowsOnly = false,
+) => {
+  const { where, page, limit, skip, take, sortFields, requestedSortOrders } =
+    await buildCalendarListQuery(query, allowedPrograms, allowAllPrograms);
   const orderBy: Prisma.calendarOrderByWithRelationInput[] = sortFields.length
     ? sortFields.map((field, index) => ({
         [field]: requestedSortOrders[index] ?? 'asc',
@@ -3550,9 +3686,8 @@ export const getCalendar = async (
                change_log.before_data,
                (
                  SELECT MIN(next_session.start_time)
-                 FROM calendar AS next_session
-                 INNER JOIN calendar AS canceled_session
-                   ON canceled_session.id = change_log.calendar_id
+                 FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS next_session
+                 INNER JOIN calendar canceled_session ON canceled_session.deleted_at IS NULL AND canceled_session.id = change_log.calendar_id
                  WHERE next_session.code = canceled_session.code
                    AND next_session.system_type = canceled_session.system_type
                    AND (next_session.code LIKE 'feed-%') = (canceled_session.code LIKE 'feed-%')
@@ -3563,7 +3698,7 @@ export const getCalendar = async (
         INNER JOIN (
           SELECT calendar_id, MAX(id) AS latest_id
           FROM calendar_change_logs
-          WHERE calendar_id IN (${Prisma.join(canceledIds)})
+          WHERE action NOT IN ('delete', 'restore') AND calendar_id IN (${Prisma.join(canceledIds)})
           GROUP BY calendar_id
         ) AS latest ON latest.latest_id = change_log.id
       `)
@@ -4391,7 +4526,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
         // Đọc snapshot hiện tại và khóa lịch trong cùng transaction. Cron
         // không được dùng phân công cũ để cấp lại quyền sau thao tác sửa lịch.
         const calendars = await tx.$queryRaw<any[]>(Prisma.sql`
-          SELECT * FROM calendar
+          SELECT * FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
           WHERE id IN (${Prisma.join(batchIds)})
           ORDER BY id ASC
           FOR UPDATE
@@ -4435,7 +4570,7 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
     while (true) {
       const batchResult = await prisma.$transaction(async (tx) => {
         const calendars = await tx.$queryRaw<any[]>(Prisma.sql`
-          SELECT * FROM calendar
+          SELECT * FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
           WHERE id > ${lastId}
           ORDER BY id ASC
           LIMIT ${batchSize}

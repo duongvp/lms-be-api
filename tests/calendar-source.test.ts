@@ -19,7 +19,7 @@ const fakeTx = (calendars: any[]) => {
     $executeRaw: async (...args:any[]) => {writes.push(args);return 1;},
     $executeRawUnsafe: async (sql:string) => {writes.push(sql);return 1;},
     package_lesson_mapping:{findMany:async()=>calendars.map(c=>mapping(c.id)),update:async()=>{writes.push('mapping-update')},deleteMany:async()=>{},create:async()=>{}},
-    hocmai_sync_queue:{createMany:async ({data}:any)=>{writes.push(data)}},
+    hocmai_sync_queue:{findFirst:async()=>null,createMany:async ({data}:any)=>{writes.push(data)}},
   };
   return {tx,writes};
 };
@@ -103,13 +103,14 @@ test('manual queue flag is cleared even if business operation fails',async()=>{
  assert.deepEqual(writes,['SET @lms_manual_hocmai_queue = 1','SET @lms_manual_hocmai_queue = 0']);
 });
 
-test('three trigger bodies are unchanged except the source condition; migration matches canonical SQL',()=>{
+test('calendar triggers exclude Feed and deleted snapshots; migration only changes schema',()=>{
  const canonical=readFileSync('prisma/sql/calendar_triggers.sql','utf8');
- const old=readFileSync('prisma/sql/rollback_calendar_source_triggers.sql','utf8').slice(readFileSync('prisma/sql/rollback_calendar_source_triggers.sql','utf8').indexOf('DROP TRIGGER'));
- assert.equal(canonical.replaceAll("\n       AND NEW.code NOT LIKE 'feed-%'",''),old);
- assert.equal(canonical.match(/AND NEW.code NOT LIKE 'feed-%'/g)?.length,3);
- const migration=readFileSync('prisma/migrations/20261014180000_calendar_source_from_program_code/migration.sql','utf8');
- assert.ok(migration.includes(canonical.replace('DELIMITER $$','').replaceAll('END$$','END;').replace('DELIMITER ;','')));
+ assert.equal(canonical.match(/AND NEW.code NOT LIKE 'feed-%'/g)?.length,4);
+ assert.equal(canonical.match(/CREATE TRIGGER/g)?.length,4);
+ assert.equal(canonical.match(/AND OLD.deleted_at IS NULL/g)?.length,2);
+ assert.match(canonical, /CREATE TRIGGER `trg_calendar_lifecycle`/);
+ const migration=readFileSync('prisma/migrations/20261031090000_calendar_soft_delete/migration.sql','utf8');
+ assert.doesNotMatch(migration, /\bTRIGGER\b/i);
 });
 
 

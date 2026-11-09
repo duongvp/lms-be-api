@@ -1,3 +1,5 @@
+import { calendarSessionEnded } from '../modules/livestream/calendar-file-time';
+export { calendarSessionEnded } from '../modules/livestream/calendar-file-time';
 import { createPrivateKey, randomInt } from 'node:crypto';
 import { google, sheets_v4 } from 'googleapis';
 import * as XLSX from 'xlsx';
@@ -63,21 +65,6 @@ const MAX_BATCH_BYTES = 500_000;
 const READ_TIMEOUT_MS = 60_000;
 const WRITE_TIMEOUT_MS = 210_000;
 
-export const calendarSessionEnded = (date: string, timeRange: string, now: Date) => {
-  const day = date.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  const times = [...timeRange.matchAll(/(\d{2}):(\d{2})/g)];
-  if (!day || times.length !== 2) return false;
-  const [, d, m, y] = day.map(Number);
-  const startMinutes = Number(times[0][1]) * 60 + Number(times[0][2]);
-  const endMinutes = Number(times[1][1]) * 60 + Number(times[1][2]);
-  if (times.some((time) => Number(time[1]) > 23 || Number(time[2]) > 59)) return false;
-  const midnight = Date.UTC(y, m - 1, d);
-  const check = new Date(midnight);
-  if (check.getUTCFullYear() !== y || check.getUTCMonth() !== m - 1 || check.getUTCDate() !== d) return false;
-  const end = midnight - 7 * 3600_000 + endMinutes * 60_000 + (endMinutes < startMinutes ? 86400_000 : 0);
-  return end <= now.getTime();
-};
-
 export const calendarSheetFormatting = (requests: sheets_v4.Schema$Request[], now = new Date()): sheets_v4.Schema$Request[] => {
   const color = (hex: string) => ({ red: parseInt(hex.slice(0, 2), 16) / 255, green: parseInt(hex.slice(2, 4), 16) / 255, blue: parseInt(hex.slice(4, 6), 16) / 255 });
   const result: sheets_v4.Schema$Request[] = [];
@@ -96,13 +83,14 @@ export const calendarSheetFormatting = (requests: sheets_v4.Schema$Request[], no
       { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 1, frozenColumnCount: Math.min(3, headers.length) } }, fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount' } },
     );
     headers.forEach((header, index) => {
-      const width = header === 'Tên bài giảng' ? 330 : ['Tên GV', 'Trợ giảng'].includes(header) ? 150 : header === 'Môn' ? 80 : header === 'Thứ' ? 55 : header.includes('Tài liệu') || header === 'Nhiệm vụ học tập' ? 120 : 110;
+      const width = header.startsWith('Trạng thái buổi học') ? 180 : header === 'Tên bài giảng' ? 330 : ['Tên GV', 'Trợ giảng'].includes(header) ? 150 : header === 'Môn' ? 80 : header === 'Thứ' ? 55 : header.includes('Tài liệu') || header === 'Nhiệm vụ học tập' ? 120 : 110;
       result.push({ updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: index, endIndex: index + 1 }, properties: { pixelSize: width }, fields: 'pixelSize' } });
       if (header.startsWith('Tài liệu live') || header === 'Nhiệm vụ học tập') result.push({ repeatCell: { range: { ...range, endRowIndex: 1, startColumnIndex: index, endColumnIndex: index + 1 }, cell: { userEnteredFormat: { backgroundColor: color('741B47') } }, fields: 'userEnteredFormat.backgroundColor' } });
     });
     const dateColumn = headers.indexOf('Ngày live');
     const timeColumn = headers.indexOf('Khung giờ');
     const subjectColumn = headers.indexOf('Môn');
+    const statusColumn = headers.findIndex(header => header.startsWith('Trạng thái buổi học'));
     let runStart = -1;
     const flush = (endRowIndex: number) => {
       if (runStart < 0) return;
@@ -124,7 +112,10 @@ export const calendarSheetFormatting = (requests: sheets_v4.Schema$Request[], no
       canceledStart = -1;
     };
     for (let i = 1; i < rows.length; i++) {
-      const canceled = subjectColumn >= 0 && rows[i].values?.[subjectColumn]?.userEnteredValue?.stringValue === 'Nghỉ';
+      const status = statusColumn >= 0 ? rows[i].values?.[statusColumn]?.userEnteredValue : undefined;
+      const canceled = statusColumn >= 0
+        ? String(status?.numberValue ?? status?.stringValue ?? '') === '0'
+        : subjectColumn >= 0 && rows[i].values?.[subjectColumn]?.userEnteredValue?.stringValue === 'Nghỉ';
       if (canceled && canceledStart < 0) canceledStart = i;
       if (!canceled) flushCanceled(i);
     }

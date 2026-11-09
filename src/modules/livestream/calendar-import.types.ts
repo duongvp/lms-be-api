@@ -22,12 +22,27 @@ export type CalendarImportError = {
   courseId?: string;
   lessonId?: string;
   duplicateWithRow?: number;
+  reasonCode?: 'PAST_SCHEDULE' | 'IMMUTABLE_FIELD' | 'CALENDAR_NOT_FOUND';
+  suggestion?: string;
+  currentValue?: string;
+  importedValue?: string;
+  calendar?: {
+    key?: string;
+    code?: string;
+    learnNumber?: number;
+    lessonCount?: number;
+    lessonName?: string;
+    startTime?: string;
+  };
 };
 
 export type CalendarImportRow = {
   row: number;
   sourceFormat: 'direct' | 'operational';
   sourceKey?: string;
+  statusProvided?: boolean;
+  lessonNamePrefix?: string;
+  lessonNameSuffix?: string;
   packageIds: string[];
   courseIds: string[];
   lessonIds: string[];

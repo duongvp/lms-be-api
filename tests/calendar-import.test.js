@@ -20,9 +20,11 @@ const {
   fetchHocmaiCourseOutlines,
 } = require('../dist/integrations/hocmai-course-outline.service');
 
+const LEGACY_COLUMNS = ['Môn', 'Mã buổi học', 'Tên bài giảng', 'Tên GV', 'Ngày live', 'Thứ', 'Khung giờ', 'Tài liệu live', 'Nhiệm vụ học tập', 'Tài liệu lưu trữ', 'BTV ND', 'assistant_teacher', 'Link sharepoint', 'ID course', 'ID Bài giảng', 'ID package', 'Email GV', 'Email TG'];
+
 const buildSheet = (rows) => {
   const worksheet = XLSX.utils.aoa_to_sheet([
-    [...CALENDAR_IMPORT_FILE_COLUMNS],
+    [...LEGACY_COLUMNS],
     ...rows,
   ]);
   const workbook = XLSX.utils.book_new();
@@ -99,12 +101,12 @@ test('template trực tiếp có cột assistant_teacher và giữ nguyên tên 
   );
 });
 
-test('file Excel cập nhật không còn metadata Chương trình và vẫn import tên trợ giảng', () => {
+test('file Excel cập nhật giữ mã định danh và metadata Chương trình để import an toàn', () => {
   const parsed = parseCalendarImportFile(buildCalendarUpdateFile([{
     code: 'TEST_PROGRAM',
     subject: 'Ngữ văn',
-    start_time: '2026-08-17 19:00:00',
-    end_time: '2026-08-17 20:30:00',
+    live_date: '17/08/2026',
+    time_range: '19:00-20:30',
     learn_number: 1,
     teacher: 'Cô An',
     assistant_name: 'Trợ Giảng Một; Trợ Giảng Hai',
@@ -116,7 +118,7 @@ test('file Excel cập nhật không còn metadata Chương trình và vẫn imp
   const result = validateCalendarImportRows(parsed, importProgramContext);
 
   assert.deepEqual(result.errors, []);
-  assert.equal(result.importRows[0].sourceKey, undefined);
+  assert.equal(result.importRows[0].sourceKey, 'tc_46251_TEST_PROGRAM_1');
   assert.equal(result.importRows[0].calendar.code, 'TEST_PROGRAM');
   assert.equal(result.importRows[0].calendar.system_type, 'topclass');
   assert.equal(result.importRows[0].calendar.lesson_count, 0);
@@ -125,7 +127,7 @@ test('file Excel cập nhật không còn metadata Chương trình và vẫn imp
     CALENDAR_UPDATE_FILE_COLUMNS.map((column) => column.key).filter(
       (key) => ['code', 'subject', 'key', 'system_type'].includes(key)
     ),
-    []
+    ['subject', 'code', 'key', 'system_type']
   );
 });
 
@@ -141,7 +143,7 @@ test('xử lý bỏ qua hoặc ghi đè cho mọi trường khi import cập nh�
 });
 
 test('tự tìm dòng tiêu đề và chấp nhận Mã buổi học có dấu (*)', () => {
-  const headers = [...CALENDAR_IMPORT_FILE_COLUMNS];
+  const headers = [...LEGACY_COLUMNS];
   headers[1] = 'Mã buổi học (*)';
   const parsed = parseCalendarImportFile(buildMatrixSheet([
     ['DANH SÁCH IMPORT LỊCH HỌC'],
@@ -239,7 +241,7 @@ test('learn_number chỉ tăng trong cùng một code', () => {
 
 test('không đọc khối dữ liệu lặp sau một khoảng trống rất lớn trong XLSX', () => {
   const worksheet = XLSX.utils.aoa_to_sheet([
-    [...CALENDAR_IMPORT_FILE_COLUMNS],
+    [...LEGACY_COLUMNS],
     sampleRow(),
   ]);
   worksheet.A5001 = { t: 's', v: 'Môn' };

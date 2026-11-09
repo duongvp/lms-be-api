@@ -1,3 +1,25 @@
+# Mẫu import/export lịch học dùng chung (09/11/2026)
+
+File mẫu hiện hành: [calendar-import-template.xlsx](calendar-import-template.xlsx).
+Google Sheet: [Mẫu lịch học](https://docs.google.com/spreadsheets/d/1R2awLXyXD41_mKEi2zz8M7kunL2pqEAEw8dl-QmEx9A/edit#gid=20261109).
+
+Thứ tự đầu file: Môn → Mã chương trình → Bài → Lần học → Tên bài giảng. Các mẫu dùng cùng thứ tự cột.
+
+Export thường, Excel chỉnh sửa lịch, CSV, file mẫu và Google Sheets dùng cùng 21 cột tiếng Việt. Tên GV và Trợ giảng nằm ngay sau Khung giờ; bỏ Email GV/Email TG. Mã chương trình giữ nguyên mã chương trình, không sinh mã hiển thị thay thế.
+
+- Tên header trạng thái ghi rõ **Trạng thái buổi học (0 = nghỉ, 1 = học)**. File Excel và Google Sheet không khóa cột và không có ghi chú nổi, dùng chung cho tạo mới/cập nhật. Dùng hai cột Tiền tố tên bài/Hậu tố tên bài để bổ sung tên; backend vẫn kiểm tra các cột định danh và tên gốc khi import. Mẫu tạo mới cho nhập số thứ tự bài/lần học; tên bài tự lấy từ quản lý nội dung. CSV không hỗ trợ khóa ô; backend vẫn kiểm tra các giá trị cố định.
+- Import cập nhật bắt buộc giữ Mã định danh lịch (c_key), mã chương trình, môn, hệ thống, số thứ tự bài và lần học; không dùng fallback theo số bài khi thiếu c_key. Tên bài phải giữ nguyên tên gốc trong quản lý nội dung, chỉ được thêm/sửa phần tiền tố hoặc hậu tố. Tạo mới cũng đối chiếu môn và tên gốc theo đúng bài học.
+- Giáo viên/trợ giảng nhập bằng tên hiển thị hoặc tài khoản phải tồn tại, đang hoạt động và đúng vai trò. Tên giáo viên trùng nhiều tài khoản phải dùng username. Kiểm tra cả giá trị đã nhập ở chế độ Chỉ bổ sung ô trống, trước khi ghi bất kỳ dữ liệu nào.
+- Báo lỗi import hiển thị dòng/cột, nguyên nhân và cách sửa. Với cột cố định có đối chiếu giá trị gốc/giá trị trong file; với lịch đã bắt đầu có thông tin bài và thời gian lịch gốc. Mã lỗi API cũ được giữ tương thích; bổ sung suggestion/reasonCode/context để giao diện giải thích. Mỗi lỗi khác cột hoặc khác nguyên nhân đều được giữ, không gộp mất lỗi trong cùng dòng.
+- Mã định danh lịch tương ứng c_key (calendar.key). Khi cập nhật phải giữ nguyên mã, Hệ thống, Bài (learn_number), Lần học (lesson_count). Các giá trị được đối chiếu với lịch hiện tại trước khi ghi; không được chuyển lịch sang chương trình/hệ khác.
+- Export, sửa Ngày live/Khung giờ, chọn Cập nhật lịch và Ghi đè. Bỏ qua chỉ điền các trường đang trống. Ô trống giữ nguyên dữ liệu. Lịch đã diễn ra không thể sửa; lịch nghỉ trong tương lai có thể chỉnh sửa hoặc chuyển lại thành học.
+- Trạng thái buổi học trong file: **0 = nghỉ, 1 = học**. Database và nghiệp vụ hiện có dùng **1 = nghỉ, 0 = học**; lớp đọc/ghi file chuyển đổi hai chiều, không thay quy ước database. Để trống trạng thái khi cập nhật thì giữ nguyên trạng thái cũ. Dòng nghỉ có trạng thái rõ ràng không bị bỏ qua.
+- Thứ ghi 2–7 hoặc CN. Ngày live dùng DD/MM/YYYY; Khung giờ dùng HH:mm-HH:mm. Giờ kết thúc nhỏ hơn giờ bắt đầu được hiểu là qua ngày hôm sau.
+- Tạo mới: để trống Mã định danh lịch, chọn chương trình, điền Bài. Chương trình cung cấp mã/môn/hệ nếu ô trống; mã và hệ đã nhập phải khớp chương trình. ID đã nhập được kiểm tra theo mapping package–course của đúng bài nội bộ và đối chiếu HMO trước khi ghi. ID bài giảng hợp lệ được gán trong cùng transaction với lịch; chế độ Bỏ qua giữ mapping đã có, Ghi đè dùng mapping đã kiểm tra. Để trống cả ba cột giữ nguyên mapping và không gọi HMO. Chỉ nhập package/course thì kiểm tra nhưng không xóa ID bài giảng hiện tại. Nền xanh nhạt chỉ đánh dấu lịch đã kết thúc theo giờ Việt Nam; không tô xen kẽ.
+- Vẫn nhận header tiếng Anh và email của file cũ. Quy trình vận hành HMO cũ bên dưới được giữ để tham khảo; giao diện import hiện hành dùng mẫu chung nêu trên.
+
+---
+
 # BE Requirement: Import Sheet → HMO Batch API → Validate → Import Calendar
 
 ## 1. Mục tiêu

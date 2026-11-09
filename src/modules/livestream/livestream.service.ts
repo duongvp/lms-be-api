@@ -2177,6 +2177,14 @@ export const createValidatedInternalCalendarImport = async (
           await auditCalendarKeyReuse(tx, calendar, changeActor);
         }
       }
+      for (let index = 0; index < prepared.length; index++) {
+        if (!rows[index].mappings?.length) continue;
+        const calendar = createdCalendars.find(calendar => calendar.key === prepared[index].key);
+        if (!calendar) throw new Error('Không tìm thấy lịch vừa tạo để gán ID bài giảng');
+        const operationId = crypto.randomUUID();
+        await reconcileCalendarMappingsAndEnqueue(tx, calendar, rows[index].mappings, operationId, index + 1, false);
+        await enqueueCalendarSync(tx, operationId, index + 1, 'create', calendar);
+      }
       const createdByKey = new Map(
         createdCalendars
           .filter((calendar) => calendar.key)
@@ -3905,7 +3913,7 @@ export const getCalendarRowsForExport = async (
     const courseSourceLessons = linkedProgram ? [linkedProgram] : programCandidates.filter((lesson) => lesson.learn_number === calendar.learn_number);
     const lessonMappings = courseSourceLessons.flatMap((lesson) => exportCoursesByLesson.get(String(lesson.id)) || []);
     const assistants = parseAssistantTeachers((calendar as any).assistant_teacher);
-    const weekday = start.weekday === 0 ? 'Chủ Nhật' : `Thứ ${start.weekday + 1}`;
+    const weekday = start.weekday === 0 ? 'CN' : String(start.weekday + 1);
 
     return {
       key: calendar.key || '',

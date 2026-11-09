@@ -1,4 +1,6 @@
+import { calendarSessionEnded } from './calendar-file-time';
 import * as XLSX from 'xlsx';
+const StyledXLSX: typeof XLSX = require('xlsx-js-style');
 import {
   CalendarImportError,
   CalendarImportErrorCode,
@@ -7,69 +9,32 @@ import {
 
 export type CalendarFileFormat = 'csv' | 'xlsx';
 
-export const CALENDAR_IMPORT_FILE_COLUMNS = [
-  'Môn',
-  'Mã buổi học',
-  'Tên bài giảng',
-  'Tên GV',
-  'Ngày live',
-  'Thứ',
-  'Khung giờ',
-  'Tài liệu live\n(TL HS)',
-  'Nhiệm vụ học tập',
-  'Tài liệu lưu trữ',
-  'BTV ND',
-  'assistant_teacher',
-  'Link sharepoint',
-  'ID course\n(TSA,HSA,V-ACT,TN THPT)',
-  'ID Bài giảng\n(TSA,HSA,V-ACT,TN THPT)',
-  'ID package\n(TSA,HSA,V-ACT,TN THPT)',
-  'Email GV',
-  'Email TG',
+// One schema for exports, import templates and update files.
+export const CALENDAR_FILE_COLUMNS = [
+  { key: 'subject', header: 'Môn' },
+  { key: 'code', header: 'Mã chương trình' },
+  { key: 'learn_number', header: 'Bài' },
+  { key: 'lesson_count', header: 'Lần học' },
+  { key: 'lesson_name', header: 'Tên bài giảng' },
+  { key: 'live_date', header: 'Ngày live' },
+  { key: 'weekday', header: 'Thứ' },
+  { key: 'time_range', header: 'Khung giờ' },
+  { key: 'teacher_name', header: 'Tên GV' },
+  { key: 'assistant_name', header: 'Trợ giảng' },
+  { key: 'lesson_document', header: 'Tài liệu live\n(TL HS)' },
+  { key: 'lesson_baitap', header: 'Nhiệm vụ học tập' },
+  { key: 'archive_document', header: 'Tài liệu lưu trữ' },
+  { key: 'course_ids', header: 'ID khóa học' },
+  { key: 'lesson_ids', header: 'ID bài giảng' },
+  { key: 'package_ids', header: 'ID gói học' },
+  { key: 'key', header: 'Mã định danh lịch' },
+  { key: 'system_type', header: 'Hệ thống' },
+  { key: 'lesson_name_prefix', header: 'Tiền tố tên bài' },
+  { key: 'lesson_name_suffix', header: 'Hậu tố tên bài' },
+  { key: 'lesson_status', header: 'Trạng thái buổi học\n(0 = nghỉ, 1 = học)' },
 ] as const;
-
-const CALENDAR_IMPORT_EXPORT_KEYS = [
-  'subject',
-  'code',
-  'lesson_name',
-  'teacher_name',
-  'live_date',
-  'weekday',
-  'time_range',
-  'lesson_document',
-  'lesson_baitap',
-  'archive_document',
-  'content_homework',
-  'assistant_name',
-  'sharepoint_link',
-  'course_ids',
-  'lesson_ids',
-  'package_ids',
-  'teacher_email',
-  'assistant_email',
-] as const;
-
-// Export dùng chính cấu trúc của file import để người dùng có thể sửa file
-// vừa xuất rồi import lại mà không phải đổi tên hoặc sắp xếp cột.
-export const CALENDAR_FILE_COLUMNS = CALENDAR_IMPORT_FILE_COLUMNS.map(
-  (header, index) => ({
-    key: CALENDAR_IMPORT_EXPORT_KEYS[index],
-    header,
-  })
-);
-
-export const CALENDAR_UPDATE_FILE_COLUMNS = [
-  { key: 'start_time', header: 'start_time' },
-  { key: 'end_time', header: 'end_time' },
-  { key: 'learn_number', header: 'learn_number' },
-  { key: 'teacher', header: 'teacher' },
-  { key: 'assistant_name', header: 'assistant_teacher' },
-  { key: 'lesson_name', header: 'lesson_name' },
-  { key: 'lesson_document', header: 'lesson_document' },
-  { key: 'evg_banner', header: 'evg_banner' },
-  { key: 'evg_stream', header: 'evg_stream' },
-  { key: 'lesson_count', header: 'lesson_count' },
-] as const;
+export const CALENDAR_IMPORT_FILE_COLUMNS = CALENDAR_FILE_COLUMNS.map(column => column.header);
+export const CALENDAR_UPDATE_FILE_COLUMNS = CALENDAR_FILE_COLUMNS;
 
 const normalizeHeader = (value: unknown) => String(value ?? '')
   .trim()
@@ -86,6 +51,8 @@ const HEADER_ALIASES: Record<string, string> = {
   mon: 'subject',
   'mon hoc': 'subject',
   'ma buoi hoc': 'code',
+  'ma chuong trinh': 'code',
+  bai: 'learn_number',
   'ten bai giang': 'lesson_name',
   'ten gv': 'teacher_name',
   'ngay live': 'live_date',
@@ -117,11 +84,24 @@ const HEADER_ALIASES: Record<string, string> = {
   'lesson ids': 'lesson_ids',
   lessonid: 'lesson_ids',
   key: 'key',
+  'c key': 'key',
+  'ma dinh danh lich': 'key',
+  'he thong': 'system_type',
+  'so thu tu bai': 'learn_number',
+  'lan hoc': 'lesson_count',
+  'trang thai buoi hoc': 'lesson_status',
+  'lesson status': 'lesson_status',
+  'tien to ten bai': 'lesson_name_prefix',
+  'hau to ten bai': 'lesson_name_suffix',
+  'id khoa hoc': 'course_ids',
+  'id goi hoc': 'package_ids',
 };
 
 const mapImportHeader = (value: unknown) => {
   const header = normalizeHeader(value);
+  if (header.startsWith('trang thai buoi hoc')) return 'lesson_status';
   if (HEADER_ALIASES[header]) return HEADER_ALIASES[header];
+  if (header.startsWith('ma chuong trinh')) return 'code';
   if (header.startsWith('ma buoi hoc')) return 'code';
   if (header.startsWith('tai lieu live')) return 'lesson_document';
   if (header.startsWith('id course')) return 'course_ids';
@@ -148,6 +128,7 @@ const DATA_MARKER_KEYS = new Set([
   'end_time',
   'learn_number',
   'lesson_name',
+  'key',
 ]);
 
 const isRestRow = (row: Record<string, unknown>) => (
@@ -205,7 +186,7 @@ const normalizeMatrixRows = (matrix: unknown[][]) => {
       return normalized;
     })
     .filter((row) => (
-      !isRestRow(row)
+      !(isRestRow(row) && String(row.lesson_status ?? '').trim() === '')
       && Object.entries(row).some(([key, value]) => (
         DATA_MARKER_KEYS.has(key) && String(value ?? '').trim()
       ))
@@ -296,12 +277,15 @@ const MAPPING_HEADER_ALIASES: Record<string, string> = {
   'id lich hoc': 'id',
   key: 'key',
   'c key': 'key',
+  'ma dinh danh lich': 'key',
   'session key': 'key',
   sessionid: 'key',
   'session id': 'key',
   'ma lop': 'code',
   'ma khoa hoc': 'code',
   'ma buoi hoc': 'code',
+  'ma chuong trinh': 'code',
+  bai: 'learn_number',
   code: 'code',
   'buoi hoc': 'learn_number',
   'so buoi': 'learn_number',
@@ -397,9 +381,12 @@ export const parseCalendarMappingImportFile = (buffer: Buffer, originalName: str
     ));
 };
 
+const importValueError = (field: string, message: string, suggestion?: string, currentValue?: string, importedValue?: string) =>
+  Object.assign(new Error(message), {field, suggestion, currentValue, importedValue});
+
 const requiredText = (value: unknown, field: string) => {
   const text = String(value ?? '').trim();
-  if (!text) throw new Error(`${field} không được để trống`);
+  if (!text) throw importValueError(field, `${field} không được để trống`, `Điền cột ${field} theo file mẫu rồi import lại.`);
   return text;
 };
 
@@ -410,9 +397,9 @@ const limitedText = (
   required = false
 ) => {
   const text = String(value ?? '').trim();
-  if (required && !text) throw new Error(`${field} không được để trống`);
+  if (required && !text) throw importValueError(field, `${field} không được để trống`, `Điền cột ${field} theo file mẫu rồi import lại.`);
   if (text.length > maxLength) {
-    throw new Error(`${field} không được vượt quá ${maxLength} ký tự`);
+    throw importValueError(field, `${field} không được vượt quá ${maxLength} ký tự`, `Rút gọn cột ${field} còn tối đa ${maxLength} ký tự.`);
   }
   return text || undefined;
 };
@@ -485,7 +472,7 @@ const parseLiveDate = (value: unknown) => {
     : iso
       ? { day: Number(iso[3]), month: Number(iso[2]), year: Number(iso[1]) }
       : null;
-  if (!parts) throw new Error('Ngày live phải có định dạng DD/MM/YYYY');
+  if (!parts) throw importValueError('Ngày live', 'Ngày live không đúng định dạng.', 'Nhập ngày dạng DD/MM/YYYY, ví dụ 25/12/2027.');
 
   const test = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
   if (
@@ -493,7 +480,7 @@ const parseLiveDate = (value: unknown) => {
     || test.getUTCMonth() !== parts.month - 1
     || test.getUTCDate() !== parts.day
   ) {
-    throw new Error('Ngày live không hợp lệ');
+    throw importValueError('Ngày live', 'Ngày live không tồn tại trên lịch.', 'Kiểm tra lại ngày, tháng, năm; ví dụ tháng 2 không có ngày 30.');
   }
   return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
 };
@@ -502,14 +489,14 @@ const parseTimeRange = (value: unknown) => {
   const text = requiredText(value, 'Khung giờ');
   const parts = text.split(/\s*[-–—]\s*/);
   if (parts.length !== 2) {
-    throw new Error('Khung giờ phải có định dạng HH:mm-HH:mm');
+    throw importValueError('Khung giờ', 'Khung giờ không đúng định dạng.', 'Nhập giờ bắt đầu và kết thúc dạng HH:mm-HH:mm, ví dụ 20:00-21:30.');
   }
   const normalizeTime = (time: string) => {
     const match = time.match(/^(\d{1,2}):(\d{2})$/);
-    if (!match) throw new Error('Khung giờ phải có định dạng HH:mm-HH:mm');
+    if (!match) throw importValueError('Khung giờ', 'Khung giờ không đúng định dạng.', 'Nhập giờ bắt đầu và kết thúc dạng HH:mm-HH:mm, ví dụ 20:00-21:30.');
     const hour = Number(match[1]);
     const minute = Number(match[2]);
-    if (hour > 23 || minute > 59) throw new Error('Khung giờ không hợp lệ');
+    if (hour > 23 || minute > 59) throw importValueError('Khung giờ', 'Khung giờ không hợp lệ.', 'Giờ từ 00 đến 23, phút từ 00 đến 59; ví dụ 20:00-21:30.');
     return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
   };
   return {
@@ -573,7 +560,7 @@ const parseDirectDateTime = (value: unknown, field: string) => {
 const optionalNonNegativeInteger = (value: unknown, field: string) => {
   if (value === undefined || value === null || value === '') return undefined;
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${field} không hợp lệ`);
+  if (!Number.isInteger(parsed) || parsed < 0) throw importValueError(field, `${field} phải là số nguyên không âm.`, 'Nhập số nguyên từ 0 trở lên; riêng Bài phải từ 1 trở lên.');
   return parsed;
 };
 
@@ -624,20 +611,27 @@ export const validateCalendarImportRows = (
       ? sourceRow
       : index + 2;
     try {
+      if (String(row.key ?? '').trim()) {
+        for (const [field, value] of [['Mã chương trình', row.code], ['Môn', row.subject], ['Hệ thống', row.system_type]]) {
+          if (!String(value ?? '').trim()) throw importValueError(String(field), `${field} trong dòng cập nhật đang để trống.`, `Khôi phục ${field} theo file export gốc; không xóa cột định danh khi cập nhật lịch.`);
+        }
+      }
       const suppliedCode = String(row.code ?? '').trim();
       if (programContext && suppliedCode && suppliedCode !== programContext.code) {
-        throw new Error(`Mã chương trình trong file (${suppliedCode}) không khớp chương trình đã chọn (${programContext.code})`);
+        throw importValueError('Mã chương trình', 'Mã chương trình trong file không khớp chương trình đang chọn.', 'Chọn đúng chương trình để import, hoặc dùng lại file export của chương trình này.', programContext.code, suppliedCode);
       }
-      const code = programContext?.code || requiredText(row.code, 'Mã buổi học');
-      if (code.length > 30) throw new Error('Mã buổi học không được vượt quá 30 ký tự');
-      const directFormat = Boolean(String(row.start_time ?? '').trim() || String(row.end_time ?? '').trim());
-      const suppliedLearnNumber = optionalNonNegativeInteger(row.learn_number, 'Số thứ tự bài');
-      if (suppliedLearnNumber !== undefined && suppliedLearnNumber < 1) throw new Error('Số thứ tự bài phải lớn hơn 0');
+      const code = programContext?.code || requiredText(row.code, 'Mã chương trình');
+      if (code.length > 30) throw new Error('Mã chương trình không được vượt quá 30 ký tự');
+      const directDateFormat = Boolean(String(row.start_time ?? '').trim() || String(row.end_time ?? '').trim());
+      const directFormat = directDateFormat || Boolean(programContext);
+      const suppliedLearnNumber = optionalNonNegativeInteger(row.learn_number, 'Bài');
+      if (programContext && suppliedLearnNumber === undefined) throw importValueError('Bài', 'Bài không được để trống.', 'Điền số bài đã có trong chương trình đang chọn.');
+      if (suppliedLearnNumber !== undefined && suppliedLearnNumber < 1) throw importValueError('Bài', 'Bài phải lớn hơn 0.', 'Điền số bài đã có trong chương trình, bắt đầu từ 1.');
       const learnNumber = suppliedLearnNumber ?? (learnNumbersByCode.get(code) ?? 0) + 1;
       learnNumbersByCode.set(code, learnNumber);
       let startTime: string;
       let endTime: string;
-      if (directFormat) {
+      if (directDateFormat) {
         startTime = parseDirectDateTime(row.start_time, 'start_time');
         endTime = parseDirectDateTime(row.end_time, 'end_time');
       } else {
@@ -645,27 +639,21 @@ export const validateCalendarImportRows = (
         const time = parseTimeRange(row.time_range);
         startTime = `${date}T${time.start}:00.000Z`;
         endTime = `${date}T${time.end}:00.000Z`;
+        if (time.end < time.start) endTime = new Date(new Date(endTime).getTime() + 86400000).toISOString();
       }
       if (new Date(startTime) >= new Date(endTime)) {
-        throw new Error('Giờ kết thúc phải sau giờ bắt đầu');
+        throw importValueError('Khung giờ', 'Giờ kết thúc phải sau giờ bắt đầu.', 'Kiểm tra hai mốc giờ; không nhập giờ bắt đầu và kết thúc giống nhau.');
       }
 
-      // Format tạo lịch trực tiếp chỉ xác định bài học nội bộ bằng code và
-      // learn_number. Package/Course đã quản lý tại bài học; Lesson ID HMO
-      // được gán ở nghiệp vụ đồng bộ sau khi lịch đã được tạo.
-      const courseIds = directFormat ? [] : parseIds(
-        row.course_ids,
-        'Course ID',
-        'INVALID_COURSE_ID'
-      );
-      const lessonIds = directFormat ? [] : parseIds(
-        row.lesson_ids,
-        'Lesson ID',
-        'INVALID_LESSON_ID'
-      );
-      const packageIds = directFormat ? [] : parsePackageIds(row.package_ids);
+      // Empty IDs leave mappings unchanged; supplied IDs must still be parsed
+      // for internal imports and validated against content and HMO below.
+      const courseIds = parseIds(row.course_ids, 'ID khóa học', 'INVALID_COURSE_ID', !directFormat);
+      const lessonIds = parseIds(row.lesson_ids, 'ID bài giảng', 'INVALID_LESSON_ID', !directFormat);
+      const packageIds = directFormat
+        ? parseIds(row.package_ids, 'ID gói học', 'INVALID_PACKAGE_ID', false)
+        : parsePackageIds(row.package_ids);
       const teacher = directFormat
-        ? limitedText(row.teacher, 'Giáo viên', 150)
+        ? limitedText(row.teacher ?? row.teacher_name ?? row.teacher_email, 'Tên GV', 150)
         : normalizeOptionalTeacher(row.teacher_email);
       // Người vận hành quản lý trợ giảng bằng tên hiển thị. Vẫn nhận Email TG
       // của file cũ làm fallback; bước validate async sẽ đổi tên thành username
@@ -675,19 +663,29 @@ export const validateCalendarImportRows = (
           ? row.assistant_name
           : row.assistant_email
       );
-      const subject = programContext?.subject || limitedText(row.subject, 'Môn', 100, true);
-      const lessonName = limitedText(row.lesson_name, 'Tên bài giảng', 400, true);
+      const subject = limitedText(row.subject, 'Môn', 100) || programContext?.subject;
+      if (!subject) throw new Error('Môn không được để trống');
+      const lessonName = limitedText(row.lesson_name, 'Tên bài giảng', 400, !programContext || Boolean(row.key));
       const lessonExercise = limitedText(row.lesson_baitap, 'Nhiệm vụ học tập', 500);
       const suppliedSystemType = String(row.system_type || '').trim().toLowerCase();
       if (programContext && suppliedSystemType && suppliedSystemType !== programContext.systemType) {
-        throw new Error(`system_type trong file không khớp chương trình đã chọn (${programContext.systemType})`);
+        throw importValueError('Hệ thống', 'Hệ thống trong file không khớp chương trình đang chọn.', 'Giữ nguyên Hệ thống theo chương trình và file export gốc.', programContext.systemType, suppliedSystemType);
       }
       const systemType = String(
         programContext?.systemType || suppliedSystemType || (directFormat ? '' : 'topclass')
       ).trim().toLowerCase();
-      if (systemType !== 'topclass' && systemType !== 'topuni') throw new Error('system_type chỉ nhận topclass hoặc topuni');
+      if (systemType !== 'topclass' && systemType !== 'topuni') throw importValueError('Hệ thống', 'Hệ thống không hợp lệ.', 'Chỉ nhập topclass hoặc topuni, đúng theo chương trình đang chọn.');
 
+      const statusProvided = String(row.lesson_status ?? '').trim() !== '';
+      if (statusProvided && !['0', '1'].includes(String(row.lesson_status).trim())) {
+        throw importValueError('Trạng thái buổi học', 'Trạng thái buổi học không hợp lệ.', 'Chỉ nhập 0 nếu nghỉ hoặc 1 nếu học.');
+      }
+      if (String(row.lesson_name_prefix ?? '').length > 100) throw importValueError('Tiền tố tên bài', 'Tiền tố tên bài vượt quá 100 ký tự.', 'Rút gọn tiền tố còn tối đa 100 ký tự.');
+      if (String(row.lesson_name_suffix ?? '').length > 100) throw importValueError('Hậu tố tên bài', 'Hậu tố tên bài vượt quá 100 ký tự.', 'Rút gọn hậu tố còn tối đa 100 ký tự.');
       importRows.push({
+        statusProvided,
+        lessonNamePrefix: String(row.lesson_name_prefix ?? ''),
+        lessonNameSuffix: String(row.lesson_name_suffix ?? ''),
         row: excelRow,
         sourceFormat: directFormat ? 'direct' : 'operational',
         sourceKey: limitedText(row.key, 'key', 100),
@@ -705,11 +703,12 @@ export const validateCalendarImportRows = (
           lesson_document: toDocumentJson(row.lesson_document),
           evg_banner: limitedText(row.evg_banner, 'evg_banner', 500),
           evg_stream: limitedText(row.evg_stream, 'evg_stream', 500),
-          lesson_count: optionalNonNegativeInteger(row.lesson_count, 'lesson_count'),
+          lesson_count: optionalNonNegativeInteger(row.lesson_count, 'Lần học'),
           lesson_baitap: lessonExercise,
           start_time: startTime,
           end_time: endTime,
-          lesson_status: 0,
+          // File: 0 nghỉ, 1 học. Database legacy: 1 nghỉ, 0 học.
+          lesson_status: statusProvided ? 1 - Number(row.lesson_status) : 0,
         },
       });
     } catch (error: any) {
@@ -719,6 +718,9 @@ export const validateCalendarImportRows = (
         field: error.field || 'row',
         errorCode: error.errorCode || 'INVALID_ROW',
         message: error.message || 'Dữ liệu không hợp lệ',
+        suggestion: error.suggestion,
+        currentValue: error.currentValue,
+        importedValue: error.importedValue,
         ...(error.errorCode === 'INVALID_PACKAGE_ID' ? { packageId: invalidId } : {}),
         ...(error.errorCode === 'INVALID_COURSE_ID' ? { courseId: invalidId } : {}),
         ...(error.errorCode === 'INVALID_LESSON_ID' ? { lessonId: invalidId } : {}),
@@ -734,8 +736,12 @@ const escapeCsvValue = (value: unknown) => {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
+const fileValue = (row: any, key: string) => key === 'lesson_status'
+  ? (row.lesson_status == null ? '' : 1 - Number(row.lesson_status))
+  : key === 'weekday' ? String(row.weekday ?? '').replace(/^Thứ\s+/i, '').replace(/Chủ Nhật/i, 'CN') : row[key] ?? '';
+
 const toSheetRows = (rows: any[]) => rows.map((row) => Object.fromEntries(
-  CALENDAR_FILE_COLUMNS.map((column) => [column.header, row[column.key] ?? ''])
+  CALENDAR_FILE_COLUMNS.map((column) => [column.header, fileValue(row, column.key)])
 ));
 
 export const buildCalendarFile = (rows: any[], format: CalendarFileFormat) => {
@@ -743,7 +749,7 @@ export const buildCalendarFile = (rows: any[], format: CalendarFileFormat) => {
     const lines = [
       CALENDAR_FILE_COLUMNS.map((column) => escapeCsvValue(column.header)).join(','),
       ...rows.map((row) => CALENDAR_FILE_COLUMNS
-        .map((column) => escapeCsvValue(row[column.key]))
+        .map((column) => escapeCsvValue(fileValue(row, column.key)))
         .join(',')),
     ];
     return Buffer.from(`\uFEFF${lines.join('\n')}`, 'utf8');
@@ -753,7 +759,7 @@ export const buildCalendarFile = (rows: any[], format: CalendarFileFormat) => {
     header: CALENDAR_FILE_COLUMNS.map((column) => column.header),
   });
   worksheet['!cols'] = CALENDAR_FILE_COLUMNS.map((column) => ({
-    wch: [
+    wch: column.key === 'lesson_status' ? 28 : [
       'lesson_name',
       'lesson_document',
       'lesson_baitap',
@@ -762,23 +768,37 @@ export const buildCalendarFile = (rows: any[], format: CalendarFileFormat) => {
       'sharepoint_link',
     ].includes(column.key) ? 32 : 18,
   }));
+  styleCalendarWorksheet(worksheet);
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Calendar');
-  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Lịch học');
+  return StyledXLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 };
 
-const OPERATIONAL_COLUMNS = [
-  ['Môn', 'operational_subject'], ['Mã buổi học', 'operational_lesson_code'], ['Tên bài giảng', 'lesson_name'],
-  ['Tên GV', 'teacher_name'], ['Ngày live', 'live_date'], ['Thứ', 'weekday'],
-  ['Khung giờ', 'time_range'], ['Tài liệu live\n(TL HS)', 'lesson_document'],
-  ['Nhiệm vụ học tập', 'lesson_baitap'], ['Tài liệu lưu trữ', 'archive_document'],
-  ['BTV ND', 'content_homework'], ['Trợ giảng', 'assistant_name'],
-  ['Link Sharepoint', 'sharepoint_link'], ['ID course', 'course_ids'],
-  ['ID Bài giảng', 'lesson_ids'], ['ID package', 'package_ids'],
-  ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['Ngày XB', ''],
-  ['Trạng thái', ''], ['BTV vận hành', ''], ['BACK', ''], ['Link record', ''],
-  ['Link API', ''], ['Tháng live', ''], ['', ''], ['ID', ''], ['Combine', ''], ['Test', ''],
-] as const;
+const OPERATIONAL_COLUMNS = CALENDAR_FILE_COLUMNS.map(({header, key}) => [header, key] as const);
+
+const styleCalendarWorksheet = (sheet: XLSX.WorkSheet) => {
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+  sheet['!rows'] = [{ hpt: 36 }];
+  sheet['!autofilter'] = { ref: XLSX.utils.encode_range(range) };
+  const columnIndex = (key: string) => CALENDAR_FILE_COLUMNS.findIndex(column => column.key === key);
+  const now = new Date();
+  for (let r = 0; r <= range.e.r; r++) {
+    const value = (key: string) => sheet[XLSX.utils.encode_cell({r, c: columnIndex(key)})]?.v;
+    const ended = r > 0 && calendarSessionEnded(String(value('live_date') ?? ''), String(value('time_range') ?? ''), now);
+    const status = value('lesson_status');
+    const isRest = r > 0 && status !== '' && status != null && Number(status) === 0;
+    for (let c = 0; c <= range.e.c; c++) {
+      const address = XLSX.utils.encode_cell({r, c});
+      const cell = sheet[address] || (sheet[address] = {t: 's', v: ''});
+      cell.s = {
+        font: { name: 'Arial', sz: 10, bold: r === 0, color: {rgb: r === 0 ? 'FFFFFF' : isRest ? 'FF0000' : '000000'} },
+        fill: {fgColor: {rgb: r === 0 ? (['lesson_document', 'lesson_baitap'].includes(CALENDAR_FILE_COLUMNS[c]?.key) ? '741B47' : '0C343D') : ended ? 'B7E1CD' : 'FFFFFF'}},
+        alignment: {vertical: 'center', wrapText: r === 0},
+        border: Object.fromEntries(['top', 'bottom', 'left', 'right'].map(side => [side, {style: 'thin', color: {rgb: '00B050'}}])),
+      };
+    }
+  }
+};
 
 const operationalSheetName = (rows: any[], code: string, used: Set<string>) => {
   const grade = code.match(/(?:^|-)(\d{1,2})(?:-|$)/)?.[1];
@@ -795,45 +815,6 @@ const operationalSheetName = (rows: any[], code: string, used: Set<string>) => {
   return name;
 };
 
-const normalizeOperationalSubject = (value: unknown) => String(value || '')
-  .replace(/\b(?:lớp\s*)?\d{1,2}\b/gi, '')
-  .replace(/\s+/g, ' ')
-  .trim();
-
-const operationalSubjectPrefix = (subject: string, grade: string) => {
-  const normalized = subject.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').toLowerCase();
-  if (normalized.includes('khoa hoc tu nhien') || normalized.includes('khtn')) return `KHTN${grade}`;
-  if (normalized.includes('tieng anh') || /(^|\s)ta($|\s)/.test(normalized)) return `TA${grade}`;
-  if (normalized.includes('vat ly') || normalized.includes('vat li') || /(^|\s)vl($|\s)/.test(normalized)) return `VL${grade}`;
-  if (normalized.includes('hoa hoc') || /(^|\s)hh($|\s)/.test(normalized)) return `HH${grade}`;
-  if (normalized.includes('ngu van') || normalized === 'van') return `V${grade}`;
-  if (normalized.includes('toan')) return `T${grade}`;
-  const initials = normalized.split(/\s+/).filter(Boolean).map((part) => part[0]).join('').toUpperCase() || 'MH';
-  return `${initials}${grade}`;
-};
-
-const prepareOperationalRows = (items: any[], code: string) => {
-  const grade = code.match(/(?:^|-)(\d{1,2})(?:-|$)/)?.[1]
-    || String(items[0]?.subject || '').match(/\b(\d{1,2})\b/)?.[1]
-    || '';
-  const occurrenceByLesson = new Map<string, number>();
-  return items.map((row) => {
-    const lessonNumber = Number(row.learn_number);
-    const lessonKey = Number.isFinite(lessonNumber) ? String(lessonNumber) : String(row.lesson_name || '');
-    const occurrence = (occurrenceByLesson.get(lessonKey) || 0) + 1;
-    occurrenceByLesson.set(lessonKey, occurrence);
-    const subject = normalizeOperationalSubject(row.subject);
-    const paddedLesson = Number.isFinite(lessonNumber)
-      ? String(lessonNumber).padStart(2, '0')
-      : String(occurrence).padStart(2, '0');
-    return {
-      ...row,
-      operational_subject: Number(row.lesson_status) === 1 ? 'Nghỉ' : subject,
-      operational_lesson_code: `${operationalSubjectPrefix(subject, grade)}_L${occurrence}_${paddedLesson}`,
-    };
-  });
-};
-
 export const buildOperationalCalendarWorkbook = (rows: any[]) => {
   const workbook = XLSX.utils.book_new();
   const groups = new Map<string, any[]>();
@@ -843,19 +824,20 @@ export const buildOperationalCalendarWorkbook = (rows: any[]) => {
   });
   const used = new Set<string>();
   Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b, 'vi')).forEach(([code, items]) => {
-    const operationalRows = prepareOperationalRows(items, code);
+    const operationalRows = items;
     const matrix = [
       OPERATIONAL_COLUMNS.map(([header]) => header),
-      ...operationalRows.map((row) => OPERATIONAL_COLUMNS.map(([, key]) => key ? row[key] ?? '' : '')),
+      ...operationalRows.map((row) => OPERATIONAL_COLUMNS.map(([, key]) => fileValue(row, key))),
     ];
     const sheet = XLSX.utils.aoa_to_sheet(matrix);
     sheet['!cols'] = OPERATIONAL_COLUMNS.map(([, key]) => ({
-      wch: ['lesson_name', 'lesson_document', 'lesson_baitap', 'archive_document'].includes(key) ? 34 : 18,
+      wch: key === 'lesson_status' ? 28 : ['lesson_name', 'lesson_document', 'lesson_baitap', 'archive_document'].includes(key) ? 34 : 18,
     }));
+    styleCalendarWorksheet(sheet);
     XLSX.utils.book_append_sheet(workbook, sheet, operationalSheetName(items, code, used));
   });
   if (!workbook.SheetNames.length) XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([]), 'Lịch học');
-  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  return StyledXLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 };
 
 export const googleCalendarTabTitles = (rows: any[]) => {
@@ -871,24 +853,7 @@ export const googleCalendarTabTitles = (rows: any[]) => {
   });
 };
 
-export const buildCalendarUpdateFile = (rows: any[]) => {
-  const worksheet = XLSX.utils.json_to_sheet(rows.map((row) => Object.fromEntries(
-    CALENDAR_UPDATE_FILE_COLUMNS.map((column) => [column.header, row[column.key] ?? ''])
-  )), {
-    header: CALENDAR_UPDATE_FILE_COLUMNS.map((column) => column.header),
-  });
-  worksheet['!cols'] = CALENDAR_UPDATE_FILE_COLUMNS.map((column) => ({
-    wch: ['lesson_name', 'lesson_document', 'key'].includes(column.key) ? 38
-      : column.key === 'assistant_name' ? 28
-        : 20,
-  }));
-  worksheet['!autofilter'] = {
-    ref: `A1:${XLSX.utils.encode_col(CALENDAR_UPDATE_FILE_COLUMNS.length - 1)}${Math.max(2, rows.length + 1)}`,
-  };
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Cập nhật lịch');
-  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-};
+export const buildCalendarUpdateFile = (rows: any[]) => buildCalendarFile(rows, 'xlsx');
 
 export const getCalendarFileContentType = (format: CalendarFileFormat) => (
   format === 'csv'
@@ -896,46 +861,9 @@ export const getCalendarFileContentType = (format: CalendarFileFormat) => (
     : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 );
 
-export const buildCalendarTemplate = (format: CalendarFileFormat) => {
-  const headers = CALENDAR_UPDATE_FILE_COLUMNS.map((column) => column.header);
-  const sample = [
-    '2026-08-17 21:00:00', '2026-08-17 22:00:00', 1,
-    'Phạm Thái Sơn', 'Nguyễn Văn Trợ Giảng',
-    'Nhập môn HSA - phần Tư duy định lượng',
-    '[{"link":"https://example.com/tai-lieu.pdf","title":"Tài liệu","type":"pdf"}]',
-    '', '', '',
-  ];
-
-  if (format === 'csv') {
-    return Buffer.from(
-      `\uFEFF${[
-        headers.map(escapeCsvValue).join(','),
-        sample.map(escapeCsvValue).join(','),
-      ].join('\n')}`,
-      'utf8'
-    );
-  }
-
-  const worksheet = XLSX.utils.aoa_to_sheet([
-    headers,
-    sample,
-  ]);
-  worksheet['!cols'] = [
-    { wch: 22 },
-    { wch: 22 },
-    { wch: 14 },
-    { wch: 24 },
-    { wch: 28 },
-    { wch: 38 },
-    { wch: 38 },
-    { wch: 28 },
-    { wch: 16 },
-    { wch: 14 },
-  ];
-  worksheet['!autofilter'] = {
-    ref: `A1:${XLSX.utils.encode_col(headers.length - 1)}2`,
-  };
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Import Calendar');
-  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-};
+export const buildCalendarTemplate = (format: CalendarFileFormat) => buildCalendarFile([{
+  subject: '', code: '', lesson_name: '',
+  live_date: '17/08/2027', weekday: '', time_range: '21:00-22:00',
+  teacher_name: 'Phạm Thái Sơn', assistant_name: 'Nguyễn Văn Trợ Giảng',
+  learn_number: 1, lesson_count: 0, lesson_status: 0,
+}], format);

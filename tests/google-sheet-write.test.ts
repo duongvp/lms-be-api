@@ -20,7 +20,7 @@ test('xuất ID course và tên trợ giảng theo quyền trường gốc vào 
   const visible = applyCalendarExportVisibility([row], [{ code: true, subject: true, learn_number: true, assistant_teacher: true }]);
   const workbook = XLSX.read(buildOperationalCalendarWorkbook(visible), { type: 'buffer' });
   const matrix = XLSX.utils.sheet_to_json<any[]>(workbook.Sheets[workbook.SheetNames[0]], { header: 1 });
-  assert.equal(matrix[1][matrix[0].indexOf('ID course')], '3360,3361');
+  assert.equal(matrix[1][matrix[0].indexOf('ID khóa học')], '3360,3361');
   assert.equal(matrix[1][matrix[0].indexOf('Trợ giảng')], 'Nguyễn Văn A, Trần Thị B');
   const hidden = applyCalendarExportVisibility([row], [{ code: true, learn_number: true }]);
   assert.equal(hidden[0].assistant_name, undefined);
@@ -357,7 +357,7 @@ test('thử lại đợt ghi đúng vị trí khi Google lỗi tạm thời và 
   }
 });
 
-test('buổi nghỉ dùng Môn Nghỉ và chữ đỏ toàn dòng, buổi học bù vẫn giữ môn', () => {
+test('buổi nghỉ có trạng thái 0 và chữ đỏ toàn dòng, giữ nguyên môn và mã buổi học', () => {
   const rows = [
     { code: 'toan-11-2027', subject: 'Toán 11', learn_number: 1, lesson_status: 1, live_date: '08/09/2026', time_range: '20:00-21:00' },
     { code: 'toan-11-2027', subject: 'Toán 11', learn_number: 1, lesson_status: 0, live_date: '22/09/2026', time_range: '20:00-21:00', lesson_name: '[HỌC BÙ] Toán' },
@@ -366,9 +366,10 @@ test('buổi nghỉ dùng Môn Nghỉ và chữ đỏ toàn dòng, buổi học 
   const buffer = buildOperationalCalendarWorkbook(rows);
   const wb = XLSX.read(buffer, { type: 'buffer' });
   const matrices = wb.SheetNames.map(name => XLSX.utils.sheet_to_json<any[]>(wb.Sheets[name], { header: 1 }));
-  assert.equal(matrices[0][1][0], 'Nghỉ');
-  assert.equal(matrices[0][2][0], 'Toán');
-  assert.equal(matrices[1][1][0], 'Nghỉ');
+  assert.equal(matrices[0][1][0], 'Toán 11');
+  assert.equal(matrices[0][1][matrices[0][0].findIndex((header: string) => header.startsWith('Trạng thái buổi học'))], 0);
+  assert.equal(matrices[0][2][0], 'Toán 11');
+  assert.equal(matrices[1][1][0], 'Vật lí');
   const formatting = calendarSheetFormatting(workbookRequests(buffer, 'test'), new Date('2026-09-17T00:00:00Z'));
   const red = formatting.filter(r => r.repeatCell?.cell?.userEnteredFormat?.textFormat?.foregroundColor?.red === 1 && r.repeatCell?.cell?.userEnteredFormat?.textFormat?.foregroundColor?.green === 0);
   assert.equal(red.length, 2);

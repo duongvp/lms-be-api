@@ -1,3 +1,5 @@
+import { reconcileCalendarMappingsAndEnqueue, withManualHocmaiQueue, enqueueCalendarSync } from './hocmai-sync-queue.service';
+import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import {
@@ -92,6 +94,8 @@ const addError = (
   const identity = [
     error.row,
     error.errorCode,
+    error.field,
+    error.message,
     error.packageId,
     error.courseId,
     error.lessonId,
@@ -100,6 +104,8 @@ const addError = (
   if (!errors.some((item) => [
     item.row,
     item.errorCode,
+    item.field,
+    item.message,
     item.packageId,
     item.courseId,
     item.lessonId,
@@ -138,6 +144,35 @@ const buildSummary = (
  * File import dùng tên hiển thị để người vận hành dễ quản lý, còn calendar
  * luôn lưu username. Username từ format Email TG cũ vẫn được hỗ trợ.
  */
+export const resolveCalendarImportTeachers = async (
+  rows: CalendarImportRow[],
+  existingByKey = new Map<string, {teacher: string | null}>(),
+) => {
+  const errors: CalendarImportError[] = [];
+  const supplied = rows.filter(row => String(row.calendar.teacher || '').trim());
+  if (!supplied.length) return errors;
+  const profiles = await prisma.teacher_profiles.findMany({
+    where: {can_view_stream_key: 1, status: 1},
+    select: {username: true, display_name: true},
+  });
+  for (const row of supplied) {
+    const identifier = normalizeTeachingIdentifier(row.calendar.teacher).toLowerCase();
+    const username = profiles.find(profile => normalizeTeachingIdentifier(profile.username).toLowerCase() === identifier);
+    const matches = username ? [username] : profiles.filter(profile => normalizeTeachingIdentifier(profile.display_name).toLowerCase() === identifier);
+    if (matches.length !== 1) {
+      addError(errors, {row:row.row, field:'Tên GV', errorCode:'INVALID_ROW', message: matches.length
+        ? `Tên giáo viên "${row.calendar.teacher}" trùng nhiều tài khoản; hãy nhập tài khoản giáo viên`
+        : `Không tìm thấy giáo viên đang hoạt động có tên hoặc tài khoản "${row.calendar.teacher}"`});
+      continue;
+    }
+    const profile = matches[0];
+    const current = existingByKey.get(row.sourceKey || '');
+    // Keep an unchanged legacy username while matching the bulk-create convention.
+    row.calendar.teacher = current?.teacher === profile.username ? current.teacher : profile.display_name || profile.username;
+  }
+  return errors;
+};
+
 const resolveCalendarImportAssistants = async (rows: CalendarImportRow[]) => {
   const errors: CalendarImportError[] = [];
   const rowsWithAssistants = rows.map((row) => ({
@@ -182,7 +217,7 @@ const resolveCalendarImportAssistants = async (rows: CalendarImportRow[]) => {
           row: row.row,
           field: 'Trợ giảng',
           errorCode: 'INVALID_ROW',
-          message: `Tên trợ giảng "${identifier}" trùng nhiều tài khoản; hãy dùng Email TG`,
+          message: `Tên trợ giảng "${identifier}" trùng nhiều tài khoản; hãy nhập tài khoản vào cột Trợ giảng`,
         });
         return;
       }
@@ -206,8 +241,10 @@ const validateInternalLessonRows = async (
       subject_code: string;
       learn_number: number;
       system_type: 'topclass' | 'topuni';
+      subject_name: string;
+      lesson_name: string;
     }>>(Prisma.sql`
-      SELECT id, subject_code, learn_number, system_type
+      SELECT id, subject_code, learn_number, system_type, subject_name, lesson_name
       FROM lessons
       WHERE status <> 0
         AND subject_code IN (${Prisma.join(codes)})
@@ -218,9 +255,6 @@ const validateInternalLessonRows = async (
     `${lesson.subject_code}::${lesson.learn_number}`,
     lesson,
   ]));
-  // Tạm thời import lịch giữ nguyên teacher từ file/Sheet và không đối chiếu
-  // teacher_profiles. Bật lại bước resolve tại đây khi nghiệp vụ giáo viên ổn định.
-
   codes.forEach((code) => {
     if (programCodes.has(code)) return;
     const row = rows.find((item) => item.calendar.code === code)!;
@@ -232,7 +266,7 @@ const validateInternalLessonRows = async (
 
   const firstRowsBySchedule = new Map<string, number>();
   rows.forEach((row) => {
-    row.calendar.skip_teacher_profile_validation = true;
+    delete row.calendar.skip_teacher_profile_validation;
     const lesson = lessonByIdentity.get(`${row.calendar.code}::${row.calendar.learn_number}`);
     if (programCodes.has(row.calendar.code) && !lesson) {
       addError(errors, {
@@ -241,6 +275,19 @@ const validateInternalLessonRows = async (
       });
     } else if (lesson) {
       row.calendar.session_id = lesson.id;
+      const baseName = String(lesson.lesson_name || '').trim();
+      const originalName = String(row.calendar.lesson_name || '').trim() || baseName;
+      const importedName = `${row.lessonNamePrefix || ''}${originalName}${row.lessonNameSuffix || ''}`.trim();
+      row.calendar.lesson_name = importedName;
+      if (importedName.length > 400) addError(errors, {row:row.row,field:'Tên bài giảng',errorCode:'INVALID_ROW',message:'Tên bài sau khi thêm tiền tố/hậu tố không được vượt quá 400 ký tự'});
+      if (!baseName || !importedName.includes(baseName)) addError(errors, {
+        row: row.row, field: 'Tên bài giảng', errorCode: 'INVALID_ROW',
+        message: `Giữ nguyên tên bài gốc "${baseName}"; chỉ được thêm hoặc sửa tiền tố/hậu tố`,
+      });
+      if (!ignoredCalendarKeyByRow.has(row.row) && String(row.calendar.subject || '').trim() !== String(lesson.subject_name || '').trim()) addError(errors, {
+        row: row.row, field: 'Môn', errorCode: 'INVALID_ROW',
+        message: `Môn phải giữ nguyên theo chương trình (${lesson.subject_name})`,
+      });
       if (lesson.system_type !== row.calendar.system_type) {
         addError(errors, {
           row: row.row, field: 'system_type', errorCode: 'INVALID_ROW',
@@ -487,6 +534,79 @@ export const validateCalendarImportOutlines = (
   return { resolvedRows, errors };
 };
 
+// Resolve only through mappings of the selected internal lesson. Never infer
+// arbitrary package/course combinations from a global sheet for this format.
+export const validateInternalCalendarImportMappings = async (rows: CalendarImportRow[]) => {
+  const errors: CalendarImportError[] = [];
+  const suppliedRows = rows.filter(row => row.packageIds.length || row.courseIds.length || row.lessonIds.length);
+  const mappingsByRow = new Map<number, ResolvedPackageLessonMapping[]>();
+  if (!suppliedRows.length) return { errors, mappingsByRow, pairCount: 0 };
+  const sessionIds = [...new Set(suppliedRows.flatMap(row => row.calendar.session_id == null ? [] : [row.calendar.session_id]))];
+  const contentMappings = sessionIds.length ? await prisma.lesson_course_mapping.findMany({
+    where: { lesson_id: { in: sessionIds } },
+    select: { lesson_id: true, package_id: true, course_id: true },
+  }) : [];
+  const candidates: RowWithPackages[] = [];
+  for (const row of suppliedRows) {
+    const allowed = contentMappings.filter(mapping => String(mapping.lesson_id) === String(row.calendar.session_id));
+    const selected = allowed.filter(mapping => (
+      (!row.packageIds.length || row.packageIds.includes(String(mapping.package_id)))
+      && (!row.courseIds.length || row.courseIds.includes(String(mapping.course_id)))
+    ));
+    for (const packageId of row.packageIds) {
+      if (!selected.some(mapping => String(mapping.package_id) === packageId)) addError(errors, {
+        row: row.row, field: 'ID gói học', errorCode: 'INVALID_PACKAGE_ID', packageId,
+        message: `ID gói học ${packageId} không khớp mapping package–course của Bài ${row.calendar.learn_number} trong quản lý nội dung`,
+      });
+    }
+    for (const courseId of row.courseIds) {
+      if (!selected.some(mapping => String(mapping.course_id) === courseId)) addError(errors, {
+        row: row.row, field: 'ID khóa học', errorCode: 'INVALID_COURSE_ID', courseId,
+        message: `ID khóa học ${courseId} không khớp mapping package–course của Bài ${row.calendar.learn_number} trong quản lý nội dung`,
+      });
+    }
+    if (!selected.length && !errors.some(error => error.row === row.row)) addError(errors, {
+      row: row.row, field: 'ID khóa học', errorCode: 'INVALID_ROW',
+      message: `Bài ${row.calendar.learn_number} chưa có mapping package–course phù hợp trong quản lý nội dung`,
+    });
+    candidates.push({
+      ...row,
+      packageIds: unique(selected.map(mapping => String(mapping.package_id))),
+      courseIds: unique(selected.map(mapping => String(mapping.course_id))),
+      packageCoursePairs: selected.map(mapping => ({packageId: String(mapping.package_id), courseId: String(mapping.course_id)})),
+    });
+  }
+  const pairs = buildUniquePackageCoursePairs(candidates);
+  if (errors.length) return { errors, mappingsByRow, pairCount: 0 };
+  let outlines: HmoCourseOutlineResult[];
+  try {
+    outlines = await fetchHocmaiCourseOutlines(pairs);
+  } catch (error: any) {
+    for (const row of suppliedRows) addError(errors, {
+      row: row.row, field: 'HMO', errorCode: error instanceof HmoCourseOutlineError ? error.errorCode : 'HMO_BATCH_ERROR',
+      message: error?.message || 'Không thể kiểm tra ID trên HMO; chưa thay đổi dữ liệu',
+    });
+    return { errors, mappingsByRow, pairCount: pairs.length };
+  }
+  const validation = validateCalendarImportOutlines(candidates, pairs, outlines);
+  errors.push(...validation.errors);
+  for (const row of validation.resolvedRows) {
+    const byPair = new Map<string, string>();
+    for (const mapping of row.mappings) {
+      const pair = pairKey(mapping.package_id, mapping.course_id);
+      if (byPair.has(pair) && byPair.get(pair) !== mapping.lesson_id) addError(errors, {
+        row: row.row, field: 'ID bài giảng', errorCode: 'INVALID_LESSON_ID',
+        packageId: mapping.package_id, courseId: mapping.course_id,
+        message: `Chỉ được gán một ID bài giảng cho mỗi cặp gói học ${mapping.package_id} / khóa học ${mapping.course_id}`,
+      });
+      byPair.set(pair, mapping.lesson_id);
+    }
+    // Package/course alone validates context without clearing assigned lessons.
+    if (row.lessonIds.length) mappingsByRow.set(row.row, row.mappings);
+  }
+  return { errors, mappingsByRow, pairCount: pairs.length };
+};
+
 const validateDatabaseDuplicates = async (
   rows: ResolvedCalendarImportRow[]
 ) => {
@@ -577,7 +697,19 @@ export const importCalendarFromSheet = async (
     };
   }
 
-  const assistantErrors = await resolveCalendarImportAssistants(inputRows);
+  if (inputRows.some(row => row.sourceKey)) return {
+    status: 'validation_error' as const,
+    summary: buildSummary(inputRows, [], 0, 0),
+    errors: inputRows.filter(row => row.sourceKey).map(row => ({
+      row: row.row, field: 'Mã định danh lịch', errorCode: 'INVALID_ROW' as const,
+      message: 'File có mã định danh lịch đã export. Hãy chọn Cập nhật lịch; chỉ để trống mã khi tạo lịch mới.',
+    })),
+  };
+
+  const assistantErrors = [
+    ...await resolveCalendarImportTeachers(inputRows),
+    ...await resolveCalendarImportAssistants(inputRows),
+  ];
   if (assistantErrors.length) {
     return {
       status: 'validation_error' as const,
@@ -588,12 +720,14 @@ export const importCalendarFromSheet = async (
 
   if (directRows.length === inputRows.length) {
     const errors = await validateInternalLessonRows(inputRows);
+    const mappingValidation = errors.length ? undefined : await validateInternalCalendarImportMappings(inputRows);
+    errors.push(...(mappingValidation?.errors || []));
     if (errors.length) return {
       status: 'validation_error' as const,
       summary: buildSummary(inputRows, errors, 0, 0),
       errors,
     };
-    const resolvedRows = inputRows.map((row) => ({ ...row, mappings: [] }));
+    const resolvedRows = inputRows.map((row) => ({ ...row, mappings: mappingValidation?.mappingsByRow.get(row.row) || [] }));
     const created = await createValidatedInternalCalendarImport(resolvedRows, changeActor);
     return {
       status: 'success' as const,
@@ -668,6 +802,15 @@ export const importCalendarFromSheet = async (
   };
 };
 
+const importCalendarContext = (calendar: any): NonNullable<CalendarImportError['calendar']> => ({
+  key: calendar.key || undefined,
+  code: calendar.code,
+  learnNumber: Number(calendar.learn_number),
+  lessonCount: calendar.lesson_count == null ? undefined : Number(calendar.lesson_count),
+  lessonName: calendar.lesson_name || undefined,
+  startTime: calendar.start_time instanceof Date ? calendar.start_time.toISOString() : undefined,
+});
+
 export const updateCalendarsFromSheet = async (
   inputRows: CalendarImportRow[],
   changeActor?: { userId: number; username: string },
@@ -680,22 +823,26 @@ export const updateCalendarsFromSheet = async (
       row: 1,
       field: 'file',
       errorCode: 'INVALID_ROW',
-      message: 'Cập nhật lịch chỉ hỗ trợ file mẫu có start_time, end_time và learn_number',
+      message: 'Cập nhật lịch cần cột Bài và Ngày live, Khung giờ theo mẫu export',
     });
   }
 
   const firstRowByIdentity = new Map<string, number>();
   inputRows.forEach((row) => {
     const key = String(row.sourceKey || '').trim();
-    if (!key && row.calendar.lesson_count === undefined) {
+    if (!key) {
       addError(errors, {
         row: row.row,
-        field: 'lesson_count',
+        field: 'Mã định danh lịch',
         errorCode: 'INVALID_ROW',
-        message: 'Cập nhật lịch cần có lesson_count để xác định đúng lịch trong Chương trình đã chọn',
+        message: 'Thiếu Mã định danh lịch nên không xác định được lịch cần cập nhật.',
+        suggestion: 'Dùng file đã export và giữ nguyên Mã định danh lịch. Nếu muốn tạo lịch mới từ file mẫu, chọn tab Tạo lịch mới.',
       });
       return;
     }
+    if (row.calendar.lesson_count === undefined) addError(errors, {
+      row:row.row, field:'Lần học', errorCode:'INVALID_ROW', message:'Giữ nguyên Lần học trong file đã export; không được để trống',
+    });
     const identity = key
       ? `key:${key}`
       : `lesson:${row.calendar.code}:${row.calendar.learn_number}:${row.calendar.lesson_count}`;
@@ -715,73 +862,12 @@ export const updateCalendarsFromSheet = async (
     }
   });
 
-  const keys = inputRows.map((row) => String(row.sourceKey || '').trim()).filter(Boolean);
-  const occurrenceConditions = inputRows
-    .filter((row) => !row.sourceKey && row.calendar.lesson_count !== undefined)
-    .map((row) => ({
-      code: row.calendar.code,
-      learn_number: row.calendar.learn_number,
-      lesson_count: row.calendar.lesson_count,
-    }));
-  const existing = keys.length || occurrenceConditions.length
-    ? await prisma.calendar.findMany({
-        where: {
-          OR: [
-            ...(keys.length ? [{ key: { in: keys } }] : []),
-            ...occurrenceConditions,
-          ],
-        },
-      })
-    : [];
-  const existingByKey = new Map(
-    existing.filter((calendar) => calendar.key).map((calendar) => [calendar.key!, calendar])
-  );
-  inputRows.forEach((row) => {
-    if (row.sourceKey || row.calendar.lesson_count === undefined) return;
-    const matches = existing.filter((calendar) => (
-      calendar.code === row.calendar.code
-      && Number(calendar.learn_number) === row.calendar.learn_number
-      && Number(calendar.lesson_count) === row.calendar.lesson_count
-    ));
-    if (!matches.length) {
-      addError(errors, {
-        row: row.row,
-        field: 'lesson_count',
-        errorCode: 'INVALID_ROW',
-        message: `Không tìm thấy lịch Bài ${row.calendar.learn_number}, lần ${row.calendar.lesson_count} trong Chương trình ${row.calendar.code}`,
-      });
-      return;
-    }
-    if (matches.length > 1) {
-      addError(errors, {
-        row: row.row,
-        field: 'lesson_count',
-        errorCode: 'INVALID_ROW',
-        message: `Có nhiều lịch cùng Bài ${row.calendar.learn_number}, lần ${row.calendar.lesson_count}; không thể xác định an toàn`,
-      });
-      return;
-    }
-    if (!matches[0].key) {
-      addError(errors, {
-        row: row.row,
-        field: 'lesson_count',
-        errorCode: 'INVALID_ROW',
-        message: `Lịch Bài ${row.calendar.learn_number}, lần ${row.calendar.lesson_count} chưa có key nội bộ`,
-      });
-      return;
-    }
-    row.sourceKey = matches[0].key;
-  });
-  const rowsNeedingAssistantResolution = inputRows.filter((row) => {
-    const current = existingByKey.get(String(row.sourceKey || '').trim());
-    if (!current) return false;
-    return shouldResolveCalendarImportField(
-      current.assistant_teacher,
-      row.calendar.assistant_teacher,
-      existingDataMode
-    );
-  });
-  errors.push(...await resolveCalendarImportAssistants(rowsNeedingAssistantResolution));
+  if (errors.length) return {status:'validation_error' as const, summary:buildSummary(inputRows, errors, 0, 0), errors};
+  const keys = inputRows.map(row => row.sourceKey!);
+  const existing = await prisma.calendar.findMany({where:{OR:[{key:{in:keys}}]}});
+  const existingByKey = new Map(existing.filter(calendar => calendar.key).map(calendar => [calendar.key!, calendar]));
+  errors.push(...await resolveCalendarImportTeachers(inputRows, existingByKey));
+  errors.push(...await resolveCalendarImportAssistants(inputRows));
   const ignoredCalendarKeyByRow = new Map<number, string>();
 
   inputRows.forEach((row) => {
@@ -793,17 +879,30 @@ export const updateCalendarsFromSheet = async (
         row: row.row,
         field: 'key',
         errorCode: 'INVALID_ROW',
-        message: `Không tìm thấy lịch có key ${key}`,
+        reasonCode: 'CALENDAR_NOT_FOUND',
+        message: 'Không tìm thấy lịch tương ứng với Mã định danh lịch trong dòng này.',
+        importedValue: key,
+        suggestion: 'Kiểm tra chương trình đang chọn và dùng file export mới nhất. Không tự sửa Mã định danh lịch; chọn Tạo lịch mới nếu đây là dòng cần tạo mới.',
       });
       return;
     }
     ignoredCalendarKeyByRow.set(row.row, key);
+    if (String(current.subject || '').trim() !== String(row.calendar.subject || '').trim()) addError(errors, {
+      row:row.row, field:'Môn', errorCode:'INVALID_ROW', reasonCode:'IMMUTABLE_FIELD',
+      message:'Môn trong file khác với môn của lịch gốc.',
+      currentValue:String(current.subject || ''), importedValue:String(row.calendar.subject || ''),
+      suggestion:'Khôi phục Môn theo file export gốc. Không đổi môn khi cập nhật lịch.', calendar:importCalendarContext(current),
+    });
     if (current.code !== row.calendar.code) {
       addError(errors, {
         row: row.row,
         field: 'code',
         errorCode: 'INVALID_ROW',
-        message: `Không được đổi code của lịch ${key} (${current.code})`,
+        reasonCode: 'IMMUTABLE_FIELD',
+        message: 'Mã chương trình trong file khác với giá trị của lịch gốc.',
+        currentValue: String(current.code), importedValue: String(row.calendar.code),
+        suggestion: 'Khôi phục cột Mã chương trình theo file export gốc. Dùng Tạo lịch mới nếu cần thêm một lịch khác.',
+        calendar: importCalendarContext(current),
       });
     }
     if (Number(current.learn_number) !== row.calendar.learn_number) {
@@ -811,7 +910,11 @@ export const updateCalendarsFromSheet = async (
         row: row.row,
         field: 'learn_number',
         errorCode: 'INVALID_ROW',
-        message: `Không được đổi learn_number của lịch ${key} (Bài ${current.learn_number})`,
+        reasonCode: 'IMMUTABLE_FIELD',
+        message: 'Bài trong file khác với giá trị của lịch gốc.',
+        currentValue: String(current.learn_number), importedValue: String(row.calendar.learn_number),
+        suggestion: 'Khôi phục cột Bài theo file export gốc. Dùng Tạo lịch mới nếu cần thêm một lịch khác.',
+        calendar: importCalendarContext(current),
       });
     }
     if (String(current.system_type || 'topclass') !== row.calendar.system_type) {
@@ -819,7 +922,11 @@ export const updateCalendarsFromSheet = async (
         row: row.row,
         field: 'system_type',
         errorCode: 'INVALID_ROW',
-        message: `Không được đổi system_type của lịch ${key}`,
+        reasonCode: 'IMMUTABLE_FIELD',
+        message: 'Hệ thống trong file khác với giá trị của lịch gốc.',
+        currentValue: String(current.system_type || 'topclass'), importedValue: String(row.calendar.system_type),
+        suggestion: 'Khôi phục cột Hệ thống theo file export gốc. Dùng Tạo lịch mới nếu cần thêm một lịch khác.',
+        calendar: importCalendarContext(current),
       });
     }
     if (
@@ -830,7 +937,11 @@ export const updateCalendarsFromSheet = async (
         row: row.row,
         field: 'lesson_count',
         errorCode: 'INVALID_ROW',
-        message: `Không được đổi lesson_count của lịch ${key}`,
+        reasonCode: 'IMMUTABLE_FIELD',
+        message: 'Lần học trong file khác với giá trị của lịch gốc.',
+        currentValue: String(current.lesson_count), importedValue: String(row.calendar.lesson_count),
+        suggestion: 'Khôi phục cột Lần học theo file export gốc. Dùng Tạo lịch mới nếu cần thêm một lịch khác.',
+        calendar: importCalendarContext(current),
       });
     }
   });
@@ -844,6 +955,17 @@ export const updateCalendarsFromSheet = async (
     errors,
   };
 
+  const mappingValidation = await validateInternalCalendarImportMappings(inputRows);
+  if (mappingValidation.errors.length) return {
+    status: 'validation_error' as const,
+    summary: buildSummary(inputRows, mappingValidation.errors, mappingValidation.pairCount, mappingValidation.pairCount),
+    errors: mappingValidation.errors,
+  };
+  const mappingKeys = inputRows.filter(row => mappingValidation.mappingsByRow.has(row.row)).map(row => row.sourceKey!);
+  const currentMappings = mappingKeys.length ? await prisma.package_lesson_mapping.findMany({where: {key: {in: mappingKeys}}}) : [];
+  const mappingSignature = (mappings: {package_id: string; course_id: string | null; lesson_id: string}[]) =>
+    mappings.map(mapping => `${mapping.package_id}::${mapping.course_id}::${mapping.lesson_id}`).sort().join('|');
+
   const normalizedJson = (value: unknown) => {
     const text = String(value ?? '').trim();
     if (!text) return '';
@@ -854,6 +976,14 @@ export const updateCalendarsFromSheet = async (
     }
   };
   const normalizedText = (value: unknown) => String(value ?? '').trim();
+  const documentLinks = (value: unknown) => {
+    try {
+      const documents = JSON.parse(String(value || '[]'));
+      return Array.isArray(documents)
+        ? documents.map(document => typeof document === 'object' && document ? document.link || '' : document).filter(Boolean).join(', ')
+        : String(value || '');
+    } catch { return String(value || ''); }
+  };
   const preparedUpdates = inputRows.map((row) => {
     const current = existingByKey.get(row.sourceKey!)!;
     const merge = (currentValue: unknown, importedValue: unknown) => (
@@ -862,6 +992,11 @@ export const updateCalendarsFromSheet = async (
     return {
       key: row.sourceKey!,
       current,
+      nextMappings: (() => {
+        const desired = mappingValidation.mappingsByRow.get(row.row);
+        const assigned = currentMappings.filter(mapping => mapping.key === row.sourceKey);
+        return desired && !(existingDataMode === 'skip' && assigned.length) && mappingSignature(desired) !== mappingSignature(assigned) ? desired : undefined;
+      })(),
       data: {
         session_id: merge(current.session_id, row.calendar.session_id),
         subject: merge(current.subject, row.calendar.subject),
@@ -870,13 +1005,18 @@ export const updateCalendarsFromSheet = async (
         teacher: merge(current.teacher, row.calendar.teacher),
         assistant_teacher: merge(current.assistant_teacher, row.calendar.assistant_teacher),
         lesson_name: merge(current.lesson_name, row.calendar.lesson_name),
-        lesson_document: merge(current.lesson_document, row.calendar.lesson_document),
+        lesson_document: documentLinks(current.lesson_document) === documentLinks(row.calendar.lesson_document)
+          ? current.lesson_document
+          : merge(current.lesson_document, row.calendar.lesson_document),
         evg_banner: merge(current.evg_banner, row.calendar.evg_banner),
         evg_stream: merge(current.evg_stream, row.calendar.evg_stream),
+        lesson_baitap: merge(current.lesson_baitap, row.calendar.lesson_baitap),
+        lesson_status: merge(current.lesson_status, row.statusProvided ? row.calendar.lesson_status : undefined),
       },
     };
   });
-  const changedRows = preparedUpdates.filter(({ current, data }) => (
+  const changedRows = preparedUpdates.filter(({ current, data, nextMappings }) => (
+    nextMappings !== undefined ||
     String(current.session_id ?? '') !== String(data.session_id ?? '')
       || normalizedText(current.subject) !== normalizedText(data.subject)
       || current.start_time.getTime() !== data.start_time.getTime()
@@ -887,16 +1027,21 @@ export const updateCalendarsFromSheet = async (
       || normalizedJson(current.lesson_document) !== normalizedJson(data.lesson_document)
       || normalizedText(current.evg_banner) !== normalizedText(data.evg_banner)
       || normalizedText(current.evg_stream) !== normalizedText(data.evg_stream)
+      || normalizedText(current.lesson_baitap) !== normalizedText(data.lesson_baitap)
+      || Number(current.lesson_status) !== Number(data.lesson_status)
   ));
 
   const now = new Date();
   changedRows.forEach(({ key, current }) => {
-    if (Number(current.lesson_status) === 1 || current.start_time <= now) {
+    if (current.start_time <= now) {
       addError(errors, {
         row: inputRows.find((row) => row.sourceKey === key)?.row ?? 1,
-        field: 'key',
+        field: 'start_time',
         errorCode: 'INVALID_ROW',
-        message: `Lịch ${key} đã diễn ra hoặc đã nghỉ, không thể cập nhật`,
+        reasonCode: 'PAST_SCHEDULE',
+        message: 'Lịch gốc đã bắt đầu nên không thể thay đổi thông tin qua import.',
+        suggestion: 'Giữ nguyên toàn bộ thông tin của lịch này hoặc bỏ dòng khỏi file cập nhật. Nếu cần thêm buổi học khác, chọn Tạo lịch mới.',
+        calendar: importCalendarContext(current),
       });
     }
   });
@@ -910,46 +1055,62 @@ export const updateCalendarsFromSheet = async (
     const fields = [
       'session_id', 'subject', 'start_time', 'end_time', 'teacher',
       'assistant_teacher', 'lesson_name', 'lesson_document', 'evg_banner', 'evg_stream',
+      'lesson_baitap', 'lesson_status',
     ] as const;
     await prisma.$transaction(async (tx) => {
-      const assignments = fields.map((field) => (
-        `\`${field}\` = CASE \`key\` ${changedRows
-          .map(() => 'WHEN ? THEN ?')
-          .join(' ')} ELSE \`${field}\` END`
-      )).join(', ');
-      const caseValues = fields.flatMap((field) => changedRows.flatMap((update) => [
-        update.key,
-        update.data[field],
-      ]));
-      const keyPlaceholders = changedRows.map(() => '?').join(', ');
-      await tx.$executeRawUnsafe(
-        `UPDATE calendar
-         SET ${assignments}, updated_at = CURRENT_TIMESTAMP
-         WHERE deleted_at IS NULL AND \`key\` IN (${keyPlaceholders})`,
-        ...caseValues,
-        ...changedRows.map((update) => update.key)
-      );
+      const manualQueue = changedRows.some(update => update.nextMappings !== undefined);
+      const applyUpdates = async () => {
+        const assignments = fields.map((field) => (
+          `\`${field}\` = CASE \`key\` ${changedRows
+            .map(() => 'WHEN ? THEN ?')
+            .join(' ')} ELSE \`${field}\` END`
+        )).join(', ');
+        const caseValues = fields.flatMap((field) => changedRows.flatMap((update) => [
+          update.key,
+          update.data[field],
+        ]));
+        const keyPlaceholders = changedRows.map(() => '?').join(', ');
+        await tx.$executeRawUnsafe(
+          `UPDATE calendar
+           SET ${assignments}, updated_at = CURRENT_TIMESTAMP
+           WHERE deleted_at IS NULL AND \`key\` IN (${keyPlaceholders})`,
+          ...caseValues,
+          ...changedRows.map((update) => update.key)
+        );
 
-      const updatedCalendars = await tx.calendar.findMany({
-        where: { key: { in: changedRows.map((update) => update.key) } },
-      });
-      const updatedByKey = new Map(
-        updatedCalendars
-          .filter((calendar) => calendar.key)
-          .map((calendar) => [calendar.key!, calendar])
-      );
-      await enqueueManyCalendarTeamsNotifications(
-        tx,
-        changedRows.flatMap((update) => {
-          const after = updatedByKey.get(update.key);
-          return after ? [{
-            eventType: 'updated' as const,
-            before: update.current,
-            after,
-            actor: changeActor,
-          }] : [];
-        })
-      );
+        const updatedCalendars = await tx.calendar.findMany({
+          where: { key: { in: changedRows.map((update) => update.key) } },
+        });
+        const updatedByKey = new Map(
+          updatedCalendars
+            .filter((calendar) => calendar.key)
+            .map((calendar) => [calendar.key!, calendar])
+        );
+        for (const update of changedRows) {
+          if (update.nextMappings) {
+            const after = updatedByKey.get(update.key);
+            if (!after) throw new Error(`Không tìm thấy lịch ${update.key} sau cập nhật`);
+            await reconcileCalendarMappingsAndEnqueue(tx, after, update.nextMappings);
+          } else if (manualQueue) {
+            const after = updatedByKey.get(update.key);
+            if (!after) throw new Error(`Không tìm thấy lịch ${update.key} sau cập nhật`);
+            await enqueueCalendarSync(tx, randomUUID(), 1, 'update', after);
+          }
+        }
+        await enqueueManyCalendarTeamsNotifications(
+          tx,
+          changedRows.flatMap((update) => {
+            const after = updatedByKey.get(update.key);
+            return after ? [{
+              eventType: 'updated' as const,
+              before: update.current,
+              after,
+              actor: changeActor,
+            }] : [];
+          })
+        );
+      };
+      return manualQueue ? withManualHocmaiQueue(tx, applyUpdates) : applyUpdates();
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
       maxWait: 10_000,

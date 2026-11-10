@@ -52,6 +52,9 @@ import {
 } from "./scorm-name-sync.service";
 import {
   getHocmaiScormNameSyncJob,
+  getManualHocmaiScormLessons,
+  getHocmaiScormTeachers,
+  parseHocmaiScormOptions,
   previewHocmaiScormNameSync,
   resolveManualHocmaiScormLesson,
   resolveManualHocmaiScormLessons,
@@ -148,7 +151,28 @@ const previewHocmaiScormNames = async (req: Request, res: Response) => {
     return SuccessResponse(
       res,
       "Preview created",
-      await previewHocmaiScormNameSync(String(req.body?.program_code || "")),
+      await previewHocmaiScormNameSync(String(req.body?.program_code || ""), parseHocmaiScormOptions(req.body?.options)),
+    );
+  } catch (error: any) {
+    return ErrorResponse(res, error.message, error.statusCode || 400);
+  }
+};
+const listHocmaiScormTeachers = async (req: Request, res: Response) => {
+  try {
+    return SuccessResponse(res, "Teachers loaded", await getHocmaiScormTeachers(String(req.body?.program_code || "")));
+  } catch (error: any) {
+    return ErrorResponse(res, error.message, error.statusCode || 400);
+  }
+};
+const listManualHocmaiScormLessons = async (req: Request, res: Response) => {
+  try {
+    return SuccessResponse(
+      res,
+      "Lessons loaded",
+      await getManualHocmaiScormLessons(
+        String(req.body?.program_code || ""),
+        String(req.body?.row_key || ""),
+      ),
     );
   } catch (error: any) {
     return ErrorResponse(res, error.message, error.statusCode || 400);
@@ -163,6 +187,7 @@ const resolveManualHocmaiScormName = async (req: Request, res: Response) => {
         String(req.body?.program_code || ""),
         String(req.body?.row_key || ""),
         String(req.body?.lesson_id || ""),
+        parseHocmaiScormOptions(req.body?.options),
       ),
     );
   } catch (error: any) {
@@ -177,6 +202,7 @@ const resolveManualHocmaiScormNamesBulk = async (req: Request, res: Response) =>
       await resolveManualHocmaiScormLessons(
         String(req.body?.program_code || ""),
         hocmaiManualSelections(req.body?.selections),
+        parseHocmaiScormOptions(req.body?.options),
       ),
     );
   } catch (error: any) {
@@ -191,6 +217,7 @@ const applyHocmaiScormNames = async (req: Request, res: Response) => {
       data: startHocmaiScormNameSync(
         String(req.body?.program_code || ""),
         hocmaiManualOverrides(req.body?.manual_overrides),
+        parseHocmaiScormOptions(req.body?.options),
       ),
     });
   } catch (error: any) {
@@ -625,6 +652,8 @@ export default {
   applyScormNameSync,
   scormNameSyncStatus,
   previewHocmaiScormNames,
+  listManualHocmaiScormLessons,
+  listHocmaiScormTeachers,
   resolveManualHocmaiScormName,
   resolveManualHocmaiScormNamesBulk,
   applyHocmaiScormNames,

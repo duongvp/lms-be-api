@@ -75,6 +75,20 @@ router.post(
   lessonController.previewHocmaiScormNames,
 );
 router.post(
+  "/hocmai-scorm-name-sync/teachers",
+  authorize(["lessons.update"]),
+  authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")),
+  lessonController.listHocmaiScormTeachers,
+);
+router.post(
+  "/hocmai-scorm-name-sync/manual-lessons",
+  authorize(["lessons.update"]),
+  authorizeProgram("lessons.update", (req) =>
+    String(req.body?.program_code || ""),
+  ),
+  lessonController.listManualHocmaiScormLessons,
+);
+router.post(
   "/hocmai-scorm-name-sync/resolve-manual",
   authorize(["lessons.update"]),
   authorizeProgram("lessons.update", (req) =>

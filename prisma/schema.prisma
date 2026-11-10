@@ -186,11 +186,18 @@ model hocmai_sync_queue {
   status       Int?      @default(0) @db.TinyInt
   operation_id String?   @db.VarChar(36)
   sequence_no  Int?
+  processing_at DateTime? @db.DateTime(3)
+  lease_expires_at DateTime? @db.DateTime(3)
+  claim_token String? @db.VarChar(36)
+  attempt_count Int @default(0) @db.UnsignedInt
+  next_retry_at DateTime? @db.DateTime(3)
   synced_at    DateTime? @db.Timestamp(0)
   last_error   String?   @db.Text
   created_at   DateTime  @default(now()) @db.Timestamp(0)
 
   @@index([c_key, id], map: "idx_hocmai_sync_key_id")
+  @@index([status, action, next_retry_at, id], map: "idx_hocmai_sync_retry")
+  @@index([status, lease_expires_at], map: "idx_hocmai_sync_lease")
   @@index([operation_id, sequence_no], map: "idx_hocmai_sync_operation_sequence")
   @@index([status, created_at], map: "idx_hocmai_sync_status_created")
 }

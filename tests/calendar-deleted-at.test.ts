@@ -15,6 +15,7 @@ test('delete stores Vietnam wall-clock deleted_at and repeated deletes preserve 
   let updates = 0;
   const logs: any[] = [];
   const tx = {
+    $executeRaw: async () => 0,
     $executeRawUnsafe: async () => 0,
     $queryRaw: async () => [row],
     calendar: { update: async ({ where, data }: any) => {
@@ -58,6 +59,7 @@ test('delete persists the soft deletion but enqueues only with a valid lesson ma
       };
       const queued: any[] = [];
       const tx = {
+        $executeRaw: async () => 0,
         $executeRawUnsafe: async () => 0,
         $queryRaw: async () => [row],
         calendar: { update: async ({ data }: any) => (row = { ...row, ...data }) },

@@ -1,4 +1,4 @@
-import { CALENDAR_KEY_REUSE, claimDeletedCalendarKey, auditCalendarKeyReuse, writeCalendarLifecycleLog } from './calendar-lifecycle';
+import { CALENDAR_KEY_REUSE, cancelWaitingCalendarStatuses, claimDeletedCalendarKey, restoreDeletedCalendarRecord, auditCalendarKeyReuse, writeCalendarLifecycleLog } from './calendar-lifecycle';
 import crypto from 'crypto';
 import { assertCalendarSourceUnchanged, calendarSourceFromCode, resolveCalendarSource } from './calendar-source';
 import { calendarTimeNotification } from './calendar-time-notification';
@@ -352,11 +352,11 @@ const createCalendarRecord = async (
       prismaData.teacher
     );
   }
-  // Hai cột này đã có trong Prisma schema, vì vậy ghi ngay trong INSERT.
-  // Trước đây mỗi calendar phải UPDATE hai lần rồi SELECT lại, khiến bulk
-  // create phát sinh thêm tới 3 round-trip DB cho từng buổi.
+  // Tạo lại cùng key khôi phục chính row đã xóa với dữ liệu đầu vào mới.
   const reuse = await claimDeletedCalendarKey(client, prismaData.key);
-  const created = await client.calendar.create({ data: prismaData });
+  const created = reuse
+    ? await restoreDeletedCalendarRecord(client, reuse, prismaData)
+    : await client.calendar.create({ data: prismaData });
   const result = { ...created };
   if (reuse) Object.defineProperty(result, CALENDAR_KEY_REUSE, { value: reuse });
   if (!skipTeacherUserSync) {
@@ -2133,13 +2133,18 @@ export const createValidatedInternalCalendarImport = async (
       const reusedKeys = new Map<string, any>();
       for (const calendar of prepared) {
         const reuse = await claimDeletedCalendarKey(tx, calendar.key);
-        if (reuse) reusedKeys.set(calendar.key, reuse);
+        if (reuse) {
+          reusedKeys.set(calendar.key, reuse);
+          await restoreDeletedCalendarRecord(tx, reuse, calendar);
+        }
       }
 
-      const placeholders = prepared.map(() => (
+      // Giữ bulk INSERT cho lịch mới; row khôi phục không được INSERT lần nữa.
+      const freshCalendars = prepared.filter(calendar => !reusedKeys.has(calendar.key));
+      const placeholders = freshCalendars.map(() => (
         '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
       )).join(', ');
-      const values = prepared.flatMap((calendar) => [
+      const values = freshCalendars.flatMap((calendar) => [
         calendar.session_id ?? null,
         calendar.code,
         calendar.learn_number,
@@ -2157,7 +2162,7 @@ export const createValidatedInternalCalendarImport = async (
         calendar.key,
         calendar.system_type,
       ]);
-      await tx.$executeRawUnsafe(
+      if (freshCalendars.length) await tx.$executeRawUnsafe(
         `INSERT INTO calendar (
           session_id, code, learn_number, subject, start_time, end_time,
           teacher, assistant_teacher, lesson_name, lesson_document,
@@ -2174,7 +2179,6 @@ export const createValidatedInternalCalendarImport = async (
         const reuse = reusedKeys.get(calendar.key!);
         if (reuse) {
           Object.defineProperty(calendar, CALENDAR_KEY_REUSE, { value: reuse });
-          await auditCalendarKeyReuse(tx, calendar, changeActor);
         }
       }
       for (let index = 0; index < prepared.length; index++) {
@@ -2184,6 +2188,9 @@ export const createValidatedInternalCalendarImport = async (
         const operationId = crypto.randomUUID();
         await reconcileCalendarMappingsAndEnqueue(tx, calendar, rows[index].mappings, operationId, index + 1, false);
         await enqueueCalendarSync(tx, operationId, index + 1, 'create', calendar);
+      }
+      for (const calendar of createdCalendars) {
+        await auditCalendarKeyReuse(tx, calendar, changeActor);
       }
       const createdByKey = new Map(
         createdCalendars
@@ -2930,6 +2937,9 @@ export const deleteSession = async (
   const actor = normalizeChangeActor(changeActor);
   const mappings = current.key ? await tx.package_lesson_mapping.findMany({ where: { key: current.key } }) : [];
   const operationId = crypto.randomUUID();
+  if (calendarSourceFromCode(current.code) !== 'feed') {
+    await cancelWaitingCalendarStatuses(tx, current.key);
+  }
   await syncCalendarTeachingUsers(tx, current, { ...current, lesson_status: 1 });
   const deleted = await tx.calendar.update({
     where: { id, deleted_at: null }, data: { deleted_at: getVietnamWallClockDate(), updated_at: new Date() },

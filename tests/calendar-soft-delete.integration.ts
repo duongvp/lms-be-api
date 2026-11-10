@@ -31,7 +31,12 @@ async function main() {
     await db.lesson_course_mapping.create({ data: { lesson_id: lesson.id, package_id: mapping.package_id, course_id: mapping.course_id } });
     const original = await db.calendar.create({ data: calendarData(7, { session_id: lesson.id, lesson_document: '["doc7"]' }) });
     await db.package_lesson_mapping.create({ data: { ...mapping, code, learn_number: 7, key: original.key } });
+    const waiting = await db.hocmai_sync_queue.create({ data: {
+      c_key: original.key!, action: 'update-status-lesson', payload: '{}', status: 4,
+    } });
     await deleteSession(original.id, actor);
+    assert.equal((await db.hocmai_sync_queue.findUniqueOrThrow({ where: { id: waiting.id } })).status, 5);
+
     assert.equal(await prisma.calendar.findUnique({ where: { id: original.id } }), null);
     assert.equal(await prisma.calendar.count({ where: { code } }), 0);
     assert.equal((await db.calendar.findUniqueOrThrow({ where: { id: original.id } })).key, original.key);
@@ -67,6 +72,9 @@ async function main() {
     console.log('PASS: soft delete, default filtering, idempotent delete, self restore and audit');
 
     await deleteSession(original.id, actor);
+    const legacyWaiting = await db.hocmai_sync_queue.create({ data: {
+      c_key: original.key!, action: 'update-status-lesson', payload: '{}', status: 4,
+    } });
     // Same key occupied by a new lesson: full source data must replace the old mapping.
     const removed = await deleteLessonIfUnscheduled(lesson.id);
     assert.equal(removed.scheduledCount, 0);
@@ -77,15 +85,19 @@ async function main() {
     const newCalendar = { code, session_id: newLesson.id, learn_number: 7, teacher: profile.display_name,
       start_time: '2031-11-09T15:00:00Z', end_time: '2031-11-09T16:30:00Z',
       lesson_document: '["doc9"]', skip_teacher_profile_validation: true };
-    // Audit failure must roll back key release, mapping replacement and calendar insertion.
+    // Audit failure must roll back restoration in place, mapping replacement and gate cancellation.
     await assert.rejects(createValidatedCalendarImport([{ row: 1, calendar: newCalendar, mappings: [newMapping] }] as any), /người thay đổi/);
     assert.equal((await db.calendar.findUniqueOrThrow({ where: { id: original.id } })).key, original.key);
+    assert.equal((await db.hocmai_sync_queue.findUniqueOrThrow({ where: { id: legacyWaiting.id } })).status, 4);
     const created = await createValidatedCalendarImport([{ row: 1, calendar: newCalendar, mappings: [newMapping] }] as any, actor);
     const replacement = created.calendars[0];
-    assert.notEqual(replacement.id, original.id);
+    assert.equal(replacement.id, original.id);
+    assert.equal(await db.calendar.count({ where: { code, learn_number: 7 } }), 1);
     assert.equal(replacement.key, original.key); assert.equal(replacement.lesson_count, 0);
     const oldSnapshot = await db.calendar.findUniqueOrThrow({ where: { id: original.id } });
-    assert.equal(oldSnapshot.key, null); assert.ok(oldSnapshot.deleted_at);
+    assert.equal((await db.hocmai_sync_queue.findUniqueOrThrow({ where: { id: legacyWaiting.id } })).status, 5);
+    assert.equal(oldSnapshot.key, original.key); assert.equal(oldSnapshot.deleted_at, null);
+    assert.equal(oldSnapshot.created_at?.getTime(), original.created_at?.getTime());
     const payload = JSON.parse((await jobsFor(original.key!)).at(-1)!.payload);
     assert.equal(payload.action, 'restore'); assert.equal(payload.title, 'Nội dung bài 9 cũ');
     assert.equal(payload.teacher_name, `Giáo viên bài 9 ${code}`); assert.equal(payload.start_time, '2031-11-09 15:00:00');
@@ -93,8 +105,12 @@ async function main() {
     assert.deepEqual(payload.packages, [{ package_id: '9057', lesson_id: '900' }]);
     const liveMappings = await db.package_lesson_mapping.findMany({ where: { key: original.key } });
     assert.equal(liveMappings.length, 1); assert.equal(liveMappings[0].lesson_id, '900');
-    await assert.rejects(restoreSession(original.id, actor), /đã được tái sử dụng/);
-    console.log('PASS: key reuse preserves source payload, releases unique key, isolates history and rolls back atomically');
+    await assert.rejects(restoreSession(original.id, actor), /không ở trạng thái đã xóa/);
+    const recreateLog = await db.calendar_change_logs.findFirstOrThrow({ where: { calendar_id: original.id, action: 'restore' }, orderBy: { id: 'desc' } });
+    assert.equal((recreateLog.before_data as any).source_session.lesson_name, 'Bài gốc 7');
+    assert.equal((recreateLog.after_data as any).source_session.lesson_name, 'Nội dung bài 9 cũ');
+    assert.equal((recreateLog.after_data as any).restore_type, 'reuse_key');
+    console.log('PASS: recreation keeps id/key, replaces source payload and mapping, preserves audit and rolls back atomically');
 
     // After a mapped deletion, removing mappings must not lose the pending restore.
     const deferred = await db.calendar.create({ data: calendarData(8) });
@@ -120,12 +136,14 @@ async function main() {
       else if (kind === 'bulk') await createBulk({ calendars: [input] }, actor);
       else await createValidatedInternalCalendarImport([{ row: 1, calendar: input, mappings: [] }] as any, actor);
       const replacement = await prisma.calendar.findFirstOrThrow({ where: { key: deleted.key } });
-      assert.notEqual(replacement.id, deleted.id);
+      assert.equal(replacement.id, deleted.id);
+      assert.equal(replacement.deleted_at, null);
+      assert.equal(await db.calendar.count({ where: { code, learn_number: number } }), 1);
       assert.equal(replacement.lesson_count, 0);
       const audit = await db.calendar_change_logs.findFirstOrThrow({ where: { calendar_id: replacement.id, action: 'restore' } });
       assert.equal((audit.after_data as any).restore_type, 'reuse_key');
     }
-    console.log('PASS: single, bulk and internal import preserve key reuse behavior');
+    console.log('PASS: single, bulk and internal import restore the same row without inserting another calendar');
 
     const customLesson = await db.lessons.create({ data: { subject_code: code, subject_name: 'Ngữ văn', grade: 8, learn_number: 30, lesson_name: 'Tên đề cương' } });
     const custom = await db.calendar.create({ data: calendarData(30, { session_id: customLesson.id, lesson_name: 'Tên lịch được tùy chỉnh' }) });

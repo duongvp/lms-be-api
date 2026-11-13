@@ -2,7 +2,6 @@ import prisma from '../../lib/prisma';
 import { fetchHocmaiCourseOutlines } from '../../integrations/hocmai-course-outline.service';
 import { logger } from '../../utils/logger';
 import { reconcileCalendarMappingsAndEnqueue } from '../livestream/hocmai-sync-queue.service';
-import { calendarSourceFromCode } from '../livestream/calendar-source';
 
 type TriggerType = 'cron' | 'manual';
 export type Candidate = {
@@ -69,7 +68,7 @@ const scheduleMonthYear = (value: unknown) => {
 };
 const sectionMonthYear = (value: unknown) => {
   const normalized = canonical(value);
-  const match = /(?:^|\b)thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(normalized);
+  const match = /(?:^|[^a-z0-9])thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(normalized);
   if (!match) return undefined;
   const month = Number(match[1]);
   const year = match[2] ? Number(match[2]) : undefined;
@@ -118,7 +117,9 @@ export type CalendarCandidateMatch = {
 // Cùng quy tắc với màn cập nhật hàng loạt: phân ứng viên trên cả nhóm lịch;
 // mỗi calendar nhận một Lesson ID riêng trong từng Course.
 export const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Candidate[]) => {
-  const candidates = rawCandidates.map(parseCandidate);
+  const candidates = rawCandidates.filter((candidate) =>
+    !String(candidate.sectionName ?? '').normalize('NFC').toLowerCase().includes('(bỏ)')
+  ).map(parseCandidate);
   const rawEvaluated = calendarRows.map((row, index) => {
     // Modal hàng loạt mặc định dùng tên chuẩn trong bảng lessons để match.
     // Tên calendar có thể chứa [Lịch n], [HỌC BÙ] hoặc hậu tố vận hành và chỉ
@@ -165,7 +166,11 @@ export const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Cand
       : inferredSessionKey
         ? allMatches.filter((item) => item.sessionKey === inferredSessionKey)
         : [];
-    if (!sessionMatches.length && calendarSourceFromCode(row.subject_code || row.code) === 'feed') {
+    // Mỗi lần gọi chỉ xét một Course. Một lịch có một ứng viên thì không chặn theo tháng.
+    if (calendarRows.length === 1 && allMatches.length === 1) {
+      sessionMatches = allMatches;
+    }
+    if (!sessionMatches.length) {
       let fallback = allMatches.filter((item) => item.nonMonthlySession && item.exactTitle);
       const bestQuality = fallback[0]?.teacherMatchQuality;
       fallback = fallback.filter((item) => item.teacherMatchQuality === bestQuality);
@@ -185,6 +190,17 @@ export const matchCalendarsForCourse = (calendarRows: any[], rawCandidates: Cand
     let matches = bestTeacherQuality === undefined
       ? sessionMatches
       : sessionMatches.filter((item) => item.teacherMatchQuality === bestTeacherQuality);
+    // Chỉ xét trùng Lesson sau khi đã ưu tiên session đúng tháng.
+    const equivalentMatches = matches.filter((item) => item.candidate.title === matches[0]?.candidate.title);
+    if (calendarRows.length === 1
+      && calendarOccurrence(row.lesson_name, row.lesson_count) <= 1
+      && equivalentMatches.length > 1) {
+      return {
+        row, index, teacher, matches: [] as typeof allMatches,
+        ambiguousCount: equivalentMatches.length,
+        ambiguityReason: 'MULTIPLE_MATCHES' as const,
+      };
+    }
     if (matches[0] && !matches[0].exactTitle) {
       const competing = matches.find((item, matchIndex) => matchIndex > 0
         && item.teacherMatched === matches[0].teacherMatched
@@ -366,15 +382,16 @@ const executeRun = async (runId: bigint) => {
         let failure = false;
         for (const pair of configuredPairs) {
           const pairKey = `${pair.packageId}::${pair.courseId}`;
-          // Mapping do quản trị viên chọn và đã lưu là nguồn tin cậy. Không
-          // gọi lại outline HMO cho cặp này, vì HMO có thể trả rỗng tạm thời
-          // dù Lesson ID đã được gán hợp lệ trong calendar.
+          // Giữ mapping đã lưu trừ ID được HMO xác nhận thuộc section (BỎ).
+          // Khi HMO lỗi/rỗng tạm thời, không tự hủy mapping của quản trị viên.
           const existingMapping = calendarRows.find((item) => (
             String(item.package_id) === pair.packageId
             && String(item.course_id) === pair.courseId
             && String(item.mapped_hmo_lesson_id || '').trim()
           ));
-          if (existingMapping?.mapped_hmo_lesson_id) {
+          const ignoredLessonIds = outlineByPair.get(pairKey)?.ignoredLessonIds || [];
+          if (existingMapping?.mapped_hmo_lesson_id
+            && !ignoredLessonIds.includes(String(existingMapping.mapped_hmo_lesson_id))) {
             nextMappings.push({
               package_id: pair.packageId,
               course_id: pair.courseId,

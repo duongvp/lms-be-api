@@ -83,6 +83,7 @@ export type HmoCourseOutlineResult = {
   courseId: string;
   exists: boolean;
   lessons: HmoCourseOutlineLesson[];
+  ignoredLessonIds?: string[];
 };
 
 export type ResolvedPackageLessonMapping = {

@@ -534,6 +534,43 @@ test('HMO dùng nhiều GET và giới hạn số request chạy đồng thời'
   }
 });
 
+test('HMO loại section chứa (BỎ) không phân biệt hoa thường trước khi đối chiếu', async () => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.HMO_COURSE_OUTLINE_TOKEN;
+  process.env.HMO_COURSE_OUTLINE_TOKEN = 'test-token';
+  global.fetch = async () => new Response(JSON.stringify({
+    status: 'success',
+    data: {
+      course: {
+        id: '3108',
+        sections: [
+          { id: 'skip-upper', name: 'Tháng 1 (BỎ)', lessons: [{ id: '1' }] },
+          { id: 'skip-lower', name: '(bỏ) Tháng 2', lessons: [{ id: '2' }] },
+          { id: 'skip-mixed', name: 'Tháng (Bỏ) 3', lessons: [{ id: '3' }] },
+          { id: 'skip-unicode', name: 'Tháng 4 (BỎ)'.normalize('NFD'), lessons: [{ id: '4' }] },
+          { id: 'keep', name: 'Tháng 5', lessons: [{ id: '5' }] },
+          // ID trùng trong section bỏ không được ghi đè lesson hợp lệ.
+          { id: 'skip-duplicate', name: 'Tháng 5 (bỎ)', lessons: [{ id: '5' }] },
+          { id: 'keep-word', name: 'Bỏ qua giới thiệu', lessons: [{ id: '6' }] },
+          { id: 'keep-unnamed', lessons: [{ id: '7' }] },
+        ],
+      },
+    },
+  }));
+  try {
+    const [result] = await fetchHocmaiCourseOutlines([{ packageId: '9025', courseId: '3108' }]);
+    assert.deepEqual(result.lessons.map(({ lessonId }) => lessonId), ['5', '6', '7']);
+    assert.deepEqual(result.ignoredLessonIds, ['1', '2', '3', '4']);
+    assert.equal(result.lessons[0].sectionId, 'keep');
+    assert.equal(result.lessons[0].sectionIndex, 4);
+    assert.equal(result.lessons[2].sectionName, undefined);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.HMO_COURSE_OUTLINE_TOKEN;
+    else process.env.HMO_COURSE_OUTLINE_TOKEN = originalToken;
+  }
+});
+
 test('HMO thử lại khi phản hồi success tạm thời chưa có lessons', async () => {
   const originalFetch = global.fetch;
   const originalUrl = process.env.HMO_COURSE_OUTLINE_URL;

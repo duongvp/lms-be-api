@@ -46,8 +46,17 @@ const parseSuccessfulResponse = (
 
   // `section.id` chỉ là ID nhóm nội dung. Lesson ID HMO cần dùng trong lịch là
   // ID của phần tử nằm trong `section.lessons[]`.
-  const lessons = course.sections.flatMap((section: any, sectionIndex: number) =>
-    (Array.isArray(section?.lessons) ? section.lessons : []).map(
+  const ignoredLessonIds = new Set<string>();
+  const lessons = course.sections.flatMap((section: any, sectionIndex: number) => {
+    // Loại section đánh dấu bỏ trước khi đối chiếu Lesson ID HMO.
+    if (String(section?.name ?? '').normalize('NFC').toLowerCase().includes('(bỏ)')) {
+      for (const lesson of Array.isArray(section?.lessons) ? section.lessons : []) {
+        const id = String(lesson?.id ?? lesson?.lessonId ?? '').trim();
+        if (id) ignoredLessonIds.add(id);
+      }
+      return [];
+    }
+    return (Array.isArray(section?.lessons) ? section.lessons : []).map(
       (lesson: any, lessonIndex: number) => ({
         lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
         name: String(lesson?.name ?? '').trim() || undefined,
@@ -56,13 +65,15 @@ const parseSuccessfulResponse = (
         sectionIndex,
         lessonIndex,
       })
-    )
-  ).filter((lesson: any) => lesson.lessonId);
+    );
+  }).filter((lesson: any) => lesson.lessonId);
 
   return {
     packageId: pair.packageId,
     courseId: pair.courseId,
     exists: true,
+    // ID vẫn có trong section hợp lệ được phép tiếp tục dùng.
+    ignoredLessonIds: [...ignoredLessonIds].filter((id) => !lessons.some((lesson: any) => lesson.lessonId === id)),
     lessons: Array.from(new Map(
       lessons.map((lesson: any) => [lesson.lessonId, lesson])
     ).values()) as HmoCourseOutlineResult['lessons'],

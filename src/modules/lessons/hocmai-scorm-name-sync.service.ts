@@ -192,7 +192,7 @@ const sectionMonthYear = (value: unknown) => {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
-  const match = /(?:^|\b)thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(
+  const match = /(?:^|[^a-z0-9])thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(
     normalized,
   );
   if (!match) return undefined;

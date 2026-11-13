@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ScheduleConflictError, validateBulkFinalStateConflicts, validateBulkScheduleConflicts } from '../src/modules/livestream/livestream.service';
+import { ScheduleConflictError, validateBulkFinalStateConflicts, validateBulkScheduleConflicts, validateBulkScheduleChanges } from '../src/modules/livestream/livestream.service';
 
 const at = (date: string, hour: string) => new Date(`${date}T${hour}:00.000Z`);
 
@@ -218,6 +218,59 @@ test('gom cả xung đột cùng khóa khi không trùng nhân sự', () => {
   }))), (error: unknown) => {
     assert.ok(error instanceof ScheduleConflictError);
     assert.deepEqual(error.conflicts.map((item) => item.id), [1, 2, 3]);
+    return true;
+  });
+});
+
+
+test('chỉ đổi mapping HMO không kiểm tra trùng với bài 22 đã bỏ chọn', async () => {
+  const current = {
+    id: 49, code: 'TSA', learn_number: 49, lesson_name: 'Luyện đề TSA',
+    teacher: 'teacher-a', assistant_teacher: 'assistant-a',
+    start_time: at('2027-05-14', '18:00'), end_time: at('2027-05-14', '20:00'),
+  };
+  const candidate = { ...current, package_lesson_mappings: [{ lesson_id: 'new-hmo-id' }] };
+  const client = {
+    calendar: { findMany: async () => assert.fail('Không truy vấn xung đột khi chỉ đổi mapping') },
+    $queryRaw: async () => assert.fail('Không truy vấn lịch trợ giảng khi chỉ đổi mapping'),
+  };
+  await assert.doesNotReject(validateBulkScheduleChanges([candidate], [current], client, at('2026-11-13', '12:00')));
+});
+
+test('đổi giờ vẫn kiểm tra trùng với bài 22 dù bài 22 không được chọn', async () => {
+  const current = {
+    id: 49, code: 'TSA', lesson_name: 'Luyện đề TSA', assistant_teacher: 'assistant-a',
+    start_time: at('2027-05-14', '18:00'), end_time: at('2027-05-14', '20:00'),
+  };
+  const candidate = { ...current, start_time: at('2026-11-13', '18:00'), end_time: at('2026-11-13', '20:00') };
+  const client = {
+    calendar: { findMany: async () => [] },
+    $queryRaw: async () => [{
+      id: 22, code: 'OTHER', learn_number: 22, lesson_name: 'Các dạng câu hỏi', assistant_teacher: 'assistant-a',
+      start_time: at('2026-11-13', '18:00'), end_time: at('2026-11-13', '20:00'),
+    }],
+  };
+  await assert.rejects(validateBulkScheduleChanges([candidate], [current], client, at('2026-11-13', '12:00')), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    assert.equal(error.conflicts[0]?.id, 22);
+    assert.equal(error.conflicts[0]?.staff_type, 'assistant');
+    return true;
+  });
+});
+
+test('lịch chỉ đổi mapping vẫn được dùng đối chiếu với lịch khác đang đổi nhân sự', async () => {
+  const current = [
+    { id: 1, teacher: 'teacher-b', start_time: at('2027-05-14', '18:00'), end_time: at('2027-05-14', '20:00') },
+    { id: 2, teacher: 'teacher-a', start_time: at('2027-05-14', '18:00'), end_time: at('2027-05-14', '20:00') },
+  ];
+  const candidates = [{ ...current[0]!, teacher: 'teacher-a' }, { ...current[1]! }];
+  const client = { calendar: { findMany: async ({ where }: any) => {
+    assert.deepEqual(where.id.notIn, [1]);
+    return [current[1]];
+  } } };
+  await assert.rejects(validateBulkScheduleChanges(candidates, current, client, at('2026-11-13', '12:00')), (error: unknown) => {
+    assert.ok(error instanceof ScheduleConflictError);
+    assert.equal(error.conflicts[0]?.id, 2);
     return true;
   });
 });

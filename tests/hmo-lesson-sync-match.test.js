@@ -45,14 +45,14 @@ test('Feed không tự ghép khi nhiều session chuyên đề cùng khớp', ()
   assert.equal(result.get(1).ambiguityReason, 'SESSION_UNCERTAIN');
 });
 
-test('Feed vẫn ưu tiên session đúng tháng, không lấy session tháng khác làm fallback', () => {
+test('ưu tiên session đúng tháng, fallback khi Course chỉ có một ứng viên', () => {
   const feedRow = { ...row(1, '2026-10-14T22:00:00Z', ''), subject_code: 'feed-topic', source_lesson_name: 'Bài giảng' };
   const options = [
     { lessonId: 'oct', name: 'Bài giảng', sectionName: 'Tháng 10/2026' },
     { lessonId: 'topic', name: 'Bài giảng', sectionName: 'Chuyên đề' },
   ];
   assert.equal(matchCalendarsForCourse([feedRow], options).get(1).lessonId, 'oct');
-  assert.equal(matchCalendarsForCourse([{ ...feedRow, start_time: '2026-11-14' }], options.slice(0, 1)).get(1).ambiguityReason, 'SESSION_UNCERTAIN');
+  assert.equal(matchCalendarsForCourse([{ ...feedRow, start_time: '2026-11-14' }], options.slice(0, 1)).get(1).lessonId, 'oct');
 });
 
 test('Lịch 2 của bài 67 không lấy nhầm Lesson cùng tên thuộc bài 81', () => {
@@ -75,7 +75,7 @@ test('bài 81 chọn Lesson cùng tên trong đúng session tháng 4/2027', () =
   assert.equal(result.get(3484).lessonId, '168559');
 });
 
-test('session không phải Tháng M/YYYY bắt buộc chọn thủ công', () => {
+test('session không chia tháng duy nhất được tự ghép khi tên và giáo viên khớp', () => {
   const result = matchCalendarsForCourse([
     row(1, '2027-03-10T18:00:00.000Z', 'Nguyễn Thị Chi'),
   ], [{
@@ -84,14 +84,10 @@ test('session không phải Tháng M/YYYY bắt buộc chọn thủ công', () =
     sectionName: 'Học tập tương tác',
   }]);
 
-  assert.deepEqual(result.get(1), {
-    errorCode: 'AMBIGUOUS',
-    ambiguityReason: 'SESSION_UNCERTAIN',
-    candidateCount: 1,
-  });
+  assert.equal(result.get(1).lessonId, '900001');
 });
 
-test('session thiếu năm cũng không được tự động chọn', () => {
+test('một lịch với một ứng viên duy nhất vẫn tự map dù section thiếu năm', () => {
   const result = matchCalendarsForCourse([
     row(2, '2027-03-10T18:00:00.000Z', 'Nguyễn Thị Chi'),
   ], [{
@@ -100,8 +96,7 @@ test('session thiếu năm cũng không được tự động chọn', () => {
     sectionName: 'Tháng 3',
   }]);
 
-  assert.equal(result.get(2).errorCode, 'AMBIGUOUS');
-  assert.equal(result.get(2).ambiguityReason, 'SESSION_UNCERTAIN');
+  assert.equal(result.get(2).lessonId, '900002');
 });
 
 
@@ -119,4 +114,61 @@ test('backend suy ra session duy nhất cho lịch cùng bài bắc qua đầu t
 
   assert.equal(result.get(2593).lessonId, '173858');
   assert.equal(result.get(2604).lessonId, '173883');
+});
+
+
+test('không tự map vào section (BỎ), chọn section Chặng 1 còn hiệu lực', () => {
+  const source_lesson_name = 'Lí thuyết đọc hiểu truyện ngắn hiện đại';
+  for (const marker of ['(BỎ)', '(bỏ)', '(Bỏ)', '(bỎ)']) {
+    const result = matchCalendarsForCourse([
+      { ...row(1, '2026-11-11T14:00:00Z', ''), source_lesson_name },
+    ], [
+      { lessonId: '179133', name: source_lesson_name, sectionId: 'old', sectionName: `Chặng 1 ${marker}` },
+      { lessonId: '179163', name: source_lesson_name, sectionId: 'active', sectionName: 'Chặng 1: Các chủ đề trọng tâm - Học kì I' },
+    ]);
+    assert.equal(result.get(1).lessonId, '179163');
+  }
+});
+
+test('nhận diện tháng sau tiền tố môn và dấu gạch dưới cho từng Course TSA', () => {
+  const title = 'Luyện đề TSA-OD-Phần Tư duy Toán-P2';
+  for (const lessonId of ['179222', '179491']) {
+    const options = [{ lessonId, name: title, sectionName: 'TOÁN_Tháng 12/2026' }];
+    const calendar = { ...row(1, '2026-12-04T11:00:00Z', ''), source_lesson_name: title };
+    assert.equal(matchCalendarsForCourse([calendar], options).get(1).lessonId, lessonId);
+    assert.equal(matchCalendarsForCourse([{ ...calendar, start_time: '2026-11-04' }], options).get(1).lessonId, lessonId);
+    assert.equal(matchCalendarsForCourse([{ ...calendar, start_time: '2027-12-04' }], options).get(1).lessonId, lessonId);
+  }
+});
+
+test('một lịch vẫn cần xác định session nếu cùng Course có nhiều Lesson khớp', () => {
+  const calendar = row(1, '2026-11-04T11:00:00Z', 'Nguyễn Thị Chi');
+  const result = matchCalendarsForCourse([calendar], [
+    { lessonId: 'a', name: `${title}_Cô Nguyễn Thị Chi`, sectionName: 'TOÁN_Tháng 12/2026' },
+    { lessonId: 'b', name: `${title}_Cô Nguyễn Thị Chi`, sectionName: 'TOÁN_Tháng 9/2026' },
+  ]);
+  assert.equal(result.get(1).ambiguityReason, 'SESSION_UNCERTAIN');
+});
+
+
+test('một lịch có hai ID cùng tên trong cùng section bắt chọn tay', () => {
+  const calendar = row(1, '2027-02-25T18:00:00Z', 'Dương Thùy Linh');
+  const result = matchCalendarsForCourse([calendar], [
+    { lessonId: 'a', name: `${title}_Cô Dương Thùy Linh`, sectionName: 'Tháng 2/2027' },
+    { lessonId: 'b', name: `${title}_Cô Dương Thùy Linh`, sectionName: 'Tháng 2/2027' },
+  ]);
+  assert.equal(result.get(1).lessonId, undefined);
+  assert.equal(result.get(1).ambiguityReason, 'MULTIPLE_MATCHES');
+  assert.equal(result.get(1).candidateCount, 2);
+});
+
+test('một lịch chọn tháng đúng trước khi xét nhiều Lesson cùng tên', () => {
+  const calendar = row(1, '2027-02-25T18:00:00Z', 'Dương Thùy Linh');
+  const options = [
+    { lessonId: 'feb', name: `${title}_Cô Dương Thùy Linh`, sectionName: 'TOÁN_Tháng 2/2027' },
+    { lessonId: 'apr', name: `${title}_Cô Dương Thùy Linh`, sectionName: 'TOÁN_Tháng 4/2027' },
+  ];
+  assert.equal(matchCalendarsForCourse([calendar], options).get(1).lessonId, 'feb');
+  const duplicate = matchCalendarsForCourse([calendar], [...options, { ...options[0], lessonId: 'duplicate-feb' }]);
+  assert.equal(duplicate.get(1).ambiguityReason, 'MULTIPLE_MATCHES');
 });

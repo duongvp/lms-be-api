@@ -1576,6 +1576,33 @@ export const validateBulkScheduleConflicts = async (
   ));
 };
 
+/** Chỉ kiểm tra xung đột khi dữ liệu ảnh hưởng đến xếp lịch thực sự thay đổi. */
+export const validateBulkScheduleChanges = async (
+  candidates: BulkConflictCandidate[],
+  currentSessions: any[],
+  client: any = prisma,
+  now = getVietnamWallClockDate(),
+  options: SharedStaffScheduleOptions = {}
+) => {
+  const currentById = new Map(currentSessions.map((session) => [Number(session.id), session]));
+  const staffKey = (value: unknown) => parseAssistantTeachers(value).sort().join('\u0000');
+  const changedCandidates = candidates.filter((candidate) => {
+    const current = currentById.get(candidate.id);
+    if (!current) return true;
+    return scheduleMinute(candidate.start_time) !== scheduleMinute(current.start_time)
+      || scheduleMinute(candidate.end_time) !== scheduleMinute(current.end_time)
+      || String(candidate.teacher || '').trim() !== String(current.teacher || '').trim()
+      || staffKey(candidate.assistant_teacher) !== staffKey(current.assistant_teacher)
+      || candidate.code !== current.code
+      || normalizeSharedLessonTitle(candidate.lesson_name) !== normalizeSharedLessonTitle(current.lesson_name)
+      || Number(candidate.lesson_status || 0) !== Number(current.lesson_status || 0);
+  });
+  // Lịch không thay đổi vẫn là lịch đối chiếu bên ngoài lô, không được loại khỏi truy vấn.
+  await validateBulkScheduleConflicts(
+    changedCandidates, changedCandidates.map((candidate) => candidate.id), client, now, options
+  );
+};
+
 /** Report each swap conflict against the schedule being moved, including both A and B. */
 export const validateSwapScheduleConflicts = async (
   candidates: [BulkConflictCandidate, BulkConflictCandidate],
@@ -4259,7 +4286,7 @@ export const updateBulk = async (
             end_time: endTime,
           };
         });
-        await validateBulkScheduleConflicts(finalCandidates, normalizedIds, tx, undefined, {
+        await validateBulkScheduleChanges(finalCandidates, sessions, tx, undefined, {
           allow_shared_staff_schedule: config.allow_shared_staff_schedule,
         });
         const teamsEvents: Array<Parameters<typeof enqueueCalendarTeamsNotification>[1]> = [];
@@ -4427,7 +4454,7 @@ export const updateBulk = async (
           end_time: endTime,
         });
       }
-      await validateBulkScheduleConflicts(finalCandidates, normalizedIds, tx, undefined, {
+      await validateBulkScheduleChanges(finalCandidates, sessions, tx, undefined, {
         allow_shared_staff_schedule: config.allow_shared_staff_schedule,
       });
       const results: any[] = [];

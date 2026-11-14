@@ -2978,10 +2978,13 @@ export const deleteSession = async (
   });
   if (current.key && calendarSourceFromCode(current.code) !== 'feed'
     && mappings.some(hasValidHocmaiLessonMapping)) {
-    await tx.hocmai_sync_queue.create({ data: {
-      c_key: current.key, action: 'delete', payload: JSON.stringify({ c_key: current.key, action: 'delete' }),
-      status: 0, operation_id: operationId, sequence_no: 1,
-    } });
+    // Use the database timestamp default, matching restore's raw INSERT.
+    // Prisma create supplies a UTC created_at, which shifts it on non-UTC DB sessions.
+    await tx.$executeRaw`
+      INSERT INTO hocmai_sync_queue (c_key, action, payload, status, operation_id, sequence_no)
+      VALUES (${current.key}, 'delete', ${JSON.stringify({ c_key: current.key, action: 'delete' })},
+        0, ${operationId}, 1)
+    `;
   }
   await enqueueCalendarTeamsNotification(tx, { eventType: 'deleted', before: current, actor });
   return deleted;

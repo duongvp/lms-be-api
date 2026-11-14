@@ -132,6 +132,18 @@ export const releaseCanceledStatusInTransaction = async (tx: Tx, queueId: number
   return changed === 1;
 };
 
+/** A later delete supersedes a notification that has never been dispatched.
+ * Also covers lifecycle jobs produced by DB triggers and historical waiting gates.
+ * Keep this in LMS: the HMO consumer never claims prerequisite status=4. */
+export const cancelSupersededCanceledStatuses = async (client = prisma) => client.$executeRaw`
+  UPDATE hocmai_sync_queue AS waiting
+  JOIN hocmai_sync_queue AS deletion
+    ON deletion.c_key = waiting.c_key AND deletion.id > waiting.id AND deletion.action = 'delete'
+  SET waiting.status = 5,
+      waiting.last_error = 'Canceled unsent prerequisite: superseded by calendar deletion'
+  WHERE waiting.status = 4 AND waiting.action = 'update-status-lesson'
+`;
+
 const GATE_RUN_BUDGET_MS = 5_000;
 
 export const releaseReadyCanceledStatuses = async (
@@ -142,6 +154,7 @@ export const releaseReadyCanceledStatuses = async (
   // The budget stops starting new transactions, not an existing DB operation.
   const now = options.now ?? (() => performance.now());
   const startedAt = now();
+  await cancelSupersededCanceledStatuses(client);
   // Filter prerequisites and conflicting active requests BEFORE LIMIT. Rows
   // blocked on another consumer must not occupy all 100 candidate positions.
   // The transaction still rechecks both conditions under the calendar lock.

@@ -12,9 +12,9 @@
 
 ## Tái sử dụng key
 
-Khi một luồng tạo lịch hiện tại sinh ra key đã bị xóa, bản ghi đã xóa được giữ lại với `key=NULL`; key gốc vẫn còn trong log `delete`. Tạo bản ghi lịch mới với key đó để không gán nhầm lịch sử phụ thuộc `calendar_id` của lịch cũ sang lịch mới. Mapping cũ được thay hoàn toàn bằng mapping đầu vào của luồng hiện tại.
+Khi một luồng tạo lịch hiện tại sinh ra đúng key của lịch đã xóa mềm, khôi phục và cập nhật chính bản ghi đó trong cùng transaction: giữ `calendar.id`, `key` và `created_at`, đặt `deleted_at=NULL`, cập nhật dữ liệu theo đầu vào mới. Không đặt key cũ thành NULL và không INSERT thêm calendar. Các trường tùy chọn không được cung cấp trở về mặc định của lịch mới; `student_synced_at` được xóa để lịch được đồng bộ lại. Mapping cũ được thay hoàn toàn bằng mapping đầu vào của luồng hiện tại.
 
-Log `restore` có `after_data.restore_type="reuse_key"`; `before_data` chứa snapshot lịch/mapping cũ, `after_data` chứa lịch/mapping mới. `restore_type="self"` là khôi phục nguyên trạng chính lịch đã xóa. Key đã được tái sử dụng không được khôi phục đè từ bản ghi lịch cũ, kể cả lịch mới sau đó cũng bị xóa.
+Log `restore` tiếp tục dùng `after_data.restore_type="reuse_key"` để tương thích lịch sử; `before_data` chứa snapshot lịch/mapping trước khi tạo lại, `after_data` chứa dữ liệu mới, cùng một `calendar_id`. `restore_type="self"` vẫn là khôi phục nguyên trạng theo snapshot xóa gần nhất. Lịch sử phụ thuộc `calendar_id` tiếp tục gắn với bản ghi được khôi phục. Các row đã bị giải phóng key thành NULL ở phiên bản trước được giữ nguyên; thay đổi này không gộp hoặc sửa dữ liệu lịch sử.
 
 Không đổi cách reorder đề cương, không tự khôi phục mọi lịch đã xóa khi reorder. Các thao tác ghi lại lịch dùng dữ liệu mà luồng hiện tại đã tính. Key được dùng lại gửi `restore` và toàn bộ payload mới, gồm thời gian, giáo viên, tài liệu và packages/lesson của lịch nguồn. Nếu chưa có mapping, chưa gửi payload rỗng; khi mapping được gán hoặc gửi lại HMO, queue tiếp tục dùng `restore` nếu lifecycle trước vẫn là delete hoặc restore chưa thành công.
 
@@ -46,4 +46,12 @@ Lịch đã xóa cứng trước migration không tự xuất hiện lại trong
 TEST_CALENDAR_SOFT_DELETE_DATABASE_URL='mysql://root@127.0.0.1:13327/calendar_soft_delete_test' npm run test:calendar-soft-delete:integration
 ```
 
-Integration kiểm tra: giữ bản ghi khi xóa, lọc đọc/ghi mặc định, không trùng queue khi xóa lại, self restore, xung đột lịch, đề cương thay đổi, snapshot không bị sửa theo đề cương, key reuse với payload/mapping mới, rollback khi ghi log lỗi, gán mapping trễ, resend, các luồng single/bulk/internal import, trigger và Feed. Dữ liệu kiểm thử dùng mã chương trình riêng mỗi lần chạy; không dùng database vận hành.
+Integration kiểm tra: giữ bản ghi khi xóa, lọc đọc/ghi mặc định, không trùng queue khi xóa lại, self restore, xung đột lịch, đề cương thay đổi, snapshot không bị sửa theo đề cương, tạo lại cùng id/key với payload/mapping mới và không thêm row, rollback khi ghi log lỗi, gán mapping trễ, resend, các luồng single/bulk/internal import, trigger và Feed. Dữ liệu kiểm thử dùng mã chương trình riêng mỗi lần chạy; không dùng database vận hành.
+
+## Độ bền queue HMO
+
+Migration bổ sung `20261110100000_hocmai_sync_durable_retry` chỉ tạo các cột claim/lease/retry và index; không thay đổi trigger, không reset job cũ. Migration được quản lý tại LMS. Consumer bên livestream phải được triển khai sau khi schema đã được cập nhật; không chạy song song consumer cũ và mới trong giai đoạn chuyển đổi. Việc tạo file migration không có nghĩa migration đã được chạy.
+
+Status hiện tại giữ nguyên: 0 chờ xử lý (có thể có `next_retry_at`), 1 đã đồng bộ, 2 lỗi terminal, 3 đang xử lý, 4 chờ create do LMS quản lý. Status 5 dành cho job trạng thái nghỉ chưa gửi đã bị hủy do xóa lịch hoặc tái sử dụng key; không được tính là đã đồng bộ. Hủy job 4 được ghi cùng transaction xóa/reuse key. Gate định kỳ cũng hủy job 4 nếu có delete phía sau cùng key, kể cả delete sinh từ trigger; không đụng job 0/1/2/3.
+
+Các điều kiện xóa/khôi phục, snapshot, mapping, Feed và quyền thao tác giữ nguyên. Job lỗi terminal và job 2/3 cũ không có metadata cần được đối soát riêng. Retry sau crash có thể gửi lại request đã thành công tại HMO nhưng chưa được ghi nhận tại DB; lease/token bảo vệ quyền ghi queue, không bảo đảm HMO chỉ thực hiện một lần hoặc chỉ gửi một thông báo.

@@ -15,6 +15,7 @@ test('delete stores Vietnam wall-clock deleted_at and repeated deletes preserve 
   let updates = 0;
   const logs: any[] = [];
   const tx = {
+    $executeRaw: async () => 0,
     $executeRawUnsafe: async () => 0,
     $queryRaw: async () => [row],
     calendar: { update: async ({ where, data }: any) => {
@@ -65,13 +66,29 @@ test('delete persists the soft deletion but enqueues only with a valid lesson ma
         package_lesson_mapping: { findMany: async () => mappings },
         teacher_profiles: { findMany: async () => [] },
         users: { findMany: async () => [] },
-        hocmai_sync_queue: { create: async ({ data }: any) => queued.push(data) },
+        $executeRaw: async (sql: TemplateStringsArray, ...values: any[]) => {
+          const statement = sql.join('?');
+          if (!/INSERT INTO hocmai_sync_queue/.test(statement)) return 0;
+          queued.push({ sql: statement, values });
+          return 1;
+        },
       };
       prisma.$transaction = (async (operation: any) => operation(tx)) as any;
       await deleteSession(1, { userId: 1, username: 'test' });
       assert.ok(row.deleted_at, 'Missing mapping must not prevent deleting the calendar');
       assert.equal(queued.length, mappings.some(item => String(item.lesson_id ?? '').trim()) ? 1 : 0);
-      if (queued.length) assert.deepEqual(JSON.parse(queued[0].payload), { c_key: 'mapped-key', action: 'delete' });
+      if (queued.length) {
+        // Omit created_at so MySQL supplies CURRENT_TIMESTAMP, as it does for restore.
+        assert.match(queued[0].sql, /INSERT INTO hocmai_sync_queue \(c_key, action, payload, status, operation_id, sequence_no\)/);
+        assert.doesNotMatch(queued[0].sql, /created_at/);
+        assert.deepEqual(queued[0].values.slice(0, 2), [
+          'mapped-key', JSON.stringify({ c_key: 'mapped-key', action: 'delete' }),
+        ]);
+        assert.match(queued[0].values[2], /^[0-9a-f-]{36}$/);
+      }
+      await deleteSession(1, { userId: 1, username: 'test' });
+      assert.equal(queued.length, mappings.some(item => String(item.lesson_id ?? '').trim()) ? 1 : 0,
+        'Repeated deletion must not enqueue another job');
     }
   } finally {
     prisma.$transaction = originalTransaction;

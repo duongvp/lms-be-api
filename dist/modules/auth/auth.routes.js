@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const auth_controller_1 = __importDefault(require("./auth.controller"));
 const auth_middleware_1 = __importDefault(require("./auth.middleware"));
+const google_auth_1 = require("./google-auth");
 const router = (0, express_1.Router)();
 const { authenticate } = auth_middleware_1.default;
 const validateLogin = (req, res, next) => {
@@ -62,7 +63,7 @@ router.post('/register', auth_controller_1.default.register);
  * @swagger
  * /api/auth/login:
  *   post:
- *     summary: Login to the system
+ *     summary: Password login is temporarily disabled; use Google login
  *     tags: [Auth]
  *     requestBody:
  *       required: true
@@ -91,7 +92,16 @@ router.post('/register', auth_controller_1.default.register);
  *       401:
  *         description: Invalid credentials
  */
-router.post('/login', validateLogin, auth_controller_1.default.login);
+// Tạm tắt đăng nhập tài khoản/mật khẩu; giữ lại để bật lại khi cần.
+// router.post('/login', validateLogin, controllers.login);
+router.post('/login', (_req, res) => {
+    res.status(403).json({
+        success: false,
+        message: 'Đăng nhập bằng tài khoản/mật khẩu tạm thời bị tắt. Vui lòng đăng nhập bằng Google.',
+    });
+});
+router.get('/google', google_auth_1.startGoogleLogin);
+router.get('/google/callback', google_auth_1.googleLoginCallback);
 router.post('/refresh-token', auth_controller_1.default.refreshToken);
 // Quên mật khẩu routes (public)
 router.post('/forgot-password', auth_controller_1.default.requestPasswordReset);

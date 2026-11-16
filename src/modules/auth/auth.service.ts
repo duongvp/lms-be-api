@@ -167,6 +167,15 @@ export const login = async (
         throw new ApiError('Tài khoản không có quyền truy cập hệ thống quản trị', 403);
     }
 
+    return createLoginSession(user, rememberMe, authenticatedUser.fullName);
+};
+
+// All identity providers use the same RBAC checks and revocable sessions.
+export const createLoginSession = async (
+    user: { id: number; username: string; name: string },
+    rememberMe = false,
+    fullName?: string
+) => {
     const { roles, permissionCodes, programScope } = await loadUserAccess(user.id);
     if (roles.length === 0) {
         throw new ApiError('Tài khoản không có vai trò đang hoạt động', 403);
@@ -191,7 +200,7 @@ export const login = async (
     return {
         userId: user.id,
         username: user.username,
-        full_name: authenticatedUser.fullName || user.name,
+        full_name: fullName || user.name,
         roles: roles.map((role: any) => ({
             id: role.id.toString(),
             code: role.code,

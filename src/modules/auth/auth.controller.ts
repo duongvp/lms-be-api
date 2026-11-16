@@ -3,14 +3,7 @@ import * as authServices from './auth.service';
 import prisma from '../../lib/prisma';
 import { SuccessResponse, ErrorResponse } from '../../utils/apiResponse';
 import { logger } from '../../utils/logger';
-
-const REFRESH_COOKIE_NAME = 'refreshToken';
-const refreshCookieOptions = {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax' as const,
-    path: '/',
-};
+import { REFRESH_COOKIE_NAME, refreshCookieOptions, issuedRefreshCookieOptions } from './auth.cookies';
 
 const getCookie = (req: Request, name: string) => {
     const cookieHeader = req.headers.cookie;
@@ -50,7 +43,7 @@ const login = async (req: Request, res: Response, next: NextFunction): Promise<v
         const userData = await authServices.login(username, password, rememberMe);
         logger.info(`User ${userData.userId} logged in`);
         const { refreshToken, ...rest } = userData;
-        res.cookie(REFRESH_COOKIE_NAME, refreshToken, refreshCookieOptions);
+        res.cookie(REFRESH_COOKIE_NAME, refreshToken, issuedRefreshCookieOptions(refreshToken));
         SuccessResponse(res, 'Login successful', {
             ...rest,
         });
@@ -70,7 +63,7 @@ const refreshToken = async (req: Request, res: Response, next: NextFunction): Pr
             return;
         }
         const tokens = await authServices.refreshToken(refreshToken);
-        res.cookie(REFRESH_COOKIE_NAME, tokens.refreshToken, refreshCookieOptions);
+        res.cookie(REFRESH_COOKIE_NAME, tokens.refreshToken, issuedRefreshCookieOptions(tokens.refreshToken));
 
         SuccessResponse(res, 'Token refreshed', { accessToken: tokens.accessToken });
     } catch (error: any) {
@@ -82,7 +75,7 @@ const refreshToken = async (req: Request, res: Response, next: NextFunction): Pr
 const logout = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         await authServices.logout((req as any).user.sessionId);
-        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions);
+        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
         SuccessResponse(res, 'Logout successful');
     } catch (error: any) {
         next(error);

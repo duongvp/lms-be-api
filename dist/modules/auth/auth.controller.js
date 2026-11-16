@@ -40,13 +40,7 @@ const authServices = __importStar(require("./auth.service"));
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const apiResponse_1 = require("../../utils/apiResponse");
 const logger_1 = require("../../utils/logger");
-const REFRESH_COOKIE_NAME = 'refreshToken';
-const refreshCookieOptions = {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-};
+const auth_cookies_1 = require("./auth.cookies");
 const getCookie = (req, name) => {
     const cookieHeader = req.headers.cookie;
     if (!cookieHeader)
@@ -83,7 +77,7 @@ const login = async (req, res, next) => {
         const userData = await authServices.login(username, password, rememberMe);
         logger_1.logger.info(`User ${userData.userId} logged in`);
         const { refreshToken, ...rest } = userData;
-        res.cookie(REFRESH_COOKIE_NAME, refreshToken, refreshCookieOptions);
+        res.cookie(auth_cookies_1.REFRESH_COOKIE_NAME, refreshToken, (0, auth_cookies_1.issuedRefreshCookieOptions)(refreshToken));
         (0, apiResponse_1.SuccessResponse)(res, 'Login successful', {
             ...rest,
         });
@@ -96,13 +90,13 @@ const login = async (req, res, next) => {
 // Làm mới token
 const refreshToken = async (req, res, next) => {
     try {
-        const refreshToken = getCookie(req, REFRESH_COOKIE_NAME);
+        const refreshToken = getCookie(req, auth_cookies_1.REFRESH_COOKIE_NAME);
         if (!refreshToken) {
             res.status(401).json({ success: false, message: 'Missing refresh token' });
             return;
         }
         const tokens = await authServices.refreshToken(refreshToken);
-        res.cookie(REFRESH_COOKIE_NAME, tokens.refreshToken, refreshCookieOptions);
+        res.cookie(auth_cookies_1.REFRESH_COOKIE_NAME, tokens.refreshToken, (0, auth_cookies_1.issuedRefreshCookieOptions)(tokens.refreshToken));
         (0, apiResponse_1.SuccessResponse)(res, 'Token refreshed', { accessToken: tokens.accessToken });
     }
     catch (error) {
@@ -113,7 +107,7 @@ const refreshToken = async (req, res, next) => {
 const logout = async (req, res, next) => {
     try {
         await authServices.logout(req.user.sessionId);
-        res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions);
+        res.clearCookie(auth_cookies_1.REFRESH_COOKIE_NAME, (0, auth_cookies_1.refreshCookieOptions)());
         (0, apiResponse_1.SuccessResponse)(res, 'Logout successful');
     }
     catch (error) {

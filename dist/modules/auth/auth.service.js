@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.resetPassword = exports.verifyOTP = exports.requestPasswordReset = exports.register = exports.logout = exports.refreshToken = exports.getMe = exports.login = exports.generateTokens = void 0;
+exports.resetPassword = exports.verifyOTP = exports.requestPasswordReset = exports.register = exports.logout = exports.refreshToken = exports.getMe = exports.createLoginSession = exports.login = exports.generateTokens = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const prisma_1 = __importDefault(require("../../lib/prisma"));
@@ -130,6 +130,11 @@ const login = async (username, password, rememberMe = false) => {
     if (!user) {
         throw new ApiError_1.default('Tài khoản không có quyền truy cập hệ thống quản trị', 403);
     }
+    return (0, exports.createLoginSession)(user, rememberMe, authenticatedUser.fullName);
+};
+exports.login = login;
+// All identity providers use the same RBAC checks and revocable sessions.
+const createLoginSession = async (user, rememberMe = false, fullName) => {
     const { roles, permissionCodes, programScope } = await (0, authorization_service_1.loadUserAccess)(user.id);
     if (roles.length === 0) {
         throw new ApiError_1.default('Tài khoản không có vai trò đang hoạt động', 403);
@@ -152,7 +157,7 @@ const login = async (username, password, rememberMe = false) => {
     return {
         userId: user.id,
         username: user.username,
-        full_name: authenticatedUser.fullName || user.name,
+        full_name: fullName || user.name,
         roles: roles.map((role) => ({
             id: role.id.toString(),
             code: role.code,
@@ -164,7 +169,7 @@ const login = async (username, password, rememberMe = false) => {
         ...tokens,
     };
 };
-exports.login = login;
+exports.createLoginSession = createLoginSession;
 const getMe = async (userId) => {
     const { user, roles, permissionCodes, programScope } = await (0, authorization_service_1.loadUserAccess)(userId);
     return {

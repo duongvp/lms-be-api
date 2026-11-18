@@ -1,0 +1,27 @@
+{
+  "source": "streamapp-v2/apps/api/src/services",
+  "files": {
+    "chat-jev/compact-policy-store.ts": "4fecda7d369b616a60fd8d5da8c43641b4744595ce90da8dd2368b175b4c7810",
+    "chat-jev/compact-contract.ts": "6ddf0be33e3c537fe2022ef6d71c3fa7248f67cfc76f4c76c7ed50d092c97ea5",
+    "chat-jev/shadow-policy.ts": "0d44e8257394fef2f46085a4123d10b7826c66edd24496ab5a7ac6782de3a6ee",
+    "chat-jev/types.ts": "e62992913fc7783a36406c69955ce4309bcc9a4bbfbc27babf029697f5386021",
+    "chat-jev/rubric.ts": "b21ba5dddd1dfdc87218533e8f9bebc5a9e58a3d69d7c75b3f3e79fee0df04c3",
+    "chat-jev/context.ts": "304d4928fc766005fcdbe4ed29625dc380b17ac85e3103d19c14f9817ab947b0",
+    "chat-jev/actor.ts": "d6d49c621bbeb49b106e0519bcbd9abb16835307d35748ec4e91c6ebc1edb8ae",
+    "chat-jev/student-notices.ts": "3e17bed491b849e919317e648e5bc9cb58c7ea873d6e38722ba15607573d3130",
+    "chat-jev/decision-matrix.ts": "7dbcdfe0e150398a39449c185c79827c649fbdf00be8e92e098a35deb45f4322",
+    "chat-jev/contract.ts": "d9bae396875293492440b9e8161182d70ffa45ffad7576d86d8d946de6a540b2",
+    "chat-jev/framework.ts": "e02ef14a6f0b8cc2af1662dcd45aae70c707542487f1c331de9ebc873052a2df",
+    "chat-jev/notice-templates.ts": "ffe35d02dfb1657a615d4fffd89d0f5f3005b16f7dda656a7bc6d7a628b7a0fd",
+    "chat-jev/dynamic-policy.ts": "a23d1f5b94eabae5ab38509657c1522c06bf1f3c94d3e1dd3b9930b22015b457",
+    "chat-jev/runtime-rubric.ts": "1a190e8142617cd69d8fb2cff559c9e9298bda2c4419d58b8df8eadc125f4a89",
+    "chat-jev/policy-database.ts": "30289dd6301154861641d60620a911fffbc3edf2564463f6cddf754b23cce5a1",
+    "chat-jev/config.ts": "e3bcc4a00c1dc54a7939c703acc69a7d4c26b3e68086aa9713875c170047ae0e",
+    "chat-jev/circuit-breaker.ts": "edf0cbc65892653685993424d3fb654b55aeb65e22082dc577534413b5292cd9",
+    "moderation-mode.ts": "8f767a494f176bb173a949a600bf28e3c773c58bb8325959e5de4bf23a012f71",
+    "chat-jev/runtime-settings.ts": "de2bd99ecabb6ce0253a54018e6a628264f89e751c9000bd4101f9623dc08ae1",
+    "chat-jev/legacy-projection.ts": "0ec9e218443d76d0b827881f67dc4eaa280b27d872d41f9e48feee75bc1fd644",
+    "chat-jev/legacy-types.ts": "e936c1a5c77f9272ef77091d6daad1efb6e728bc67130d39463c404bba075804",
+    "chat-jev/normalized-storage.ts": "1fb0abf22f8b184c608d848b25a6e0118095950332dd2d843c1ea8c8d6a96289"
+  }
+}

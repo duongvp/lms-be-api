@@ -34,7 +34,11 @@
     "test:calendar-source": "node --import tsx --test tests/calendar-source.test.ts",
     "test:calendar-source:integration": "node --import tsx tests/calendar-source.integration.ts",
     "db:calendar-source-rollback-triggers": "tsx prisma/scripts/rollbackCalendarSourceTriggers.ts",
-    "test:calendar-detail-report": "node --import tsx --test tests/calendar-detail-report.test.ts tests/calendar-detail-report-auth.test.ts"
+    "test:calendar-detail-report": "node --import tsx --test tests/calendar-detail-report.test.ts tests/calendar-detail-report-auth.test.ts",
+    "db:jev-rbac": "tsx prisma/scripts/syncJevRbac.ts",
+    "test:jev": "node --import tsx --test tests/jev-admin.test.ts",
+    "db:moderation-local": "tsx prisma/scripts/prepareLocalModeration.ts",
+    "test:l1": "node --import tsx --test tests/l1-admin.test.ts tests/local-moderation.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -60,6 +64,7 @@
     "multer": "^2.2.0",
     "prisma": "^5.22.0",
     "xlsx": "^0.18.5",
-    "xlsx-js-style": "^1.2.0"
+    "xlsx-js-style": "^1.2.0",
+    "zod": "3.25.76"
   }
 }

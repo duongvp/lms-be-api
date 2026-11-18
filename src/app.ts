@@ -14,6 +14,8 @@ import { roomConfigRoutes } from "./modules/room-config";
 import { programTeacherBannerRoutes } from "./modules/program-teacher-banners";
 import ApiError from "./utils/ApiError";
 
+import jevRoutes from "./modules/jev/jev.routes";
+
 const app = express();
 app.set('json replacer', (_key: string, value: unknown) => (
     typeof value === 'bigint' ? value.toString() : value
@@ -26,6 +28,8 @@ const allowedCorsOrigins = new Set(
         .filter(Boolean)
 );
 
+// A JEV bundle can reach 640 KiB. Keep the larger body limit scoped to this module.
+app.use("/api/jev", express.json({ limit: "700kb" }));
 app.use(express.json());
 app.use((req, res, next) => {
     console.log(">>>", req.method, req.url);
@@ -44,6 +48,7 @@ app.use(cors({
     credentials: true,
 }));
 
+app.use("/api/jev", jevRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);
 app.use("/api/modules", moduleRoutes);

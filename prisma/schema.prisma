@@ -751,3 +751,95 @@ model moduleFields {
   @@index([moduleId])
   @@map("module_fields")
 }
+
+// Shared Chat DB: DDL is owned by streamapp-v2 migrations.
+model chat_jev_policy_versions {
+  id Int @id @default(autoincrement()) @db.UnsignedInt
+  policy_key String @db.VarChar(64)
+  revision Int @default(1) @db.UnsignedInt
+  edit_revision Int @default(1) @db.UnsignedInt
+  status String @default("DRAFT") @db.VarChar(20)
+  config_json Json
+  bundle_hash String? @db.Char(64)
+  policy_hash String? @db.Char(64)
+  rubric_hash String? @db.VarChar(100)
+  created_by String @db.VarChar(100)
+  published_by String? @db.VarChar(100)
+  created_at DateTime @default(now()) @db.DateTime(3)
+  updated_at DateTime @default(now()) @updatedAt @db.DateTime(3)
+  published_at DateTime? @db.DateTime(3)
+  @@unique([policy_key, revision], map: "uq_jev_compact_policy_version")
+}
+
+// Shared Chat DB: DDL is owned by streamapp-v2 migrations.
+model chat_jev_bindings {
+  id Int @id @default(autoincrement()) @db.UnsignedInt
+  scope_type String @db.VarChar(16)
+  scope_key String @db.VarChar(100)
+  mode String @default("off") @db.VarChar(16)
+  policy_version_id Int? @db.UnsignedInt
+  runtime_json Json?
+  revision Int @default(1) @db.UnsignedInt
+  updated_by String @db.VarChar(100)
+  updated_at DateTime @default(now()) @updatedAt @db.DateTime(3)
+  @@unique([scope_type, scope_key], map: "uq_jev_compact_binding_scope")
+  @@index([policy_version_id], map: "idx_jev_compact_binding_policy")
+}
+
+model chat_l1_settings {
+  id         Int       @id @default(autoincrement()) @db.UnsignedInt
+  scope_type String    @default("GLOBAL") @db.VarChar(50)
+  scope_key  String    @default("*") @db.VarChar(50)
+  mode       String    @default("off") @db.VarChar(20)
+  revision   Int       @default(1) @db.UnsignedInt
+  updated_by String?   @db.VarChar(100)
+  updated_at DateTime? @default(now()) @updatedAt @db.DateTime(0)
+
+  @@unique([scope_type, scope_key], map: "uq_l1_scope")
+}
+
+model chat_l1_lexicon {
+  id         Int       @id @default(autoincrement()) @db.UnsignedInt
+  list_type  String    @db.VarChar(20)
+  match_mode String    @default("BOUNDED") @db.VarChar(30)
+  // Migration đặt utf8mb4_bin để unique key giữ riêng từng biến thể có dấu.
+  pattern    String    @db.VarChar(150)
+  category   String?   @db.VarChar(50)
+  note       String?   @db.VarChar(255)
+  is_active  Int       @default(1) @db.TinyInt
+  created_by String?   @db.VarChar(100)
+  created_at DateTime? @default(now()) @db.DateTime(0)
+  updated_at DateTime? @default(now()) @updatedAt @db.DateTime(0)
+
+  @@index([list_type, match_mode, is_active], map: "idx_l1_lexicon_lookup")
+  @@index([pattern], map: "idx_l1_lexicon_pattern")
+  @@unique([list_type, match_mode, pattern], map: "uq_l1_lexicon_entry")
+}
+
+model chat_jev_student_states {
+  calendar_id Int @db.UnsignedInt
+  user_id String @db.VarChar(100)
+  revision Int @default(0) @db.UnsignedInt
+  state_json Json
+  updated_at DateTime @default(now()) @updatedAt @db.DateTime(3)
+  @@id([calendar_id, user_id])
+}
+
+model chat_jev_audit_events {
+  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
+  kind String @db.VarChar(16)
+  event_key String @db.Char(64)
+  fingerprint String @db.Char(64)
+  calendar_id Int? @db.UnsignedInt
+  policy_version_id Int? @db.UnsignedInt
+  policy_hash String? @db.Char(64)
+  rubric_hash String? @db.VarChar(100)
+  bundle_hash String? @db.Char(64)
+  payload_json Json
+  created_at DateTime @default(now()) @db.DateTime(3)
+  expires_at DateTime? @db.DateTime(3)
+  @@unique([kind, event_key], map: "uq_jev_compact_audit_event")
+  @@index([kind, expires_at, id], map: "idx_jev_compact_audit_expiry")
+  @@index([calendar_id, created_at, id], map: "idx_jev_compact_audit_calendar")
+  @@index([policy_version_id], map: "idx_jev_compact_audit_policy")
+}

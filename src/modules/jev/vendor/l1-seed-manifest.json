@@ -1,0 +1,43 @@
+{
+  "source": "/home/ubuntu/Documents/livestream-class/streamapp-v2/apps/api/src/services",
+  "sha256": {
+    "chat-l1/policy-loader.ts": "5e3cfd4f5a1bef46394477109e83d7091d658a13fbb8c9f2f4856c53b8cf7af4",
+    "chat-l1/profanity-policy.ts": "39756d05692968546ec0e796ea008f87cabb92dab2d068f04696c427b78d63fd",
+    "chat-l1/short-safe.ts": "9c4cf38d13e3097fb80e096fb0b5966f9b9f9d4aba591349f373ff828a938386",
+    "chat-l1/profanity-patterns.ts": "db7d7d4da019c556aafaf8d5f683037de17d12e221aced1058a266b1eaaa2ac6",
+    "chat-l1/profanity.ts": "05a4fb67e1cdc2ceb2784a340a155862d7b68524501e427c7c54e3b2bb05df1b",
+    "chat-l1/normalize.ts": "117659d16960429d59a60bc5c0f868b6b412f5d81b1043019428c85d1e5a6f26",
+    "chat-l1/types.ts": "71b83e6146449802da76a5bc47f79dabb5d9709d790c6740e0627a76ce85b705",
+    "chat-l1/config.ts": "94a80fa5ea2d9fa8205b3fab30a7c4cbdd41dc759c420e482fed82a0ae97ceba",
+    "moderation-mode.ts": "8f767a494f176bb173a949a600bf28e3c773c58bb8325959e5de4bf23a012f71",
+    "chat-l1/evaluate.ts": "2d1ee1510a14322d7a04bb5863963382ef73ea02b3dea5a58a9dff3d47baaebe",
+    "chat-l1/input.ts": "5b3f576b221c6d872151303e56a89d4b974417fd334cec451f6a37fde2dd05a7",
+    "chat-l1/rules.ts": "7992dc22b2d4c310ac6f1a6d017b898693979eaf67813d7aec6fe601dbcfddf4",
+    "chat-l1/context-language.ts": "73d7fec66eb3c3b43a60f3322be4a814401dc8ca979429da48f8adccc6ffa4e3",
+    "chat-jev/deployment-seed.ts": "a5d748a2290a18f84d88dd1166b106da564d915fd03319f126a3f0f82c264f5f",
+    "chat-jev/deployment-seed-data.ts": "2d0d8f905d9ef6ca9d2da0c441ef2e0bb4561c57c7cdb01e47165459e06aab00",
+    "chat-jev/dynamic-storage.ts": "7cf04738895095ddf91e570f0694d8eb446f25af22eb7baae98a27c3afbdf9b6",
+    "chat-jev/framework.ts": "e02ef14a6f0b8cc2af1662dcd45aae70c707542487f1c331de9ebc873052a2df",
+    "chat-jev/types.ts": "e62992913fc7783a36406c69955ce4309bcc9a4bbfbc27babf029697f5386021",
+    "chat-jev/runtime-rubric.ts": "1a190e8142617cd69d8fb2cff559c9e9298bda2c4419d58b8df8eadc125f4a89",
+    "chat-jev/rubric.ts": "b21ba5dddd1dfdc87218533e8f9bebc5a9e58a3d69d7c75b3f3e79fee0df04c3",
+    "chat-jev/context.ts": "304d4928fc766005fcdbe4ed29625dc380b17ac85e3103d19c14f9817ab947b0",
+    "chat-jev/actor.ts": "d6d49c621bbeb49b106e0519bcbd9abb16835307d35748ec4e91c6ebc1edb8ae",
+    "chat-jev/shadow-policy.ts": "0d44e8257394fef2f46085a4123d10b7826c66edd24496ab5a7ac6782de3a6ee",
+    "chat-jev/student-notices.ts": "3e17bed491b849e919317e648e5bc9cb58c7ea873d6e38722ba15607573d3130",
+    "chat-jev/decision-matrix.ts": "7dbcdfe0e150398a39449c185c79827c649fbdf00be8e92e098a35deb45f4322",
+    "chat-jev/contract.ts": "d9bae396875293492440b9e8161182d70ffa45ffad7576d86d8d946de6a540b2",
+    "chat-jev/notice-templates.ts": "ffe35d02dfb1657a615d4fffd89d0f5f3005b16f7dda656a7bc6d7a628b7a0fd",
+    "chat-jev/dynamic-policy.ts": "a23d1f5b94eabae5ab38509657c1522c06bf1f3c94d3e1dd3b9930b22015b457",
+    "chat-jev/compact-contract.ts": "6ddf0be33e3c537fe2022ef6d71c3fa7248f67cfc76f4c76c7ed50d092c97ea5",
+    "chat-jev/compact-policy-store.ts": "4fecda7d369b616a60fd8d5da8c43641b4744595ce90da8dd2368b175b4c7810",
+    "chat-jev/runtime-settings.ts": "de2bd99ecabb6ce0253a54018e6a628264f89e751c9000bd4101f9623dc08ae1",
+    "chat-jev/config.ts": "e3bcc4a00c1dc54a7939c703acc69a7d4c26b3e68086aa9713875c170047ae0e",
+    "chat-jev/circuit-breaker.ts": "edf0cbc65892653685993424d3fb654b55aeb65e22082dc577534413b5292cd9"
+  },
+  "seedChatL1": {
+    "source": "/home/ubuntu/Documents/livestream-class/streamapp-v2/apps/api/scripts/seed-chat-l1.ts",
+    "sha256": "b81f822e0d3fe24b296b2c563a5aec9a3e4d2b92ddc42e2deeefa64ad3768893",
+    "adaptation": "Only import paths changed for LMS."
+  }
+}

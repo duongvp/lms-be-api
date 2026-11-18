@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { JEV_PERMISSIONS } from '../src/modules/jev/jev.permissions';
 
 const prisma = new PrismaClient();
 
@@ -22,6 +23,7 @@ async function main() {
     { code: 'calendar', name: 'Lịch học' },
     { code: 'lessons', name: 'Quản lý đề cương' },
     { code: 'quiz', name: 'Quản lý câu hỏi' },
+    { code: 'jev', name: 'Kiểm duyệt JEV' },
     { code: 'logs', name: 'Nhật ký truy cập' },
     { code: 'stream', name: 'Livestream' },
     { code: 'teacher', name: 'Giáo viên' },
@@ -175,6 +177,7 @@ async function main() {
   // Thêm một vài permission đặc thù (nếu cần)
   // Ví dụ: duyệt, hủy, bắt đầu, kết thúc...
   permissionsData.push(
+    ...JEV_PERMISSIONS.map(([code, name]) => ({ code, name, description: 'Quản trị JEV toàn hệ thống; yêu cầu phạm vi ALL' })),
     { code: 'calendar.report.detail.view', name: 'Xem báo cáo chi tiết buổi học', description: 'Danh sách và chuyên cần từng học sinh theo lịch' },
     { code: 'calendar.report.chat.view', name: 'Xem chat trong báo cáo', description: 'Nội dung chat được lưu theo buổi học' },
     { code: 'calendar.report.moderation.view', name: 'Xem kiểm duyệt trong báo cáo', description: 'Bản ghi hạn chế và ẩn/khôi phục chat' },

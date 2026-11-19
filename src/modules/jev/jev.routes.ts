@@ -136,7 +136,31 @@ export function createJevAdminRoutes(db = prisma, bridge = callJevChat) {
     const calendarIds = rows.filter(row => row.scope_type === 'CALENDAR' && /^[1-9]\d{0,9}$/.test(row.scope_key)).map(row => Number(row.scope_key));
     const calendars = calendarIds.length ? await db.calendar.findMany({ where: { id: { in: calendarIds }, deleted_at: null }, select: calendarSelect }) : [];
     const byId = new Map(calendars.map(row => [String(row.id), row]));
-    res.json({ success: true, data: { rows: rows.map(row => ({ ...row, ...(row.scope_type === 'CALENDAR' ? { calendar: byId.get(row.scope_key) ?? null } : {}) })), total, page, limit: 100 } });
+    // Resolve parents independently of pagination; a program/default may be on another page.
+    const codes = [...new Set(calendars.map(row => row.code))];
+    const parents = await db.chat_jev_bindings.findMany({ where: { OR: [
+      { scope_type: 'GLOBAL', scope_key: '*' },
+      ...(codes.length ? [{ scope_type: 'CODE' as const, scope_key: { in: codes } }] : []),
+    ] } });
+    const byScope = new Map([...parents, ...rows].map(row => [`${row.scope_type}:${row.scope_key}`, row]));
+    const resolved = rows.map(row => {
+      const calendar = byId.get(row.scope_key);
+      const chain = row.scope_type === 'CALENDAR'
+        ? calendar ? [row, byScope.get(`CODE:${calendar.code}`), byScope.get('GLOBAL:*')] : []
+        : row.scope_type === 'CODE' ? [row, byScope.get('GLOBAL:*')] : [row];
+      return chain.find(candidate => candidate && candidate.mode !== 'inherit') ?? null;
+    });
+    const policyIds = [...new Set(resolved.flatMap(row => row?.policy_version_id && row.mode !== 'off' ? [row.policy_version_id] : []))];
+    const policies = policyIds.length ? await db.chat_jev_policy_versions.findMany({
+      where: { id: { in: policyIds }, status: 'PUBLISHED' }, select: { id: true, policy_key: true, revision: true },
+    }) : [];
+    const policyById = new Map(policies.map(row => [row.id, row]));
+    res.json({ success: true, data: { rows: rows.map((row, index) => {
+      const source = resolved[index];
+      return { ...row, ...(row.scope_type === 'CALENDAR' ? { calendar: byId.get(row.scope_key) ?? null } : {}),
+        configured: source ? { scope_type: source.scope_type, scope_key: source.scope_key, mode: source.mode,
+          policy: source.mode === 'off' ? null : policyById.get(source.policy_version_id!) ?? null } : null };
+    }), total, page, limit: 100 } });
   }));
   router.put('/bindings', guard('jev.bind'), run(async (req, res) => {
     const input = bindSchema.parse(req.body);

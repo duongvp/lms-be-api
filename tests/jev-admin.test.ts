@@ -188,6 +188,36 @@ test('scope lookups require JEV access, exclude deleted calendars and retain dis
     assert.equal(bound.status, 200); assert.equal(bound.body.data.rows[0].calendar.id, 101);
     assert.equal(calls.length, beforeList + 1);
     assert.deepEqual(calls.at(-1).args.where, { id: { in: [101] }, deleted_at: null });
+    // Parent bindings are deliberately absent from the requested page.
+    let parentMode = 'enforce';
+    let includeProgram = true;
+    const bindingCalls: any[] = [];
+    const calendarBinding = { id: 2, scope_type: 'CALENDAR', scope_key: '101', revision: 4, mode: 'inherit', policy_version_id: null };
+    d.db.chat_jev_bindings.findMany = async (args: any) => {
+      bindingCalls.push(args);
+      return args.where ? [d.global, ...(includeProgram ? [{ id: 3, scope_type: 'CODE', scope_key: 'qa-program', mode: parentMode, policy_version_id: 3 }] : [])] : [calendarBinding];
+    };
+    d.db.chat_jev_policy_versions.findMany = async (args: any) => {
+      assert.deepEqual(args.where, { id: { in: [3] }, status: 'PUBLISHED' });
+      return [{ id: 3, policy_key: 'classroom-en-c2', revision: 2 }];
+    };
+    const inherited = await get('/bindings', { page: '2' });
+    assert.equal(inherited.status, 200);
+    assert.equal(bindingCalls[0].skip, 100);
+    assert.deepEqual(bindingCalls[1].where.OR, [{ scope_type: 'GLOBAL', scope_key: '*' }, { scope_type: 'CODE', scope_key: { in: ['qa-program'] } }]);
+    assert.deepEqual(inherited.body.data.rows[0].configured, { scope_type: 'CODE', scope_key: 'qa-program', mode: 'enforce', policy: { id: 3, policy_key: 'classroom-en-c2', revision: 2 } });
+    parentMode = 'off';
+    assert.deepEqual((await get('/bindings')).body.data.rows[0].configured, { scope_type: 'CODE', scope_key: 'qa-program', mode: 'off', policy: null });
+    parentMode = 'inherit';
+    assert.equal((await get('/bindings')).body.data.rows[0].configured.scope_type, 'GLOBAL');
+    includeProgram = false;
+    assert.equal((await get('/bindings')).body.data.rows[0].configured.scope_type, 'GLOBAL');
+    calendarBinding.mode = 'shadow'; calendarBinding.policy_version_id = 3 as any;
+    assert.equal((await get('/bindings')).body.data.rows[0].configured.scope_type, 'CALENDAR');
+    calendarBinding.mode = 'off';
+    assert.equal((await get('/bindings')).body.data.rows[0].configured.policy, null);
+    d.db.calendar.findMany = async () => [];
+    assert.equal((await get('/bindings')).body.data.rows[0].configured, null);
     assert.equal(d.writes, 0);
   } finally { auth.authenticate = original; }
 });

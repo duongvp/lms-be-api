@@ -33,6 +33,7 @@ export type AutoSchedulePayload = {
   allow_shared_staff_schedule?: boolean;
   calendar_source?: CalendarSource;
   program_code: string;
+  group_id?: number;
   system_type: 'topclass' | 'topuni';
   start_date: string;
   /** Chỉ tạo các bài trong khoảng này (bao gồm cả hai đầu); bỏ trống để tạo tất cả. */
@@ -228,6 +229,7 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
   const calendarSource = calendarSourceFromCode(programCode);
   assertCalendarSourceUnchanged({code:programCode}, payload);
   if (!programCode) throw new Error('Vui lòng chọn Chương trình');
+  if(payload.group_id !== undefined && (!Number.isSafeInteger(payload.group_id)||payload.group_id<1)) throw new Error('Nhóm không hợp lệ');
   if (!['topclass', 'topuni'].includes(payload?.system_type)) {
     throw new Error('system_type chỉ hỗ trợ topclass hoặc topuni');
   }
@@ -371,6 +373,7 @@ export const previewAutoSchedule = (payload: AutoSchedulePayload) => {
       calendar_source: calendarSource,
       system_type: payload.system_type,
       code: programCode,
+      ...(payload.group_id ? {group_id:payload.group_id} : {}),
       learn_number: lesson.learn_number,
       session_id: lesson.session_id,
       lesson_name: lessonName,

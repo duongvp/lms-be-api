@@ -4,6 +4,8 @@ import { buildCalendarRoomClassId } from './calendar-user-sync.service';
 export const EVG_MIN_ROOM_COUNT = 25;
 type CalendarEvgRecord = {
   id: number;
+  group_id?: number | null;
+  group_room_config?: unknown;
   code: string;
   learn_number: number;
   start_time: Date;
@@ -31,7 +33,19 @@ export const getCalendarEvgStatuses = async (
   const candidates = calendars.filter((calendar) => hasStreamId(calendar.evg_stream)
     && text(calendar.lesson_link) && text(calendar.channel_name));
   if (!candidates.length) return statuses;
-  const pairs = Array.from(new Map(candidates.map((calendar) => [pairKey(calendar.code, calendar.learn_number), {
+  for (const calendar of candidates.filter(c => c.group_id)) {
+    const config=calendar.group_room_config as any;
+    const rooms=Array.isArray(config?.rooms)?config.rooms:[];
+    if (config?.evg==='evg' && config.stream_key===calendar.lesson_link
+      && rooms.some((r:any)=>r.room_id===1 && text(r.banner_url)
+        && /^https:\/\/evg-stream\.hocmai\.net\/live\/[^/]+\/playlist\.m3u8$/.test(text(r.stream_key))
+        && r.class_id===buildCalendarRoomClassId(calendar.code,calendar.start_time,calendar.learn_number,1,calendar))) {
+      statuses.set(calendar.id,{evg_provisioned:true,evg_provisioning_status:'ready'});
+    }
+  }
+  const legacyCandidates=candidates.filter(c=>!c.group_id);
+  if(!legacyCandidates.length)return statuses;
+  const pairs = Array.from(new Map(legacyCandidates.map((calendar) => [pairKey(calendar.code, calendar.learn_number), {
     code: calendar.code, learn_number: calendar.learn_number,
   }])).values());
   const [rooms, configs] = await Promise.all([
@@ -46,7 +60,7 @@ export const getCalendarEvgStatuses = async (
     group.push(room);
     roomsByPair.set(key, group);
   }
-  for (const calendar of candidates) {
+  for (const calendar of legacyCandidates) {
     const key = pairKey(calendar.code, calendar.learn_number);
     const config = configsByPair.get(key);
     if (!config || typeof config !== 'object' || Array.isArray(config)

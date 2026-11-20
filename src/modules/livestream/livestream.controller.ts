@@ -102,7 +102,7 @@ export const previewAutoSchedule = async (req: Request, res: Response, next: Nex
 
 export const getProgramLessons = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const data = await livestreamService.getProgramLessonsForScheduling(String(req.params.code || ''), req.query.calendar_source);
+    const data = await livestreamService.getProgramLessonsForScheduling(String(req.params.code || ''), req.query.calendar_source, req.query.group_id);
     res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);

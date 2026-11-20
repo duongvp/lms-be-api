@@ -105,7 +105,8 @@ export const provisionCalendarEvgStream = async (
       `Chưa cấu hình banner cho chương trình ${calendar.code} và giáo viên ${calendar.teacher || '(trống)'}. Nhập URL background EVG để dùng banner tạm thời.`
     );
   }
-  const requestName = buildEvgStreamName(calendar.code, calendar.learn_number, calendar.start_time);
+  const requestName = buildEvgStreamName(calendar.code, calendar.learn_number, calendar.start_time)
+    + (calendar.group_id ? `_G${calendar.group_id}_C${calendar.id}` : '');
   // EVG hiện chỉ cung cấp API create. Chế độ ghi đè vì vậy luôn tạo stream
   // mới; chế độ bỏ qua chỉ gọi create khi calendar chưa có evg_stream.
   const evg = await createEvgLiveStream(requestName);
@@ -137,6 +138,15 @@ export const provisionCalendarEvgStream = async (
         updated_at: new Date(),
       },
     });
+
+    if (latest.group_id) {
+      await tx.calendar.update({ where:{id:calendarId}, data:{ group_room_config:{
+        evg:'evg',stream_key:evg.streamKey,
+        rooms:[{room_id:1,stream_key:evgPlaybackUrl,banner_url:bannerUrl,type:1,
+          class_id:buildCalendarRoomClassId(latest.code,latest.start_time,latest.learn_number,1,latest)}],
+      } } });
+      return {updatedCalendar,created:1,updated:0};
+    }
 
     const [existingRooms, assignedRooms] = await Promise.all([
       tx.stream.findMany({

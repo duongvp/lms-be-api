@@ -1,3 +1,4 @@
+import learningGroupRoutes from './modules/learning-groups/learning-group.routes';
 import express from "express";
 import cors from "cors";
 import { authRoutes } from "./modules/auth";
@@ -55,6 +56,7 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/room-config", roomConfigRoutes);
 app.use("/api/program-teacher-banners", programTeacherBannerRoutes);
 app.use("/api/livestreams", livestreamRoute);
+app.use("/api/learning-groups", learningGroupRoutes);
 app.use("/livestreams", livestreamRoute);
 app.use("/api/auth", authRoutes)
 

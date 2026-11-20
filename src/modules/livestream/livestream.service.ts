@@ -1,3 +1,4 @@
+import { validateCalendarGroup, groupScope, rosterScope, assertSameGroup } from '../learning-groups/learning-group.service';
 import { CALENDAR_KEY_REUSE, claimDeletedCalendarKey, auditCalendarKeyReuse, writeCalendarLifecycleLog } from './calendar-lifecycle';
 import crypto from 'crypto';
 import { assertCalendarSourceUnchanged, calendarSourceFromCode, resolveCalendarSource } from './calendar-source';
@@ -172,7 +173,8 @@ const generateKey = (
   code: string,
   learnNumber: number,
   lessonCount: number,
-  calendarSource: string = 'livestream'
+  calendarSource: string = 'livestream',
+  groupId?: number | null
 ): string => {
   const sysCode = systemType === 'topclass' ? 'tc' : (systemType === 'topuni' ? 'tu' : systemType);
 
@@ -188,10 +190,11 @@ const generateKey = (
 
   const sessionNum = (lessonCount || 0) + 1;
   const sessionSuffix = sessionNum > 1 ? `_B${sessionNum}` : '';
-  return `${sysCode}_${schoolYear}_${code}_${learnNumber}${sessionSuffix}`;
+  return `${sysCode}_${schoolYear}_${code}_${learnNumber}${sessionSuffix}${groupId ? `_G${groupId}` : ''}`;
 };
 
 const COPY_SESSION_FIELDS = [
+  'group_id',
   'session_id',
   'code',
   'learn_number',
@@ -381,6 +384,7 @@ const updateCalendarRecord = async (
   if (!preloadedBefore) await hydrateAssistantTeachers(client, [before]);
   const hasAssistants = Object.prototype.hasOwnProperty.call(data, 'assistant_teacher');
   const assistantTeacher = data.assistant_teacher ?? null;
+  assertSameGroup(before, data);
   const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'session_id');
   const sessionId = data.session_id ?? null;
   const skipTeacherUserSync = data.skip_teacher_user_sync === true;
@@ -395,9 +399,15 @@ const updateCalendarRecord = async (
     && (calendarSourceFromCode(before.code) === 'feed' || nextCode !== before.code || nextTeacher !== before.teacher);
   if (bannerIdentityChanged) {
     prismaData.evg_banner = await resolveProgramTeacherBanner(client, nextCode, nextTeacher);
+    if (before.group_id && before.group_room_config && Array.isArray(before.group_room_config.rooms)) {
+      prismaData.group_room_config = {
+        ...before.group_room_config,
+        rooms: before.group_room_config.rooms.map((room: any) => ({ ...room, banner_url: prismaData.evg_banner })),
+      };
+    }
   }
   const updated = await client.calendar.update({ where: { id }, data: prismaData });
-  if (bannerIdentityChanged && calendarSourceFromCode(before.code) !== 'feed') {
+  if (bannerIdentityChanged && !before.group_id && calendarSourceFromCode(before.code) !== 'feed') {
     await client.stream.updateMany({
       where: { code: before.code, learn_number: before.learn_number },
       data: { banner_url: prismaData.evg_banner, updated_at: new Date() },
@@ -654,11 +664,13 @@ const getNextLessonCount = async (
   code: string,
   systemType: string | null | undefined,
   learnNumber?: number,
-  calendarSource: string = 'livestream'
+  calendarSource: string = 'livestream',
+  groupId?: number | null
 ) => {
   const latest = await tx.calendar.findFirst({
     where: {
       code,
+      ...(groupId ? { group_id: groupId } : {}),
       AND: [{ code: calendarSource === 'feed' ? { startsWith: 'feed-' } : { not: { startsWith: 'feed-' } } }],
       ...(systemType ? { system_type: systemType } : {}),
       ...(learnNumber !== undefined ? { learn_number: learnNumber } : {}),
@@ -688,8 +700,8 @@ const normalizeLessonCount = (value: unknown) => {
   return parsed;
 };
 
-const lessonIdentityKey = (code: string, systemType: string, learnNumber: number, source: string = 'livestream') =>
-  `${source}::${systemType}::${code}::${learnNumber}`;
+const lessonIdentityKey = (code: string, systemType: string, learnNumber: number, source: string = 'livestream', groupId?: number | null) =>
+  `${source}::${systemType}::${code}::${learnNumber}${groupId ? `::G${groupId}` : ''}`;
 
 const assertLessonCountAvailable = async (
   tx: any,
@@ -697,11 +709,13 @@ const assertLessonCountAvailable = async (
   systemType: string,
   learnNumber: number,
   lessonCount: number,
-  calendarSource: string = 'livestream'
+  calendarSource: string = 'livestream',
+  groupId?: number | null
 ) => {
   const existing = await tx.calendar.findFirst({
     where: {
       code,
+      ...(groupId ? { group_id: groupId } : {}),
       system_type: systemType,
       learn_number: learnNumber,
       lesson_count: lessonCount,
@@ -742,6 +756,8 @@ const prepareCalendarCreateData = async (
     throw new Error("Vui lòng cung cấp mã khóa học");
   }
 
+  if (input.group_room_config !== undefined) throw new Error('Cấu hình phòng được tạo qua thao tác EVG');
+  await validateCalendarGroup(tx, data);
   data.system_type = data.system_type || 'topclass';
   data.learn_number = normalizePositiveInteger(data.learn_number, 'learn_number');
   data.start_time = new Date(data.start_time);
@@ -749,7 +765,7 @@ const prepareCalendarCreateData = async (
 
   ensureValidTimeRange(data.start_time, data.end_time);
 
-  const identity = lessonIdentityKey(data.code, data.system_type, data.learn_number, calendarSource);
+  const identity = lessonIdentityKey(data.code, data.system_type, data.learn_number, calendarSource, data.group_id);
   const reserved = reservedCounts?.get(identity) || new Set<number>();
   let lessonCount = normalizeLessonCount(data.lesson_count);
   const isLessonCountProvided = lessonCount !== undefined;
@@ -758,16 +774,16 @@ const prepareCalendarCreateData = async (
     if (reserved.has(lessonCount)) {
       throw new Error(`Bài ${data.learn_number} của khóa ${data.code} bị trùng lịch b${lessonCount + 1} trong danh sách tạo`);
     }
-    await assertLessonCountAvailable(tx, data.code, data.system_type, data.learn_number, lessonCount, calendarSource);
+    await assertLessonCountAvailable(tx, data.code, data.system_type, data.learn_number, lessonCount, calendarSource, data.group_id);
   } else {
-    lessonCount = await getNextLessonCount(tx, data.code, data.system_type, data.learn_number, calendarSource);
+    lessonCount = await getNextLessonCount(tx, data.code, data.system_type, data.learn_number, calendarSource, data.group_id);
     while (reserved.has(lessonCount)) {
       lessonCount += 1;
     }
   }
 
   data.lesson_count = lessonCount;
-  data.key = generateKey(data.system_type, data.start_time, data.code, data.learn_number, lessonCount, calendarSource);
+  data.key = generateKey(data.system_type, data.start_time, data.code, data.learn_number, lessonCount, calendarSource, data.group_id);
 
   const existingKey = await tx.calendar.findFirst({ where: { key: data.key }, select: { id: true } });
   if (existingKey && isLessonCountProvided) {
@@ -778,7 +794,7 @@ const prepareCalendarCreateData = async (
     lessonCount += 1;
     if (reserved.has(lessonCount)) continue;
     data.lesson_count = lessonCount;
-    data.key = generateKey(data.system_type, data.start_time, data.code, data.learn_number, lessonCount, calendarSource);
+    data.key = generateKey(data.system_type, data.start_time, data.code, data.learn_number, lessonCount, calendarSource, data.group_id);
   }
 
   if (reservedCounts) {
@@ -1298,6 +1314,7 @@ export const checkConflict = async ({
   assistant_teacher,
   channel_name,
   code,
+  group_id,
   start_time,
   end_time,
   id,
@@ -1311,6 +1328,7 @@ export const checkConflict = async ({
   assistant_teacher?: string | null,
   channel_name?: string | null,
   code?: string,
+  group_id?: number | null,
   start_time: Date,
   end_time: Date,
   id?: number,
@@ -1427,6 +1445,7 @@ export const checkConflict = async ({
       where: {
         AND: [{ code: source === 'feed' ? { startsWith: 'feed-' } : { not: { startsWith: 'feed-' } } }],
         code,
+        ...(group_id ? { group_id } : {}),
         start_time: { lt: end_time },
         end_time: { gt: start_time },
         OR: [
@@ -1459,6 +1478,7 @@ export const checkConflict = async ({
 };
 
 type BulkConflictCandidate = {
+  group_id?: number | null;
   calendar_source?: string;
   id: number;
   teacher?: string | null;
@@ -1528,7 +1548,7 @@ export const validateBulkFinalStateConflicts = (
     for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
       const left = candidates[leftIndex];
       const right = candidates[rightIndex];
-      if (calendarSourceFromCode(left.code) === calendarSourceFromCode(right.code) && schedulesOverlap(left, right) && left.code && right.code && left.code === right.code) {
+      if (calendarSourceFromCode(left.code) === calendarSourceFromCode(right.code) && schedulesOverlap(left, right) && left.code && right.code && left.code === right.code && (!left.group_id || !right.group_id || left.group_id === right.group_id)) {
         addPair(left, right, 'course', left.code);
       }
     }
@@ -1654,6 +1674,7 @@ export const createSingle = async (data: any, changeActor?: CalendarChangeActor)
       assistant_teacher: calendarData.assistant_teacher,
       channel_name: calendarData.channel_name,
       code: calendarData.code,
+      ...groupScope(calendarData),
       start_time: calendarData.start_time,
       end_time: calendarData.end_time,
       lesson_name: calendarData.lesson_name,
@@ -1676,10 +1697,11 @@ export const createSingle = async (data: any, changeActor?: CalendarChangeActor)
   })));
 };
 
-export const getProgramLessonsForScheduling = async (programCode: string, source?: unknown) => {
+export const getProgramLessonsForScheduling = async (programCode: string, source?: unknown, rawGroupId?: unknown) => {
   if (source !== undefined) resolveCalendarSource(source);
   const code = String(programCode || '').trim();
   if (!code) throw new Error('Vui lòng chọn Chương trình');
+  const groupId = rawGroupId == null || rawGroupId === '' ? undefined : normalizePositiveInteger(rawGroupId, 'group_id');
   const rows = await prisma.$queryRaw<Array<{
     id: bigint;
     learn_number: number;
@@ -1693,6 +1715,7 @@ export const getProgramLessonsForScheduling = async (programCode: string, source
         SELECT COUNT(*)
         FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         WHERE calendar_row.code = ${code}
+          ${groupId ? Prisma.sql`AND calendar_row.group_id = ${groupId}` : Prisma.empty}
           AND (
             calendar_row.session_id = lesson.id
             OR calendar_row.learn_number = lesson.learn_number
@@ -1702,6 +1725,7 @@ export const getProgramLessonsForScheduling = async (programCode: string, source
         SELECT COUNT(*)
         FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         WHERE calendar_row.code = ${code}
+          ${groupId ? Prisma.sql`AND calendar_row.group_id = ${groupId}` : Prisma.empty}
           AND calendar_row.start_time <= NOW()
           AND (
             calendar_row.session_id = lesson.id
@@ -1990,6 +2014,7 @@ export const createBulk = async (config: any, changeActor?: CalendarChangeActor)
           assistant_teacher: calendarData.assistant_teacher,
           channel_name: calendarData.channel_name,
           code: calendarData.code,
+          ...groupScope(calendarData),
           start_time: calendarData.start_time,
           end_time: calendarData.end_time,
           lesson_name: calendarData.lesson_name,
@@ -2062,6 +2087,7 @@ export const createValidatedCalendarImport = async (
                 assistant_teacher: calendarData.assistant_teacher,
                 channel_name: calendarData.channel_name,
                 code: calendarData.code,
+                ...groupScope(calendarData),
                 start_time: calendarData.start_time,
                 end_time: calendarData.end_time,
                 client: tx,
@@ -2124,6 +2150,8 @@ export const createValidatedInternalCalendarImport = async (
 
       const prepared = await Promise.all(rows.map(async (row) => {
         const calendar = row.calendar;
+        await validateCalendarGroup(tx, calendar);
+        if((calendar as any).group_id) throw new Error('Import lịch nhóm nhỏ cần chọn nhóm theo từng lịch; hãy dùng tạo lịch hoặc tạo tự động');
         assertCalendarSourceUnchanged(calendar, calendar);
         const calendarSource = calendarSourceFromCode(calendar.code);
         const startTime = new Date(calendar.start_time);
@@ -2294,6 +2322,7 @@ const cancelWithMakeup = async (
     assistant_teacher: newSessionInput.assistant_teacher ?? (current as any).assistant_teacher,
     channel_name: newSessionInput.channel_name ?? current.channel_name,
     code: current.code,
+    ...groupScope(current),
     start_time: startTime,
     end_time: endTime,
     client: tx,
@@ -2359,6 +2388,7 @@ const rescheduleFollowing = async (
   const lastCourseSession = await tx.calendar.findFirst({
     where: {
       code: current.code,
+      ...groupScope(current),
       system_type: current.system_type,
     },
     orderBy: [{ start_time: 'desc' }, { id: 'desc' }],
@@ -2375,6 +2405,7 @@ const rescheduleFollowing = async (
   const followings = await tx.calendar.findMany({
     where: {
       code: current.code,
+      ...groupScope(current),
       system_type: current.system_type,
       start_time: { gt: current.start_time },
       OR: [
@@ -2416,6 +2447,7 @@ const rescheduleFollowing = async (
     assistant_teacher: newSessionInput.assistant_teacher ?? (lastSource as any).assistant_teacher,
     channel_name: newSessionInput.channel_name ?? lastSource.channel_name,
     code: current.code,
+    ...groupScope(current),
     start_time: startTime,
     end_time: endTime,
     client: tx,
@@ -2509,6 +2541,8 @@ const rescheduleSessionInTransaction = async (
   // hai yêu cầu cùng dời lịch của một khóa.
   const current = context?.current ?? await tx.calendar.findUnique({ where: { id } });
   if (!current) throw new Error("Not found");
+  assertSameGroup(current, payload);
+  assertSameGroup(current, payload.new_session || {});
   assertCalendarSourceUnchanged(current, payload);
   assertCalendarSourceUnchanged(current, payload.new_session);
   if (!context?.current) await hydrateAssistantTeachers(tx, [current]);
@@ -2546,6 +2580,7 @@ const rescheduleSessionInTransaction = async (
       beforeFollowingSessions = await tx.calendar.findMany({
         where: {
           code: current.code,
+          ...groupScope(current),
           system_type: current.system_type,
           start_time: { gt: current.start_time },
           OR: [
@@ -2839,6 +2874,7 @@ export const updateSchedule = async (
   const current = await prisma.calendar.findUnique({ where: { id } });
   if (!current) throw new Error("Not found");
   await hydrateAssistantTeachers(prisma, [current]);
+  assertSameGroup(current, data);
   assertCanUpdateSessionMappings(current, data);
 
   if (data.code !== undefined && String(data.code) !== String(current.code)) {
@@ -2906,6 +2942,7 @@ export const updateSchedule = async (
       assistant_teacher: data.assistant_teacher !== undefined ? data.assistant_teacher : (current as any).assistant_teacher,
       channel_name: data.channel_name ?? current.channel_name,
       code: current.code,
+      ...groupScope(current),
       start_time: data.start_time ?? current.start_time,
       end_time: data.end_time ?? current.end_time,
       id,
@@ -3010,7 +3047,7 @@ export const restoreSession = async (id: number, changeActor?: CalendarChangeAct
       throw new Error('Đề cương đã thay đổi hoặc bài học đã bị xóa; không thể khôi phục nguyên trạng lịch này');
     }
     await assertLessonCountAvailable(tx, desired.code, desired.system_type, desired.learn_number,
-      Number(desired.lesson_count ?? 0), calendarSourceFromCode(desired.code));
+      Number(desired.lesson_count ?? 0), calendarSourceFromCode(desired.code), desired.group_id);
     await checkConflict({ ...desired, client: tx });
     const mappings = Array.isArray(snapshot?.mappings) ? snapshot.mappings :
       await tx.package_lesson_mapping.findMany({ where: { key } });
@@ -3283,7 +3320,7 @@ export const syncCalendarAttendance = async (rawIds: unknown, preview = false) =
 
   const calendars = await prisma.calendar.findMany({
     where: { id: { in: ids } },
-    select: { id: true, key: true, code: true, learn_number: true, start_time: true, end_time: true, lesson_status: true, system_type: true },
+    select: { id: true, key: true, code: true, learn_number: true, start_time: true, end_time: true, lesson_status: true, system_type: true, group_id: true },
   });
   const result = { processed: 0, skipped: 0, updated: 0, details: [] as Array<{ calendar_id: number; updated: number; hocmai_updated: number }> };
   const now = getVietnamWallClockDate();
@@ -3335,20 +3372,21 @@ export const syncCalendarAttendance = async (rawIds: unknown, preview = false) =
       continue;
     }
     // status = 2 được ghi mỗi 5 phút; từ hai log trở lên là đủ 10 phút học.
+    const rosterSql = (sql:string) => calendar.group_id ? `${sql} AND student.calendar_id = ${Number(calendar.id)}` : sql;
     const previewRows = preview
       ? await prisma.$queryRawUnsafe<Array<{ total: number }>>(
-        previewSql, calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number
+        rosterSql(previewSql), calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number
       )
       : null;
     const updated = preview ? null : await prisma.$executeRawUnsafe<number>(
-      updateSql, calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number
+      rosterSql(updateSql), calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number
     );
     // Đồng bộ HOCMAI theo từng lịch: dù islearn của bài đã là 1 từ một lịch
     // khác, học viên vẫn phải được ghi nhận vào đúng c_key đã tham gia.
     const attendedRows = preview ? [] : await prisma.$queryRawUnsafe<Array<{ user_id: string | null }>>(
-      attendedStudentsSql, calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number
+      rosterSql(attendedStudentsSql), calendar.code, calendar.learn_number, calendar.start_time, calendar.end_time, calendar.code, calendar.learn_number
     );
-    const siblingKeys = preview || calendar.system_type !== 'topclass'
+    const siblingKeys = preview || calendar.group_id || calendar.system_type !== 'topclass'
       ? [calendar.key]
       : (await prisma.calendar.findMany({
           where: {
@@ -3398,7 +3436,7 @@ const getEndedActiveCalendarForAttendance = async (rawCalendarId: unknown) => {
 export const getCalendarAttendanceResetStudents = async (rawCalendarId: unknown) => {
   const calendar = await getEndedActiveCalendarForAttendance(rawCalendarId);
   const students = await prisma.users.findMany({
-    where: { code: calendar.code, learn_number: calendar.learn_number, islearn: 1 },
+    where: { ...rosterScope(calendar), islearn: 1 },
     select: { id: true, username: true, name: true, student_hmid: true, email: true },
     orderBy: [{ name: 'asc' }, { username: 'asc' }],
   });
@@ -3417,8 +3455,7 @@ export const resetCalendarAttendance = async (rawCalendarId: unknown, rawStudent
   const studentsToReset = await prisma.users.findMany({
     where: {
       id: { in: studentIds },
-      code: calendar.code,
-      learn_number: calendar.learn_number,
+      ...rosterScope(calendar),
       islearn: 1,
     },
     select: { id: true, student_hmid: true },
@@ -3604,6 +3641,9 @@ const buildCalendarListQuery = async (
       ...(programCondition ? [programCondition] : []),
     ],
   };
+  if (query.group_id !== undefined && query.group_id !== '') {
+    where.group_id = normalizePositiveInteger(query.group_id, 'group_id');
+  }
   if (calendarId !== undefined) where.id = calendarId;
   if (calendarIds) where.AND = [...(Array.isArray(where.AND) ? where.AND : []), { id: { in: calendarIds } }];
 
@@ -3703,6 +3743,7 @@ export const getCalendar = async (
       skip,
       take,
       orderBy: rawRowsOnly ? [...orderBy, { id: 'asc' }] : orderBy,
+      include: { group: { select: { id: true, group_code: true, name: true, capacity: true } } },
     }),
   ]);
   if (rawRowsOnly) return { total, page, limit, data };
@@ -3725,6 +3766,7 @@ export const getCalendar = async (
                  INNER JOIN calendar canceled_session ON canceled_session.deleted_at IS NULL AND canceled_session.id = change_log.calendar_id
                  WHERE next_session.code = canceled_session.code
                    AND next_session.system_type = canceled_session.system_type
+                   AND (next_session.group_id <=> canceled_session.group_id)
                    AND (next_session.code LIKE 'feed-%') = (canceled_session.code LIKE 'feed-%')
                    AND next_session.start_time > canceled_session.start_time
                    AND COALESCE(next_session.lesson_status, 0) <> 1
@@ -3787,8 +3829,8 @@ export const getCalendar = async (
         calendar_source: calendarSourceFromCode(record.code),
         // Chỉ hiển thị đã chia lớp khi có lịch sử phân lớp được lưu.
         // Không suy diễn từ thời điểm bắt đầu của lịch vì lịch cũ có thể chưa từng được chia.
-        classroom_assigned: !isCancelled && hasAssignmentHistory,
-        classroom_assigned_at: assignmentStatusByCalendarId.get(record.id) ?? null,
+        classroom_assigned: !isCancelled && (record.group_id ? Boolean(record.student_synced_at) : hasAssignmentHistory),
+        classroom_assigned_at: record.group_id ? record.student_synced_at : assignmentStatusByCalendarId.get(record.id) ?? null,
         package_lesson_mappings: mappingsByKey.get(record.key || '') ?? [],
         can_create_makeup_after_cancel: isCancelled
           && latestActionByCalendarId.get(record.id) === 'cancel',
@@ -4269,6 +4311,7 @@ export const updateBulk = async (
             teacher: dataToUpdate.teacher || current.teacher,
             assistant_teacher: dataToUpdate.assistant_teacher !== undefined ? dataToUpdate.assistant_teacher : current.assistant_teacher,
             code: current.code,
+            ...groupScope(current),
             learn_number: current.learn_number,
             lesson_name: current.lesson_name,
             lesson_status: current.lesson_status,
@@ -4435,6 +4478,7 @@ export const updateBulk = async (
           teacher: assignments.teacher || current.teacher,
           assistant_teacher: assignments.assistant_teacher !== undefined ? assignments.assistant_teacher : current.assistant_teacher,
           code: current.code,
+          ...groupScope(current),
           learn_number: current.learn_number,
           lesson_name: typeof item.lesson_name === 'string'
             ? item.lesson_name.trim()

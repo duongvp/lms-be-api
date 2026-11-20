@@ -1,3 +1,5 @@
+import { allocateGroupUsers } from '../learning-groups/group-allocation';
+import { getVietnamWallClockDate } from '../../utils/dateTime';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import prisma from '../../lib/prisma';
@@ -10,6 +12,10 @@ type CalendarMapping = {
   code: string;
   learnNumber: number;
   startTime: Date;
+  calendarId?: number;
+  groupId?: number | null;
+  capacity?: number;
+  lessonCount?: number | null;
 };
 
 export type HocmaiUser = {
@@ -271,7 +277,7 @@ export const fetchCalendarRegisteredStudents = async (rawProductIds: string[], r
 const loadMappings = async (calendarIds: number[]) => {
   const calendars = await prisma.calendar.findMany({
     where: { id: { in: calendarIds } },
-    select: { id: true, key: true, code: true, learn_number: true, start_time: true },
+    select: { id: true, key: true, code: true, learn_number: true, start_time: true, group_id: true, lesson_count: true, group: { include: { program: true } } },
   });
   if (calendars.length !== calendarIds.length) {
     const found = new Set(calendars.map((item) => item.id));
@@ -285,6 +291,7 @@ const loadMappings = async (calendarIds: number[]) => {
 
   const classIdByEnrollment = new Map<string, string>();
   calendars.forEach((calendar) => {
+    if (calendar.group_id) return;
     const enrollmentKey = `${calendar.code}\u0000${calendar.learn_number}`;
     const classId = buildCalendarClassId(
       calendar.code,
@@ -328,6 +335,7 @@ const loadMappings = async (calendarIds: number[]) => {
       code: calendar.code,
       learnNumber: calendar.learn_number,
       startTime: calendar.start_time,
+      ...(calendar.group_id ? { calendarId: calendar.id, groupId: calendar.group_id, capacity: calendar.group?.capacity ?? calendar.group?.program.default_capacity ?? 10, lessonCount: calendar.lesson_count } : {}),
     }));
   }
   return mappings;
@@ -370,6 +378,87 @@ const loadExistingEnrollments = async (rows: Prisma.usersCreateManyInput[]) => {
   return existing;
 };
 
+const syncGroupedStudents = async (
+  mappings: CalendarMapping[], registeredAt: string | undefined,
+  onProgress?: CalendarStudentSyncProgress, prefetched?: HocmaiUser[]
+): Promise<CalendarStudentSyncResult> => {
+  const today = getVietnamWallClockDate();
+  const day = registeredAt || [String(today.getUTCDate()).padStart(2,'0'),String(today.getUTCMonth()+1).padStart(2,'0'),today.getUTCFullYear()].join('/');
+  const fetched = prefetched ? { users: prefetched, total: prefetched.length }
+    : await fetchAllUsers([...new Set(mappings.map(m => m.productId))], day, onProgress);
+  const codes = [...new Set(mappings.map(m => m.code))].sort();
+  onProgress?.(70, 'Đang kiểm tra nhóm và sức chứa');
+  return prisma.$transaction(async tx => {
+    // All grouped enrollment writers lock the program first, across workers/processes.
+    for (const code of codes) await tx.$queryRaw`SELECT code FROM program_settings WHERE code=${code} FOR UPDATE`;
+    const calendars = await tx.calendar.findMany({
+      where: { id: { in: [...new Set(mappings.map(m => m.calendarId!))] } },
+      include: { group: { include: { program: true } } },
+    });
+    if (calendars.length !== new Set(mappings.map(m=>m.calendarId)).size) throw new ApiError('Có lịch nhóm không còn tồn tại',409);
+    if (calendars.some(c => c.deleted_at || Number(c.lesson_status) === 1 || c.group?.status !== 'active'
+      || c.group.program.teaching_model !== 'small_group')) throw new ApiError('Có lịch/nhóm không còn hoạt động', 409);
+    const staff = new Set((await tx.teacher_profiles.findMany({ select: { username: true } })).map(p => p.username.toLowerCase()));
+    const rosters = await tx.users.findMany({
+      where: { code: { in: codes }, calendar: { group_id: { not: null } } },
+      select: { username: true, calendar_id: true, calendar: { select: { id: true, code: true, learn_number: true, lesson_count: true, group_id: true } } },
+      orderBy: { id: 'desc' },
+    });
+    const slots = new Map<string, typeof calendars>();
+    calendars.forEach(c => {
+      const slot = `${c.code}::${c.learn_number}::${c.lesson_count ?? 0}`;
+      slots.set(slot,[...(slots.get(slot)||[]),c]);
+    });
+    let inserted=0, skipped=0, failed=0, uniqueEnrollments=0;
+    for (const targets of slots.values()) {
+      const source = targets[0];
+      const products = new Set(mappings.filter(m => targets.some(t => t.id === m.calendarId)).map(m => m.productId));
+      const users = new Map<string,HocmaiUser>();
+      fetched.users.filter(u => products.has(normalizeText(u.product_id))).forEach(u => {
+        const key=normalizeText(u.username).toLowerCase();
+        if (staff.has(key)) return;
+        if (!isValidCreateRow({username:normalizeText(u.username),name:buildStudentDisplayName(u),
+          student_hmid:normalizeText(u.userid),email:normalizeText(u.email),phone:normalizeText(u.phone),
+          code:source.code,learn_number:source.learn_number})) {failed++;return;}
+        users.set(key,u);
+      });
+      const existing = rosters.filter(r => r.calendar?.code === source.code && r.calendar.learn_number === source.learn_number
+        && (r.calendar.lesson_count ?? 0) === (source.lesson_count ?? 0) && !staff.has(r.username.toLowerCase()));
+      const assignedElsewhere = new Set(existing.map(r => r.username.toLowerCase()));
+      const preferences = new Map<string,number>();
+      rosters.filter(r => r.calendar?.code === source.code).forEach(r => {
+        const key=r.username.toLowerCase();
+        if (!preferences.has(key)) preferences.set(key,r.calendar!.group_id!);
+      });
+      const candidates=[...users.values()].filter(u => !assignedElsewhere.has(normalizeText(u.username).toLowerCase()));
+      const additions=allocateGroupUsers(targets.map(t => ({ id:t.id,groupId:t.group_id!,
+        capacity:t.group?.capacity ?? t.group?.program.default_capacity ?? 10,
+        usernames:existing.filter(r => r.calendar_id===t.id).map(r => r.username),
+      })), candidates.map(u => normalizeText(u.username)), preferences);
+      uniqueEnrollments += users.size;
+      skipped += users.size-additions.length;
+      for (const addition of additions) {
+        const c=targets.find(t => t.id===addition.calendarId)!;
+        const user=users.get(addition.username.toLowerCase())!;
+        if (!mappings.some(m => m.calendarId===c.id && m.productId===normalizeText(user.product_id))) {
+          throw new ApiError('Package của học viên không khớp lịch nhóm đích',400);
+        }
+        const row={ username:normalizeText(user.username),student_hmid:normalizeText(user.userid),
+          email:normalizeText(user.email),phone:normalizeText(user.phone),name:buildStudentDisplayName(user),
+          code:c.code,learn_number:c.learn_number,calendar_id:c.id,room_id:1,islearn:0,
+          class_id:buildCalendarClassId(c.code,c.start_time,c.learn_number,c),
+        };
+        if (!isValidCreateRow(row)) { failed++; continue; }
+        await tx.users.create({ data:{...row,...await calendarStudentTimestamps(tx)} }); inserted++;
+      }
+    }
+    onProgress?.(100, `Đã thêm ${inserted} học viên vào nhóm; giữ nguyên ${skipped} đăng ký`);
+    return { preview:false,apiUsers:fetched.total,uniqueApiUsers:new Set(fetched.users.map(u=>normalizeText(u.username).toLowerCase())).size,
+      mappedRows:uniqueEnrollments,uniqueEnrollments,duplicateRows:0,duplicateDetails:[],unmatched:0,
+      inserted,updated:0,plannedInserted:inserted,plannedUpdated:0,skipped,failed };
+  }, { maxWait:10000,timeout:120000 });
+};
+
 export const syncCalendarStudents = async (
   rawIds: unknown,
   rawRegisteredAt: unknown,
@@ -391,6 +480,10 @@ export const syncCalendarStudents = async (
   try {
     onProgress?.(2, 'Đang đọc thông tin các lịch đã chọn');
     const mappings = await loadMappings(ids);
+    if (mappings.some(m => m.groupId)) {
+      if (mappings.some(m => !m.groupId)) throw new ApiError('Đồng bộ riêng lịch nhóm nhỏ và lịch 1–n', 400);
+      return await syncGroupedStudents(mappings, registeredAt, onProgress, prefetchedApiUsers);
+    }
     const mappingsByProductId = new Map<string, CalendarMapping[]>();
     mappings.forEach((mapping) => {
       const current = mappingsByProductId.get(mapping.productId) || [];
@@ -568,7 +661,7 @@ export const startCalendarStudentSync = (
     try {
       const calendars = await prisma.calendar.findMany({
         where: { id: { in: ids } },
-        select: { id: true, key: true, code: true, learn_number: true, lesson_name: true, start_time: true, system_type: true },
+        select: { id: true, key: true, code: true, learn_number: true, lesson_name: true, start_time: true, system_type: true, group_id: true },
       });
       if (calendars.length !== ids.length) {
         const found = new Set(calendars.map((calendar) => calendar.id));
@@ -598,6 +691,7 @@ export const startCalendarStudentSync = (
       // Không cho hai lịch ghi đè cùng enrollment sang hai class_id khác nhau.
       const targets = new Map<string, string>();
       for (const calendar of calendars) {
+        if (calendar.group_id) continue;
         const key = `${calendar.code.toLowerCase()}\u0000${calendar.learn_number}`;
         const classId = buildCalendarClassId(calendar.code, calendar.start_time, calendar.learn_number);
         if (targets.has(key) && targets.get(key) !== classId) {

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "dist/server.js",
   "scripts": {
+    "test:learning-groups-schema:integration": "node tests/learning-groups-schema.integration.cjs",
     "predev": "prisma generate",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
@@ -34,7 +35,9 @@
     "test:calendar-source": "node --import tsx --test tests/calendar-source.test.ts",
     "test:calendar-source:integration": "node --import tsx tests/calendar-source.integration.ts",
     "db:calendar-source-rollback-triggers": "tsx prisma/scripts/rollbackCalendarSourceTriggers.ts",
-    "test:calendar-detail-report": "node --import tsx --test tests/calendar-detail-report.test.ts tests/calendar-detail-report-auth.test.ts"
+    "test:calendar-detail-report": "node --import tsx --test tests/calendar-detail-report.test.ts tests/calendar-detail-report-auth.test.ts",
+    "test:learning-groups": "node --import tsx --test tests/learning-groups.test.ts",
+    "test:learning-groups:integration": "node --import tsx tests/learning-groups.integration.ts"
   },
   "keywords": [],
   "author": "",

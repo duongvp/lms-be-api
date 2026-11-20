@@ -1,3 +1,4 @@
+import { rosterScope } from '../learning-groups/learning-group.service';
 import { Prisma } from '@prisma/client';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 import { calendarSourceFromCode } from './calendar-source';
@@ -17,6 +18,7 @@ type ResolvedTeachingProfile = TeachingProfile & {
 
 type CalendarTeachingSnapshot = {
   id?: number;
+  group_id?: number | null;
   code: string;
   learn_number: number;
   start_time: Date | string;
@@ -117,7 +119,8 @@ export const calendarDateAtMidnight = (value: Date | string) => {
 export const buildCalendarClassId = (
   code: string,
   startTime: Date | string,
-  learnNumber: number
+  learnNumber: number,
+  calendar?: { id?: number; group_id?: number | null }
 ) => {
   const normalizedCode = normalizeText(code);
   const normalizedLearnNumber = Number(learnNumber);
@@ -125,7 +128,10 @@ export const buildCalendarClassId = (
   if (!Number.isInteger(normalizedLearnNumber) || normalizedLearnNumber <= 0) {
     throw new Error('Không thể tạo class_id khi learn_number không hợp lệ');
   }
-  const classId = `${normalizedCode}${excelDateSerialFromCalendarDate(startTime)}${normalizedLearnNumber}1`;
+  if (calendar?.group_id && !calendar.id) throw new Error('Lịch nhóm nhỏ thiếu ID');
+  const classId = calendar?.group_id
+    ? `${normalizedCode}_G${calendar.group_id}_C${calendar.id}_1`
+    : `${normalizedCode}${excelDateSerialFromCalendarDate(startTime)}${normalizedLearnNumber}1`;
   if (classId.length > 100) throw new Error('class_id vượt quá 100 ký tự');
   return classId;
 };
@@ -138,13 +144,14 @@ export const buildCalendarRoomClassId = (
   code: string,
   startTime: Date | string,
   learnNumber: number,
-  roomId: number
+  roomId: number,
+  calendar?: { id?: number; group_id?: number | null }
 ) => {
   const normalizedRoomId = Number(roomId);
   if (!Number.isInteger(normalizedRoomId) || normalizedRoomId <= 0) {
     throw new Error('Không thể tạo class_id khi room_id không hợp lệ');
   }
-  const roomOneClassId = buildCalendarClassId(code, startTime, learnNumber);
+  const roomOneClassId = buildCalendarClassId(code, startTime, learnNumber, calendar);
   const classId = `${roomOneClassId.slice(0, -1)}${normalizedRoomId}`;
   if (classId.length > 100) throw new Error('class_id vượt quá 100 ký tự');
   return classId;
@@ -277,7 +284,7 @@ const upsertTeachingUser = async (
     profile.role === 'assistant' ? 'Giáo viên' : profile.display_name,
     username
   );
-  const identityWhere = { username, code: calendar.code, learn_number: calendar.learn_number };
+  const identityWhere = { username, ...rosterScope(calendar) };
   const existing = await client.users.findFirst({
     where: identityWhere,
     select: { id: true, student_hmid: true, name: true, islearn: true, room_id: true, class_id: true, created_at: true },
@@ -285,6 +292,7 @@ const upsertTeachingUser = async (
   const createData = {
     username, student_hmid: studentHmid, email: username, phone: null, name: displayName,
     code: calendar.code, learn_number: calendar.learn_number, islearn: 0, room_id: 1,
+    ...(calendar.group_id ? { calendar_id: calendar.id } : {}),
     class_id: classId, created_at: lessonDate, updated_at: getVietnamWallClockDate(),
   };
   const updateFields = {
@@ -347,7 +355,7 @@ export const ensureCalendarTeachingUsers = async (
   ).values());
   if (!profiles.length) return { created: 0, updated: 0, skipped: 0 };
 
-  const classId = buildCalendarClassId(calendar.code, calendar.start_time, calendar.learn_number);
+  const classId = buildCalendarClassId(calendar.code, calendar.start_time, calendar.learn_number, calendar);
   const lessonDate = calendarDateAtMidnight(calendar.start_time);
   let created = 0;
   let updated = 0;
@@ -355,7 +363,7 @@ export const ensureCalendarTeachingUsers = async (
 
   for (const profile of profiles) {
     const username = normalizeText(profile.username);
-    const identityWhere = { username, code: calendar.code, learn_number: calendar.learn_number };
+    const identityWhere = { username, ...rosterScope(calendar) };
     const existing = await client.users.findFirst({
       where: identityWhere,
       select: { id: true, student_hmid: true, name: true, islearn: true, room_id: true, class_id: true, created_at: true },
@@ -389,6 +397,7 @@ export const ensureCalendarTeachingUsers = async (
         data: {
           username, student_hmid: studentHmid, email: username, phone: null, name: displayName,
           code: calendar.code, learn_number: calendar.learn_number, islearn: 0, room_id: 1,
+    ...(calendar.group_id ? { calendar_id: calendar.id } : {}),
           class_id: classId, created_at: lessonDate, updated_at: getVietnamWallClockDate(),
         },
       });
@@ -460,6 +469,7 @@ const isStillAssigned = async (
   calendar: CalendarTeachingSnapshot,
   profile: TeachingProfile
 ) => {
+  if (calendar.group_id) return false;
   const rows = await client.$queryRaw(Prisma.sql`
     SELECT teacher, assistant_teacher, start_time
     FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
@@ -472,7 +482,7 @@ const isStillAssigned = async (
     normalizeText(profile.username),
     normalizeText(profile.display_name),
   ].filter(Boolean));
-  const classId = buildCalendarClassId(calendar.code, calendar.start_time, calendar.learn_number);
+  const classId = buildCalendarClassId(calendar.code, calendar.start_time, calendar.learn_number, calendar);
   const isDefaultSupport = normalizeScanTeachingUsers(undefined)
     .some((user) => user.username === profile.username);
   return rows.some((row) => (
@@ -494,9 +504,8 @@ const removeUnassignedTeachingUser = async (
   await client.users.updateMany({
     where: {
       username: profile.username,
-      code: calendar.code,
-      learn_number: calendar.learn_number,
-      class_id: buildCalendarClassId(calendar.code, calendar.start_time, calendar.learn_number),
+      ...rosterScope(calendar),
+      class_id: buildCalendarClassId(calendar.code, calendar.start_time, calendar.learn_number, calendar),
     },
     // Giữ nguyên user, HMID, trạng thái học và quyền quản trị; chỉ thu hồi lớp Live.
     data: { class_id: null, updated_at: getVietnamWallClockDate() },
@@ -511,9 +520,8 @@ const removeLegacyTeachingUsersNotInNext = async (
   if (typeof client.users.findMany !== 'function') return;
   const users = await client.users.findMany({
     where: {
-      code: calendar.code,
-      learn_number: calendar.learn_number,
-      class_id: buildCalendarClassId(calendar.code, calendar.start_time, calendar.learn_number),
+      ...rosterScope(calendar),
+      class_id: buildCalendarClassId(calendar.code, calendar.start_time, calendar.learn_number, calendar),
     },
     select: { username: true },
   }) as Array<{ username: string }>;
@@ -551,6 +559,11 @@ export const syncCalendarTeachingUsers = async (
   after: CalendarTeachingSnapshot
 ) => {
   if (calendarSourceFromCode(after.code) === 'feed') return;
+  if (after.group_id) {
+    if (before) await removeLegacyTeachingUsersNotInNext(client, before, new Set([normalizeText(after.teacher), ...parseAssistantTeachers(after.assistant_teacher)]));
+    await ensureCalendarTeachingUsers(client, after);
+    return;
+  }
   if (before && calendarSyncSignature(before) === calendarSyncSignature(after)) return;
 
   // Khi chỉ thay ngày/giờ của lịch cũ, teacher có thể là display_name trùng
@@ -562,7 +575,7 @@ export const syncCalendarTeachingUsers = async (
     && isActiveSchedule(after)
     && teachingAssignmentsMatch(before, after)
   ) {
-    const classId = buildCalendarClassId(after.code, after.start_time, after.learn_number);
+    const classId = buildCalendarClassId(after.code, after.start_time, after.learn_number, after);
     const assignedProfiles = await client.teacher_profiles.findMany({
       where: { status: 1, OR: [
         ...(normalizeText(after.teacher) ? [
@@ -581,7 +594,7 @@ export const syncCalendarTeachingUsers = async (
       where: {
         code: before.code,
         learn_number: before.learn_number,
-        class_id: buildCalendarClassId(before.code, before.start_time, before.learn_number),
+        class_id: buildCalendarClassId(before.code, before.start_time, before.learn_number, before),
         username: { in: [...assignedUsernames] },
       },
       data: {

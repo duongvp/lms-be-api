@@ -34,9 +34,9 @@ const timeSql = (windows: ReportWindow[], field: Prisma.Sql, filters?: Pick<Deta
 };
 const classSql = (context: Context, field: Prisma.Sql, room: DetailFilters['room']) => {
   const c = context.calendar;
-  if (room != null) return Prisma.sql`${field} = ${buildCalendarRoomClassId(c.code, c.start_time, c.learn_number, room)}`;
-  const prefix = buildCalendarRoomClassId(c.code, c.start_time, c.learn_number, 1).slice(0, -1);
-  if (room === null) return Prisma.sql`${field} = ${buildCalendarRoomClassId(c.code, c.start_time, c.learn_number, 1)}`;
+  if (room != null) return Prisma.sql`${field} = ${buildCalendarRoomClassId(c.code, c.start_time, c.learn_number, room, c)}`;
+  const prefix = buildCalendarRoomClassId(c.code, c.start_time, c.learn_number, 1, c).slice(0, -1);
+  if (room === null) return Prisma.sql`${field} = ${buildCalendarRoomClassId(c.code, c.start_time, c.learn_number, 1, c)}`;
   // Accept a canonical positive room suffix only; room 1 never matches room 10.
   const suffix = Prisma.sql`SUBSTRING(${field}, ${prefix.length + 1})`;
   return Prisma.sql`(${suffix} REGEXP '^[1-9][0-9]*$' AND BINARY ${field} = BINARY CONCAT(${prefix}, CAST(CAST(${suffix} AS UNSIGNED) AS CHAR)))`;
@@ -51,7 +51,7 @@ export const createCalendarDetailReportService = (client = prisma) => {
   const loadContext = async (calendarId: number): Promise<Context> => {
     const calendar = await client.calendar.findUnique({ where: { id: calendarId } });
     if (!calendar) throw new ApiError('Không tìm thấy lịch học', 404);
-    const prefix = buildCalendarRoomClassId(calendar.code, calendar.start_time, calendar.learn_number, 1).slice(0, -1);
+    const prefix = buildCalendarRoomClassId(calendar.code, calendar.start_time, calendar.learn_number, 1, calendar).slice(0, -1);
     const [windows, candidates, staff, overlapping] = await Promise.all([
       loadReportWindows([calendar], client),
       client.$queryRaw<Candidate[]>(Prisma.sql`
@@ -64,6 +64,7 @@ export const createCalendarDetailReportService = (client = prisma) => {
           CASE WHEN a.user_id IS NOT NULL OR s.class_id = CONCAT(${prefix}, CASE WHEN s.room_id > 0 THEN s.room_id ELSE 1 END) THEN 1 ELSE 0 END AS belongs_to_calendar
         FROM users s LEFT JOIN assignments a ON a.user_id = s.id AND a.rn = 1
         WHERE s.code = ${calendar.code} AND s.learn_number = ${calendar.learn_number}
+          ${calendar.group_id ? Prisma.sql`AND s.calendar_id = ${calendar.id}` : Prisma.empty}
       `),
       client.teacher_profiles.findMany({ select: { username: true, student_hmid: true } }),
       client.calendar.findMany({ where: { id: { not: calendarId }, code: calendar.code, learn_number: calendar.learn_number, start_time: { lt: calendar.end_time }, end_time: { gt: calendar.start_time } }, select: { id: true } }),

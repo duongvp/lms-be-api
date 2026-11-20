@@ -113,6 +113,7 @@ const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
   fields
     .filter((field) => ![
       'calendar_source',
+      'group_id',
       'lesson_id',
       'session_id',
       'sessionId',

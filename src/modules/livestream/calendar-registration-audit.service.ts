@@ -45,8 +45,9 @@ function assertScope(targets: Target[], allowed: string[] | null) {
 
 async function loadTargets(ids: number[], client: any = prisma): Promise<Target[]> {
   const calendars = await client.calendar.findMany({
-    where: {id: {in: ids}}, select: {id: true, key: true, code: true, learn_number: true, start_time: true},
+    where: {id: {in: ids}}, select: {id: true, key: true, code: true, learn_number: true, start_time: true, group_id: true},
   });
+  if (calendars.some((c:any)=>c.group_id)) throw new ApiError('Đối soát thiếu theo bài chỉ dùng cho 1–n; hãy dùng đồng bộ học viên theo lịch nhóm nhỏ để giữ đúng sức chứa.',400);
   if (calendars.length !== ids.length) throw new ApiError('Có lịch đã chọn không tồn tại; vui lòng tải lại danh sách', 404);
   if (calendars.some((row: any) => !row.key)) throw new ApiError('Có lịch chưa có key để lấy Package ID', 400);
   const mappings = await client.package_lesson_mapping.findMany({

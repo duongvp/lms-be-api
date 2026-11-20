@@ -287,7 +287,7 @@ const executeRun = async (runId: bigint) => {
   const heartbeatTimer = setInterval(() => { void updateHeartbeat(); }, HEARTBEAT_INTERVAL_MS);
   try {
     const rows = await prisma.$queryRaw<any[]>`
-      SELECT c.id AS calendar_id, c.key, c.code, c.code AS program_code, c.learn_number, c.lesson_count,
+      SELECT c.id AS calendar_id, c.group_id, c.key, c.code, c.code AS program_code, c.learn_number, c.lesson_count,
         c.teacher, tp.display_name AS teacher_name, l.id AS lesson_id,
         l.subject_code, l.lesson_name AS source_lesson_name,
         c.lesson_name, lcm.package_id, lcm.course_id,
@@ -398,6 +398,10 @@ const executeRun = async (runId: bigint) => {
               lesson_id: String(existingMapping.mapped_hmo_lesson_id),
             });
             continue;
+          }
+          if (row.group_id) {
+            await addIssue(runId,row,'AMBIGUOUS','Lịch nhóm nhỏ cần chọn Lesson ID HMO theo từng lịch; không suy đoán nhóm từ tên bài hoặc thứ tự ngày.',pair);
+            failure=true;continue;
           }
           const outlineError = outlineErrors.get(pairKey);
           if (outlineError) {

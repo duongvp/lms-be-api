@@ -1,0 +1,11 @@
+-- Small groups use a single room owned by the calendar. Legacy stream and
+-- room_config remain keyed by code + learn_number and are never overwritten.
+-- External student application contract:
+--   group_id IS NULL: keep the existing queries and legacy class_id formula.
+--   group_id IS NOT NULL: join users.calendar_id = calendar.id, not just code
+--   and learn_number. Read live configuration from calendar.group_room_config:
+--   {evg:'evg', stream_key:<join key>, rooms:[{room_id:1, stream_key:<playback>,
+--     banner_url:<url>, class_id:<code>_G<group_id>_C<calendar_id>_1, type:1}]}.
+--   Package/Course/HMO Lesson mapping still joins package_lesson_mapping.key
+--   to calendar.key. No change to the existing 15-day visibility policy here.
+ALTER TABLE `calendar` ADD COLUMN `group_room_config` JSON NULL;

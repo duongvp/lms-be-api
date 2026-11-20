@@ -8,7 +8,7 @@ import { calendarSourceFromCode } from './calendar-source';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 
 export type ReportCalendar = {
-  id: number; code: string; learn_number: number; lesson_name?: string | null;
+  id: number; group_id?: number | null; code: string; learn_number: number; lesson_name?: string | null;
   teacher?: string | null; assistant_teacher?: string | null; system_type?: string | null; start_time: Date; end_time: Date;
   evg_stream?: string | null; channel_name?: string | null; lesson_status?: number | null;
 };
@@ -143,7 +143,7 @@ export const assembleRoomReport = (windows: ReportWindow[], counts: RoomCount[])
       lesson_status: Number(calendar.lesson_status || 0),
       scheduled_start_time: calendar.start_time.toISOString(), scheduled_end_time: calendar.end_time.toISOString(),
       session_id: window.session_id, actual_start_time: iso(window.actual_start_time), actual_end_time: iso(window.actual_end_time),
-      room_id: roomId, class_id: roomId == null ? null : buildCalendarRoomClassId(calendar.code, calendar.start_time, calendar.learn_number, roomId),
+      room_id: roomId, class_id: roomId == null ? null : buildCalendarRoomClassId(calendar.code, calendar.start_time, calendar.learn_number, roomId, calendar),
       added_students: Number(count.added_students), attended_students: Number(count.attended_students),
     };
   });
@@ -207,10 +207,10 @@ const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, gro
   const windows = await loadReportWindows(calendars, client);
   const windowSql = Prisma.join(windows.map((window) => Prisma.sql`
     SELECT ${window.key} AS window_id, ${window.calendar.id} AS calendar_id, ${window.calendar.code} AS code,
-           ${window.calendar.learn_number} AS learn_number, ${window.from} AS start_time, ${window.to} AS end_time,
+           ${window.calendar.learn_number} AS learn_number, ${window.calendar.group_id ?? null} AS group_id, ${window.from} AS start_time, ${window.to} AS end_time,
            ${(window.calendar.teacher || '').trim().toLowerCase()} AS teacher_username,
            ${(window.calendar.assistant_teacher || '').split(',').map((username) => username.trim().toLowerCase()).filter(Boolean).join(',')} AS assistant_usernames,
-           ${buildCalendarRoomClassId(window.calendar.code, window.calendar.start_time, window.calendar.learn_number, 1).slice(0, -1)} AS class_prefix
+           ${buildCalendarRoomClassId(window.calendar.code, window.calendar.start_time, window.calendar.learn_number, 1, window.calendar).slice(0, -1)} AS class_prefix
   `), ' UNION ALL ');
   /* Logic cũ (đã tắt): tổng >= 2 status=2, không cần liên tiếp.
    * Giữ nguyên đoạn code để có thể khôi phục khi cần; chỉ chạy một trong hai
@@ -229,6 +229,7 @@ const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, gro
                CASE WHEN student.room_id > 0 AND student.class_id = CONCAT(w.class_prefix, student.room_id) THEN student.room_id ELSE NULL END) AS room_id
       FROM report_windows w
       JOIN users student ON student.code = w.code AND student.learn_number = w.learn_number
+        AND (w.group_id IS NULL OR student.calendar_id = w.calendar_id)
       LEFT JOIN teacher_profiles staff ON LOWER(TRIM(staff.username)) = LOWER(TRIM(student.username))
         OR (NULLIF(TRIM(student.student_hmid), '') IS NOT NULL AND TRIM(staff.student_hmid) = TRIM(student.student_hmid))
       LEFT JOIN ranked_assignments assigned ON assigned.calendar_id = w.calendar_id AND assigned.user_id = student.id AND assigned.rank_number = 1
@@ -281,6 +282,7 @@ const queryRoomReport = async (calendars: ReportCalendar[], client = prisma, gro
                CASE WHEN student.room_id > 0 AND student.class_id = CONCAT(w.class_prefix, student.room_id) THEN student.room_id ELSE NULL END) AS room_id
       FROM report_windows w
       JOIN users student ON student.code = w.code AND student.learn_number = w.learn_number
+        AND (w.group_id IS NULL OR student.calendar_id = w.calendar_id)
       LEFT JOIN ranked_assignments assigned ON assigned.calendar_id = w.calendar_id AND assigned.user_id = student.id AND assigned.rank_number = 1
       WHERE LOWER(TRIM(student.username)) <> w.teacher_username
         AND FIND_IN_SET(LOWER(TRIM(student.username)), w.assistant_usernames) = 0

@@ -8,6 +8,8 @@ import {
 } from "../hmo-lesson-sync/hmo-lesson-sync.service";
 
 type ScheduleRow = {
+  group_id?: number | null;
+  mapped_hmo_lesson_id?: string | null;
   calendar_id: bigint | number | string;
   lesson_id: bigint | number | string;
   learn_number: number;
@@ -121,7 +123,7 @@ const scheduleOccurrence = (row: ScheduleRow) => {
   return Number.isInteger(occurrence) && occurrence > 0 ? occurrence : 1;
 };
 const scheduleGroupKey = (row: ScheduleRow) =>
-  `${String(row.lesson_id)}::${canonicalTeacher(displayTeacher(row))}`;
+  `${String(row.lesson_id)}::${canonicalTeacher(displayTeacher(row))}${row.group_id ? `::G${row.group_id}` : ""}`;
 
 export const buildScheduleOccurrenceMap = (rows: ScheduleRow[]) => {
   const calendarsByGroup = new Map<
@@ -166,7 +168,7 @@ const numericId = (value: string, label: string) => {
 const getProgramSchedules = async (programCode: string) => prisma.$queryRaw<
   ScheduleRow[]
 >`
-  SELECT c.id AS calendar_id, l.id AS lesson_id, l.learn_number,
+  SELECT c.id AS calendar_id, c.group_id, plm.lesson_id AS mapped_hmo_lesson_id, l.id AS lesson_id, l.learn_number,
     l.lesson_name AS source_lesson_name,
     c.lesson_name AS calendar_lesson_name, c.lesson_count,
     c.start_time, c.teacher,
@@ -175,6 +177,7 @@ const getProgramSchedules = async (programCode: string) => prisma.$queryRaw<
   INNER JOIN lessons l ON l.id = c.session_id AND l.status <> 0
   LEFT JOIN teacher_profiles tp ON tp.username = c.teacher
   LEFT JOIN lesson_course_mapping lcm ON lcm.lesson_id = l.id
+  LEFT JOIN package_lesson_mapping plm ON plm.\`key\`=c.\`key\` AND plm.package_id=lcm.package_id AND plm.course_id=lcm.course_id
   WHERE l.subject_code = ${programCode}
     AND COALESCE(c.lesson_status, 0) <> 1
   ORDER BY l.learn_number, c.start_time, c.id, lcm.package_id, lcm.course_id
@@ -397,11 +400,9 @@ export const previewHocmaiScormNameSync = async (
       continue;
     }
     const outline = outlineByPair.get(pair);
-    const resolution = resolveOutlineLesson(
-      schedule,
-      outline?.lessons || [],
-      multipleTeachers,
-    );
+    const resolution = schedule.group_id
+      ? { candidates:(outline?.lessons || []).filter(l => String(l.lessonId)===String(schedule.mapped_hmo_lesson_id || '')),sessionCertain:true }
+      : resolveOutlineLesson(schedule, outline?.lessons || [], multipleTeachers);
     const candidates = resolution.candidates;
     if (candidates.length !== 1 || !resolution.sessionCertain) {
       rows.push({

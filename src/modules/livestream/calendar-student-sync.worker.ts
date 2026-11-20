@@ -67,11 +67,23 @@ export const runCalendarStudentSync = async (now = new Date()) => {
   try {
     // Thời gian lịch được lưu theo Vietnam wall-clock; quét mọi buổi trong ngày,
     // kể cả buổi đang học/đã kết thúc, loại lịch nghỉ và chương trình Feed.
-    const candidates = await prisma.calendar.findMany({
+    let candidates = await prisma.calendar.findMany({
       where: calendarStudentSyncCalendarWhere(start, end),
-      select: { id: true, code: true, key: true },
+      select: { id: true, code: true, key: true, group_id: true, learn_number: true, lesson_count: true },
       orderBy: [{ code: 'asc' }, { learn_number: 'asc' }],
     });
+    if (candidates.some(c => c.group_id)) {
+      // A registration batch can populate sibling groups whose first lesson is
+      // on another day. Only grouped programs expand; the 1-n window is unchanged.
+      const siblings = await prisma.calendar.findMany({
+        where: { start_time:{gte:start},group_id:{not:null},group:{status:'active'},
+          OR:candidates.filter(c=>c.group_id).map(c=>({code:c.code,learn_number:c.learn_number,lesson_count:c.lesson_count})),
+          AND:[{OR:[{lesson_status:null},{lesson_status:{not:1}}]}],
+        },
+        select:{id:true,code:true,key:true,group_id:true,learn_number:true,lesson_count:true},
+      });
+      candidates=[...new Map([...candidates,...siblings].map(c=>[c.id,c])).values()];
+    }
     // Giữ cùng quy tắc prefix không phân biệt hoa/thường, kể cả khi DB dùng collation phân biệt hoa/thường.
     const calendars = candidates.filter(calendar => calendarSourceFromCode(calendar.code) !== 'feed');
     calendarsTotal = calendars.length;

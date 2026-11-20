@@ -357,6 +357,7 @@ const loadAssignmentContext = async (
     where: { id: calendarId },
     select: {
       id: true,
+      group_id: true,
       code: true,
       session_id: true,
       learn_number: true,
@@ -364,6 +365,7 @@ const loadAssignmentContext = async (
       start_time: true,
     },
   });
+  if (calendar?.group_id) throw new Error('Nhóm nhỏ đã có lịch riêng; đồng bộ học viên sẽ xếp vào phòng 1, không dùng chia phòng đại trà');
   if (!calendar) throw new Error('Không tìm thấy lịch học');
 
   const schedulableRows = await client.$queryRaw(Prisma.sql`

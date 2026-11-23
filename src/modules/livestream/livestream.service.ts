@@ -149,6 +149,20 @@ const auditTimeChange = async (
   const beforeEnd = new Date(before.end_time).getTime();
   const afterStart = new Date(after.start_time).getTime();
   const afterEnd = new Date(after.end_time).getTime();
+  // Append assignment history without changing existing scheduling eligibility.
+  // Legacy/internal callers without an actor retain their previous behavior.
+  if (changeActor?.userId && changeActor.username && (
+    String(before.teacher ?? '') !== String(after.teacher ?? '')
+    || String(before.assistant_teacher ?? '') !== String(after.assistant_teacher ?? '')
+  )) {
+    await writeCalendarChangeLog(tx, {
+      action: 'teaching_assignment_update', current: before,
+      reason: String(rawReason || '').trim().slice(0, 500) || 'Cập nhật phân công giảng dạy',
+      actor: normalizeChangeActor(changeActor),
+      beforeData: { source_session: before }, afterData: { source_session: after },
+      affectedSessions: [after], newKey: after.key,
+    });
+  }
   if (beforeStart === afterStart && beforeEnd === afterEnd) return;
 
   const actor = normalizeChangeActor(changeActor);

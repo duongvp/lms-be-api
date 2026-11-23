@@ -25,6 +25,7 @@ import {
 } from '../teams-notifications';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
 import { buildCalendarColumnFilters } from './calendar-column-filters';
+import { calendarFacetQuery, calendarProgress, calendarWeekday } from './calendar-faceted-filters';
 import { getCalendarEvgStatuses } from './evg-status';
 import {
   ensureCalendarTeachingUsers,
@@ -1738,6 +1739,8 @@ export const getSchedulingPrograms = async (allowedPrograms: string[] | null = n
   const rows = await prisma.$queryRaw<Array<{
     code: string;
     subject_name: string | null;
+    grade: number | null;
+    curriculum_subject_name: string | null;
   }>>(Prisma.sql`
     SELECT program.code,
            COALESCE(
@@ -1748,13 +1751,16 @@ export const getSchedulingPrograms = async (allowedPrograms: string[] | null = n
                THEN program.subject_name
              END),
              MAX(program.subject_name)
-           ) AS subject_name
+           ) AS subject_name,
+           CASE WHEN COUNT(DISTINCT program.grade) = 1 THEN MAX(program.grade) ELSE NULL END AS grade,
+           CASE WHEN COUNT(DISTINCT program.curriculum_subject_name) = 1 THEN MAX(program.curriculum_subject_name) ELSE NULL END AS curriculum_subject_name
     FROM (
-      SELECT subject_code AS code, subject_name
+      SELECT subject_code AS code, subject_name, CASE WHEN status <> 0 THEN grade ELSE NULL END AS grade,
+             CASE WHEN status <> 0 THEN NULLIF(TRIM(subject_name), '') ELSE NULL END AS curriculum_subject_name
       FROM lessons
       WHERE subject_code IS NOT NULL AND TRIM(subject_code) <> ''
       UNION ALL
-      SELECT code, subject AS subject_name
+      SELECT code, subject AS subject_name, NULL AS grade, NULL AS curriculum_subject_name
       FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
       WHERE code IS NOT NULL AND TRIM(code) <> ''
     ) AS program
@@ -1766,6 +1772,8 @@ export const getSchedulingPrograms = async (allowedPrograms: string[] | null = n
   .map((row) => ({
     code: row.code,
     subject_name: row.subject_name,
+    grade: row.grade == null ? null : Number(row.grade),
+    curriculum_subject_name: row.curriculum_subject_name,
   }));
 };
 
@@ -3201,6 +3209,45 @@ export const getCalendarHeaderFilterOptions = async (
   };
 };
 
+export const getCalendarCrossFilterOptions = async (
+  query: any, allowedPrograms: string[] | null = null,
+  db = prisma, buildQuery = buildCalendarListQuery,
+) => {
+  // Only option lists may span programs. The calendar list still requires a
+  // program for non-admin users; every facet retains their calendar.view scope.
+  const facetWhere = async (facet: Parameters<typeof calendarFacetQuery>[1]) => (
+    await buildQuery(calendarFacetQuery(query, facet), allowedPrograms, true)
+  ).where;
+  const [programRows, teacherRows, systemRows, statusRows, weekdayRows] = await Promise.all([
+    facetWhere('code').then(where => db.calendar.findMany({ where, select: { code: true, session_id: true, system_type: true }, distinct: ['code', 'session_id', 'system_type'] })),
+    facetWhere('teacher').then(where => db.calendar.findMany({ where, select: { teacher: true }, distinct: ['teacher'] })),
+    facetWhere('system_type').then(where => db.calendar.findMany({ where, select: { system_type: true }, distinct: ['system_type'] })),
+    facetWhere('time_status').then(where => db.calendar.findMany({ where, select: { start_time: true, end_time: true, lesson_status: true }, distinct: ['start_time', 'end_time', 'lesson_status'] })),
+    facetWhere('weekdays').then(where => db.calendar.findMany({ where, select: { start_time: true }, distinct: ['start_time'] })),
+  ]);
+  const sessionIds = [...new Set(programRows.flatMap(row => row.session_id == null ? [] : [row.session_id]))];
+  const lessons = sessionIds.length ? await db.lessons.findMany({ where: { id: { in: sessionIds }, status: { not: 0 } }, select: { id: true, subject_code: true } }) : [];
+  const programBySession = new Map(lessons.map(row => [String(row.id), row.subject_code]));
+  const programs = programRows.map(row => row.session_id == null ? row.code : programBySession.get(String(row.session_id)))
+    .filter((code): code is string => Boolean(code) && (allowedPrograms === null || allowedPrograms.includes(code!)));
+  const teachers = [...new Set(teacherRows.map(row => row.teacher?.trim()).filter((name): name is string => Boolean(name)))].sort((a,b) => a.localeCompare(b, 'vi'));
+  const staff = teachers.length ? await db.teacher_profiles.findMany({ where: { username: { in: teachers } }, select: { username: true, display_name: true } }) : [];
+  const staffNames = new Map(staff.map(profile => [profile.username, profile.display_name?.trim()]));
+  const now = getVietnamWallClockDate();
+  return {
+    ...(query.week_links === 'true' ? {program_systems: [...new Map(programRows.flatMap(row => {
+      const code = row.session_id == null ? row.code : programBySession.get(String(row.session_id));
+      return code && (allowedPrograms === null || allowedPrograms.includes(code))
+        ? [[`${code}:${row.system_type}`, {code, system_type: row.system_type}]] as const : [];
+    })).values()]} : {}),
+    programs: [...new Set(programs)].sort(),
+    teachers: teachers.map(value => ({ value, label: staffNames.get(value) || value })),
+    systems: [...new Set(systemRows.map(row => row.system_type).filter(Boolean))],
+    statuses: [...new Set(statusRows.map(row => calendarProgress(row, now)))],
+    weekdays: [...new Set(weekdayRows.map(row => calendarWeekday(row.start_time)))].sort((a,b) => a-b),
+  };
+};
+
 export type HocmaiAttendanceUser = { user_id: string; c_key: string; calendar_join: string; action?: 'delete' };
 
 export const buildHocmaiAttendancePayload = (
@@ -3560,7 +3607,9 @@ const buildCalendarListQuery = async (
         AND status = 1
       LIMIT 1
     `) as Array<{ display_name: string | null }>;
-    teacherNames.push(teacherProfiles[0]?.display_name?.trim() || requestedTeacher);
+    teacherNames.push(requestedTeacher);
+    const displayName = teacherProfiles[0]?.display_name?.trim();
+    if (displayName && displayName !== requestedTeacher) teacherNames.push(displayName);
   }
 
   if (systemTypes.some((systemType) => !CALENDAR_SYSTEM_TYPES.includes(systemType))) {

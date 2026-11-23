@@ -142,6 +142,11 @@ router.use('/room-report/calendars/:calendarId', createCalendarDetailReportRoute
 router.use('/students/registration-audits', registrationAuditRouter);
 
 router.get(
+  '/filter-options/cross',
+  authorize(['calendar.view']),
+  livestreamController.getCalendarCrossFilterOptions
+);
+router.get(
   '/filter-options/headers',
   authorize(['calendar.view']),
   authorizeCalendarList,

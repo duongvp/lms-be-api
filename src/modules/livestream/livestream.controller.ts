@@ -421,6 +421,13 @@ export const getCalendarHeaderFilterOptions = async (req: Request, res: Response
   } catch (error) { next(error); }
 };
 
+export const getCalendarCrossFilterOptions = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const data = await livestreamService.getCalendarCrossFilterOptions(req.query, getProgramScopeFilter(req.user, 'calendar.view'));
+    res.status(200).json({ success: true, data });
+  } catch (error) { next(error); }
+};
+
 export const getCalendar = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const result = await livestreamService.getCalendar(

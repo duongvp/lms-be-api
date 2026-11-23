@@ -9,7 +9,6 @@ datasource db {
 
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model calendar {
-  teaching_sources teaching_record_sources[]
   id                Int                   @id @default(autoincrement()) @db.UnsignedInt
   session_id        BigInt?
   code              String                @db.VarChar(30)
@@ -374,10 +373,6 @@ model stream {
 
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model teacher_profiles {
-  teaching_records teaching_records[]
-  salary_items salary_items[]
-  salary_adjustments salary_adjustments[]
-  salary_payments salary_payments[]
   id           Int       @id @default(autoincrement()) @db.UnsignedInt
   username     String    @unique(map: "uq_teacher_username") @db.VarChar(120)
   teacher_type Int       @default(1) @db.TinyInt
@@ -755,134 +750,4 @@ model moduleFields {
   @@unique([moduleId, fieldCode])
   @@index([moduleId])
   @@map("module_fields")
-}
-
-// Payroll is independent of calendar lifecycle; historical money never cascades.
-model teaching_records {
-  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
-  teacher_profile_id Int? @db.UnsignedInt
-  role String @db.VarChar(20)
-  service_date DateTime @db.Date
-  billing_code String @db.VarChar(30)
-  status String @default("confirmed") @db.VarChar(20)
-  outcome String @db.VarChar(30)
-  session_kind String @db.VarChar(20)
-  is_substitute Boolean @default(false)
-  actual_seconds Int
-  scheduled_seconds Int
-  snapshot Json
-  version Int @default(1)
-  created_by String @db.VarChar(100)
-  updated_at DateTime @default(now()) @updatedAt @db.DateTime(3)
-  teacher teacher_profiles? @relation(fields:[teacher_profile_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  sources teaching_record_sources[]
-  salary_item salary_items?
-  @@index([teacher_profile_id,service_date,status])
-}
-model teaching_record_sources {
-  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
-  teaching_record_id BigInt @db.UnsignedBigInt
-  calendar_id Int @db.UnsignedInt
-  participant_key String @db.VarChar(150)
-  source_hash String @db.Char(64)
-  snapshot Json
-  record teaching_records @relation(fields:[teaching_record_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  calendar calendar @relation(fields:[calendar_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  @@unique([calendar_id,participant_key])
-  @@index([teaching_record_id])
-}
-model salary_rates {
-  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
-  name String @db.VarChar(150)
-  dimensions Json
-  pay_basis String @db.VarChar(20)
-  duration_basis String @db.VarChar(20)
-  amount Decimal @db.Decimal(18,2)
-  priority Int @default(0)
-  valid_from DateTime @db.Date
-  valid_to DateTime? @db.Date
-  enabled Boolean @default(true)
-  previous_id BigInt? @db.UnsignedBigInt
-  created_by String @db.VarChar(100)
-  created_at DateTime @default(now()) @db.DateTime(3)
-  items salary_items[]
-  @@index([valid_from,valid_to])
-}
-model salary_periods {
-  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
-  name String @db.VarChar(150)
-  from_date DateTime @db.Date
-  to_date DateTime @db.Date
-  scope Json
-  status String @default("draft") @db.VarChar(30)
-  revision Int @default(1)
-  calculation_hash String? @db.Char(64)
-  snapshot Json
-  created_by String @db.VarChar(100)
-  created_at DateTime @default(now()) @db.DateTime(3)
-  updated_at DateTime @default(now()) @updatedAt @db.DateTime(3)
-  items salary_items[]
-  adjustments salary_adjustments[]
-  payments salary_payments[]
-  @@index([from_date,to_date,status])
-}
-model salary_items {
-  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
-  period_id BigInt @db.UnsignedBigInt
-  teaching_record_id BigInt @unique @db.UnsignedBigInt
-  teacher_profile_id Int @db.UnsignedInt
-  rate_id BigInt @db.UnsignedBigInt
-  amount Decimal @db.Decimal(18,2)
-  snapshot Json
-  period salary_periods @relation(fields:[period_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  record teaching_records @relation(fields:[teaching_record_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  teacher teacher_profiles @relation(fields:[teacher_profile_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  rate salary_rates @relation(fields:[rate_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  referenced_adjustments salary_adjustments[]
-  @@index([period_id,teacher_profile_id])
-}
-model salary_adjustments {
-  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
-  period_id BigInt @db.UnsignedBigInt
-  teacher_profile_id Int @db.UnsignedInt
-  code String @db.VarChar(30)
-  kind String @db.VarChar(20)
-  amount Decimal @db.Decimal(18,2)
-  reason String @db.VarChar(500)
-  source_item_id BigInt? @db.UnsignedBigInt
-  source_item salary_items? @relation(fields:[source_item_id],references:[id],onDelete:Restrict,onUpdate:Restrict,map:"salary_adjustments_source_item_fkey")
-  created_by String @db.VarChar(100)
-  created_at DateTime @default(now()) @db.DateTime(3)
-  period salary_periods @relation(fields:[period_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  teacher teacher_profiles @relation(fields:[teacher_profile_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  @@index([period_id,teacher_profile_id])
-}
-model salary_payments {
-  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
-  period_id BigInt @db.UnsignedBigInt
-  teacher_profile_id Int @db.UnsignedInt
-  amount Decimal @db.Decimal(18,2)
-  reference String @db.VarChar(150)
-  idempotency_key String @unique @db.VarChar(100)
-  created_by String @db.VarChar(100)
-  created_at DateTime @default(now()) @db.DateTime(3)
-  period salary_periods @relation(fields:[period_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  teacher teacher_profiles @relation(fields:[teacher_profile_id],references:[id],onDelete:Restrict,onUpdate:Restrict)
-  @@index([period_id,teacher_profile_id])
-  @@unique([period_id,teacher_profile_id,reference],map:"uq_salary_payment_reference")
-}
-model salary_audit_logs {
-  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
-  entity_type String @db.VarChar(30)
-  entity_id String @db.VarChar(30)
-  period_id BigInt? @db.UnsignedBigInt
-  action String @db.VarChar(40)
-  actor_id Int @db.UnsignedInt
-  actor_username String @db.VarChar(100)
-  reason String @db.VarChar(500)
-  before_data Json
-  after_data Json
-  created_at DateTime @default(now()) @db.DateTime(3)
-  @@index([period_id,created_at])
-  @@index([entity_type,entity_id,created_at])
 }

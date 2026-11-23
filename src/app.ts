@@ -1,4 +1,4 @@
-import teacherSalaryRoutes from './modules/teacher-salary/teacher-salary.routes';
+import teachingReportRoutes from './modules/teaching-reports/report.routes';
 import express from "express";
 import cors from "cors";
 import { authRoutes } from "./modules/auth";
@@ -45,7 +45,7 @@ app.use(cors({
     credentials: true,
 }));
 
-app.use("/api/teacher-salary", teacherSalaryRoutes);
+app.use("/api/teaching-reports", teachingReportRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);
 app.use("/api/modules", moduleRoutes);

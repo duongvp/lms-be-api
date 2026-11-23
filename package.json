@@ -35,8 +35,8 @@
     "test:calendar-source:integration": "node --import tsx tests/calendar-source.integration.ts",
     "db:calendar-source-rollback-triggers": "tsx prisma/scripts/rollbackCalendarSourceTriggers.ts",
     "test:calendar-detail-report": "node --import tsx --test tests/calendar-detail-report.test.ts tests/calendar-detail-report-auth.test.ts",
-    "test:teacher-salary": "node --import tsx --test tests/teacher-salary.test.ts",
-    "test:teacher-salary:integration": "node --import tsx tests/teacher-salary.integration.ts"
+    "test:teaching-reports": "node --import tsx --test tests/teaching-reports.test.ts",
+    "test:teaching-reports:integration": "node --import tsx tests/teaching-reports.integration.ts"
   },
   "keywords": [],
   "author": "",

@@ -6,8 +6,6 @@ export const RBAC_MENU_MODULES = [
     { code: 'teacher_profile', label: 'Giáo viên & Trợ giảng' },
     { code: 'users', label: 'Quản trị viên' },
     { code: 'teaching_report', label: 'Báo cáo giảng dạy' },
-    { code: 'teaching_record', label: 'Xác nhận công' },
-    { code: 'salary', label: 'Lương giảng dạy' },
     { code: 'roles', label: 'Vai trò thành viên' },
 ] as const;
 
@@ -16,7 +14,7 @@ export const RBAC_MENU_MODULE_CODES = RBAC_MENU_MODULES.map(({ code }) => code);
 // Vai trò thành viên là màn cấu hình quyền, không phải dữ liệu nghiệp vụ
 // cần kiểm soát theo từng field.
 export const RBAC_FIELD_MODULE_CODES = RBAC_MENU_MODULE_CODES.filter(
-    (code) => !['roles','salary','teaching_report','teaching_record'].includes(code)
+    (code) => !['roles','teaching_report'].includes(code)
 );
 
 export const RBAC_MENU_LABELS = Object.fromEntries(

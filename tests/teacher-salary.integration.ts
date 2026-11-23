@@ -139,6 +139,20 @@ let db: PrismaClient | undefined, created = false;
         assert.ok(assignmentAudit, 'A teacher-only schedule update must have an audit record');
         assert.equal((assignmentAudit.before_data as any).source_session.teacher, teacher.display_name);
         assert.equal((assignmentAudit.after_data as any).source_session.teacher, replacement.display_name);
+        // Personnel drilldown must include assistants, not only primary teachers.
+        const assisted = await create('SAL_A', '2020-12-05');
+        const assistantWork = await teaching.confirmTeaching(u, { ...body, calendar_ids: [assisted.id], shared_confirmed: false, role: 'assistant', teacher_profile_id: assistant.id, actual_start_time: '2020-12-05T19:00:00Z', actual_end_time: '2020-12-05T20:00:00Z' });
+        const personnelQuery = { from: '2020-12-01', to: '2021-01-01', person_id: assistant.id };
+        const assistantDetail = await teaching.report(u, { ...personnelQuery, collection: 'records', teacher_id: teacher.id });
+        assert.equal(assistantDetail.pagination.total, 1);
+        assert.equal(assistantDetail.rows[0].id, String(assistantWork.id));
+        assert.equal(assistantDetail.rows[0].role, 'assistant');
+        const assistantTotals = await teaching.report(u, { ...personnelQuery, collection: 'teachers' });
+        assert.equal(assistantTotals.pagination.total, 1);
+        assert.equal(assistantTotals.rows[0].id, assistant.id);
+        assert.equal(assistantTotals.rows[0].actual_hours, 1);
+        assert.equal(assistantTotals.rows[0].completed, 1);
+        assert.equal((await teaching.report(u, { ...personnelQuery, person_id: teacher.id, collection: 'records' })).pagination.total, 0);
         // Exercise the real authenticated HTTP routes, including permission AND guards.
         process.env.ACCESS_TOKEN_SECRET = 'salary-integration-only-secret';
         const jwt = (await import('jsonwebtoken')).default;

@@ -101,6 +101,10 @@ export const reportData = async (u: User, q: any) => {
         const key = numberId(q.teacher_id);
         sessions = sessions.filter(s => s.teacher_profile_id === key || records.some(r => r.teacher_profile_id === key && s.record_ids.includes(String(r.id))));
     }
+    if (q.person_id) {
+        const key = numberId(q.person_id);
+        sessions = sessions.filter(s => s.teacher_profile_id === key || s.assistant_ids.includes(key) || (recordsByCalendar.get(s.id) ?? []).some(r => r.teacher_profile_id === key));
+    }
     if (q.assistant_id)
         sessions = sessions.filter(s => s.assistant_ids.includes(numberId(q.assistant_id)));
     if (q.group_id)
@@ -113,8 +117,8 @@ export const reportData = async (u: User, q: any) => {
         sessions = sessions.filter(s => s.confirmation_status === choice(q.confirmation_status, ['confirmed', 'unconfirmed'], 'Xác nhận'));
     const selected = new Set(sessions.map(s => s.id));
     let visible = records.filter(r => r.sources.some(s => selected.has(s.calendar_id)) && matches(u, 'teaching_report.view', allSources(r)));
-    if (q.teacher_id)
-        visible = visible.filter(r => r.teacher_profile_id === numberId(q.teacher_id));
+    if (q.person_id || q.teacher_id)
+        visible = visible.filter(r => r.teacher_profile_id === numberId(q.person_id ?? q.teacher_id));
     if (q.role)
         visible = visible.filter(r => r.role === choice(q.role, ['teacher', 'assistant'], 'Vai trò'));
     const recordRows = visible.map(r => {
@@ -125,7 +129,7 @@ export const reportData = async (u: User, q: any) => {
         return { ...safe, teacher: snap.teacher, eligible: r.status === 'confirmed' && r.outcome === 'completed' && !stale };
     });
     const completed = recordRows.filter(r => r.eligible);
-    const teachers = profiles.filter(p => sessions.some(s => s.teacher_profile_id === p.id || s.assistant_ids.includes(p.id)) || visible.some(r => r.teacher_profile_id === p.id)).map(p => {
+    const teachers = profiles.filter(p => !q.person_id || p.id === numberId(q.person_id)).filter(p => sessions.some(s => s.teacher_profile_id === p.id || s.assistant_ids.includes(p.id)) || visible.some(r => r.teacher_profile_id === p.id)).map(p => {
         const assigned = sessions.filter(s => requestedRole==='teacher'?s.teacher_profile_id===p.id:requestedRole==='assistant'?s.assistant_ids.includes(p.id):s.teacher_profile_id === p.id || s.assistant_ids.includes(p.id)), taught = completed.filter(r => r.teacher_profile_id === p.id);
         return { id: p.id, username: p.username, name: p.display_name ?? p.username, assigned: assigned.length, completed: taught.length,
             actual_hours: taught.reduce((n, r) => n + r.actual_seconds / 3600, 0), scheduled_hours: assigned.reduce((n, s) => n + s.scheduled_seconds / 3600, 0),

@@ -1,7 +1,7 @@
 import ApiError from '../utils/ApiError';
 
 const DEFAULT_SHEET_URL =
-  'https://docs.google.com/spreadsheets/d/1m_KNVZc5PMu-UQi2PCrEGuXAfVM0NPGEghRbEYnJeH0/edit?usp=sharing';
+  'https://docs.google.com/spreadsheets/d/1JHtpHua04oLpnozsn-YtWz9UE0ZINFJeLE0BnDKjJW8/edit?usp=sharing';
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export type PackageCourseSheetRow = {

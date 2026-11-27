@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import prisma from '../../lib/prisma';
+import prisma from '../../lib/calendar-transaction';
 import { createEvgLiveStream } from '../../integrations/evg-live-stream.service';
 import {
   buildCalendarRoomClassId,

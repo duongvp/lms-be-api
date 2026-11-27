@@ -1,3 +1,5 @@
+import {approvalPolicyRoutes} from './modules/approval-policy/approval-policy.routes';
+import { calendarApprovalRoutes } from './modules/calendar-approvals/calendar-approval.routes';
 import teachingReportRoutes from './modules/teaching-reports/report.routes';
 import express from "express";
 import cors from "cors";
@@ -27,6 +29,7 @@ const allowedCorsOrigins = new Set(
         .filter(Boolean)
 );
 
+app.use('/api/calendar-change-requests', express.json({limit:'2mb'}));
 app.use(express.json());
 app.use((req, res, next) => {
     console.log(">>>", req.method, req.url);
@@ -56,6 +59,8 @@ app.use("/api/quizzes", quizRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/room-config", roomConfigRoutes);
 app.use("/api/program-teacher-banners", programTeacherBannerRoutes);
+app.use("/api/calendar-change-requests", calendarApprovalRoutes);
+app.use("/api/approval-policies", approvalPolicyRoutes);
 app.use("/api/livestreams", livestreamRoute);
 app.use("/livestreams", livestreamRoute);
 app.use("/api/auth", authRoutes)

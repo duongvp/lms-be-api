@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const calendar_approval_routes_1 = require("../calendar-approvals/calendar-approval.routes");
 const express_1 = require("express");
 const multer_1 = __importDefault(require("multer"));
 const lesson_controller_1 = __importDefault(require("./lesson.controller"));
@@ -31,24 +32,24 @@ router.use(lesson_secondary_auth_1.requireLessonSecondaryAuth);
 router.get("/reauth", authorize(["lessons.view"]), lesson_controller_1.default.reauthStatus);
 router.get("/scorm-name-sync/sheets", authorize(["lessons.update"]), lesson_controller_1.default.scormNameSyncSheets);
 router.post("/scorm-name-sync/preview", authorize(["lessons.update"]), lesson_controller_1.default.previewScormNameSync);
-router.post("/scorm-name-sync/apply", authorize(["lessons.update"]), lesson_controller_1.default.applyScormNameSync);
+router.post("/scorm-name-sync/apply", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.update"]), lesson_controller_1.default.applyScormNameSync);
 router.get("/scorm-name-sync/status/:jobId", authorize(["lessons.update"]), lesson_controller_1.default.scormNameSyncStatus);
 router.post("/hocmai-scorm-name-sync/preview", authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.previewHocmaiScormNames);
 router.post("/hocmai-scorm-name-sync/resolve-manual", authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.resolveManualHocmaiScormName);
 router.post("/hocmai-scorm-name-sync/resolve-manual-bulk", authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.resolveManualHocmaiScormNamesBulk);
-router.post("/hocmai-scorm-name-sync/apply", authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.applyHocmaiScormNames);
+router.post("/hocmai-scorm-name-sync/apply", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.applyHocmaiScormNames);
 router.get("/hocmai-scorm-name-sync/status/:jobId", authorize(["lessons.update"]), lesson_controller_1.default.hocmaiScormNameSyncStatus);
 router.post("/scorm-name-sync/course-mappings/preview", authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.previewScormCourseMappings);
-router.post("/scorm-name-sync/course-mappings/apply", authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.applyScormCourseMappings);
+router.post("/scorm-name-sync/course-mappings/apply", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.applyScormCourseMappings);
 router.get("/", authorize(["lessons.view"]), authorizeProgram("lessons.view", (req) => String(req.query.subject_code || req.query.course_code || "")), lesson_controller_1.default.list);
 router.get("/options/subjects", authorize(["lessons.view"]), lesson_controller_1.default.subjects);
 router.get("/options/programs", authorize(["lessons.view"]), lesson_controller_1.default.programs);
-router.post("/options/programs", authorize(["lessons.create"]), authorizeProgram("lessons.create", (req) => String(req.body?.subject_code || "")), authorizeFields("lessons", (req) => curriculumEditableFields(req.body)), lesson_controller_1.default.createProgram);
+router.post("/options/programs", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.create"]), authorizeProgram("lessons.create", (req) => String(req.body?.subject_code || "")), authorizeFields("lessons", (req) => curriculumEditableFields(req.body)), lesson_controller_1.default.createProgram);
 router.get("/course-mappings", authorize(["lessons.view"]), authorizeProgram("lessons.view", (req) => String(req.query.program_code || "")), lesson_controller_1.default.courseMappings);
-router.put("/course-mappings", authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.updateCourseMappings);
-router.patch("/options/programs/:programCode/subject", authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.params.programCode || "")), authorizeFields("lessons", () => ["subject_name"]), lesson_controller_1.default.updateProgramSubject);
-router.patch("/bulk", authorize(["lessons.update"]), authorizePrograms("lessons.update", (req) => lessonCodesByIds(req.body?.ids || [])), authorizeFields("lessons", (req) => curriculumEditableFields(req.body?.data)), lesson_controller_1.default.bulkUpdate);
-router.patch("/reorder", authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.subject_code || "")), authorizeFields("lessons", () => ["learn_number"]), lesson_controller_1.default.reorder);
+router.put("/course-mappings", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.program_code || "")), lesson_controller_1.default.updateCourseMappings);
+router.patch("/options/programs/:programCode/subject", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.params.programCode || "")), authorizeFields("lessons", () => ["subject_name"]), lesson_controller_1.default.updateProgramSubject);
+router.patch("/bulk", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.update"]), authorizePrograms("lessons.update", (req) => lessonCodesByIds(req.body?.ids || [])), authorizeFields("lessons", (req) => curriculumEditableFields(req.body?.data)), lesson_controller_1.default.bulkUpdate);
+router.patch("/reorder", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.update"]), authorizeProgram("lessons.update", (req) => String(req.body?.subject_code || "")), authorizeFields("lessons", () => ["learn_number"]), lesson_controller_1.default.reorder);
 router.get("/export", authorize(["lessons.export"]), authorizePrograms("lessons.export", async (req) => {
     const ids = String(req.query.ids || "")
         .split(",")
@@ -59,9 +60,9 @@ router.get("/export", authorize(["lessons.export"]), authorizePrograms("lessons.
 }), lesson_controller_1.default.exportFile);
 router.get("/template", authorize(["lessons.import"]), authorizeProgram("lessons.import", (req) => String(req.query.program_code || "")), lesson_controller_1.default.template);
 router.get("/program-template", authorize(["lessons.import"]), lesson_controller_1.default.programTemplate);
-router.post("/import", authorize(["lessons.import"]), upload.single("file"), lesson_controller_1.default.importFile);
+router.post("/import", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.import"]), upload.single("file"), lesson_controller_1.default.importFile);
 router.get("/:id", authorize(["lessons.view"]), authorizePrograms("lessons.view", (req) => lessonCodesByIds([req.params.id])), lesson_controller_1.default.detail);
-router.post("/", authorize(["lessons.create"]), authorizeProgram("lessons.create", (req) => String(req.body?.subject_code || "")), authorizeFields("lessons", (req) => curriculumEditableFields(req.body)), lesson_controller_1.default.create);
-router.put("/:id", authorize(["lessons.update"]), authorizePrograms("lessons.update", (req) => lessonCodesByIds([req.params.id])), authorizeFields("lessons", (req) => curriculumEditableFields(req.body)), lesson_controller_1.default.update);
-router.delete("/:id", authorize(["lessons.delete"]), authorizePrograms("lessons.delete", (req) => lessonCodesByIds([req.params.id])), lesson_controller_1.default.remove);
+router.post("/", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.create"]), authorizeProgram("lessons.create", (req) => String(req.body?.subject_code || "")), authorizeFields("lessons", (req) => curriculumEditableFields(req.body)), lesson_controller_1.default.create);
+router.put("/:id", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.update"]), authorizePrograms("lessons.update", (req) => lessonCodesByIds([req.params.id])), authorizeFields("lessons", (req) => curriculumEditableFields(req.body)), lesson_controller_1.default.update);
+router.delete("/:id", (0, calendar_approval_routes_1.requireOfficialOperation)(['update', 'mapping']), authorize(["lessons.delete"]), authorizePrograms("lessons.delete", (req) => lessonCodesByIds([req.params.id])), lesson_controller_1.default.remove);
 exports.default = router;

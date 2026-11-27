@@ -23,13 +23,13 @@ const findUsage = async (username, displayName) => {
     const [teacherRows, possibleAssistantRows] = await Promise.all([
         prisma_1.default.$queryRaw(client_1.Prisma.sql `
       SELECT COUNT(*) AS total
-      FROM calendar
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
       WHERE teacher = ${username}
         ${displayName ? client_1.Prisma.sql `OR teacher = ${displayName}` : client_1.Prisma.empty}
     `),
         prisma_1.default.$queryRaw `
       SELECT assistant_teacher
-      FROM calendar
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
       WHERE assistant_teacher LIKE ${`%${username}%`}
     `,
     ]);
@@ -310,7 +310,7 @@ const importTeacherProfiles = async (rows, mode) => prisma_1.default.$transactio
         });
         const calendarRows = await tx.$queryRaw(client_1.Prisma.sql `
       SELECT teacher, assistant_teacher
-      FROM calendar
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
       WHERE ${client_1.Prisma.join(usageConditions, ' OR ')}
     `);
         const usedUsernames = new Set();

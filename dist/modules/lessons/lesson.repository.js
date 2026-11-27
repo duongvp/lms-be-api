@@ -4,7 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteLessonIfUnscheduled = exports.importNewProgramLessons = exports.importLessons = exports.reorderLessonsInGroup = exports.bulkUpdateLessons = exports.updateLesson = exports.createLesson = exports.findPastScheduledLessonIds = exports.findLessonsByGroup = exports.findNextLearnNumber = exports.findLessonByIdentity = exports.findLessonById = exports.findLessonsForExport = exports.updateLessonCourseMappings = exports.findLessonCourseMappings = exports.findLessonProgramByCode = exports.findLessonProgramOptions = exports.findLessonSubjectOptions = exports.findLessons = exports.updateLessonProgramSubject = exports.syncCalendarsFromLessons = void 0;
-const prisma_1 = __importDefault(require("../../lib/prisma"));
+const calendar_source_1 = require("../livestream/calendar-source");
+const calendar_transaction_1 = __importDefault(require("../../lib/calendar-transaction"));
 // Các trường tài liệu/nội dung buổi học vẫn được giữ ở DB để không mất dữ liệu
 // cũ, nhưng không còn là dữ liệu của đề cương và không được trả về từ module này.
 const LESSON_COLUMNS = 'id, grade, system_type, subject_code, subject_name, learn_number, lesson_name, status, created_at, updated_at';
@@ -30,13 +31,13 @@ const syncCalendarsFromLessons = async (tx, lessonIds) => {
          END,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
-     WHERE lesson.status <> 0`, ...lessonIds);
+     WHERE calendar_row.deleted_at IS NULL AND lesson.status <> 0`, ...lessonIds);
 };
 exports.syncCalendarsFromLessons = syncCalendarsFromLessons;
 const calendarSubjectName = (subjectName, systemType, grade) => (systemType === 'topclass' && Number.isInteger(Number(grade)) && Number(grade) >= 1 && Number(grade) <= 12
     ? `${subjectName} ${Number(grade)}`
     : subjectName);
-const updateLessonProgramSubject = async (input) => prisma_1.default.$transaction(async (tx) => {
+const updateLessonProgramSubject = async (input) => calendar_transaction_1.default.$transaction(async (tx) => {
     const programs = await tx.$queryRawUnsafe(`SELECT system_type, grade, subject_name FROM lessons
      WHERE subject_code = ? AND status <> 0 FOR UPDATE`, input.programCode);
     if (!programs.length)
@@ -50,11 +51,31 @@ const updateLessonProgramSubject = async (input) => prisma_1.default.$transactio
     const grade = programs[0].grade;
     const subjectName = input.subjectName.trim();
     const calendarSubject = calendarSubjectName(subjectName, systemType, grade);
-    const [calendarRows] = await tx.$queryRawUnsafe('SELECT COUNT(*) AS count FROM calendar WHERE code = ?', input.programCode);
-    await tx.$executeRawUnsafe('UPDATE lessons SET subject_name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE subject_code = ?', subjectName, input.programCode);
-    await tx.$executeRawUnsafe('UPDATE calendar SET subject = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE code = ?', calendarSubject, input.programCode);
-    return { program_code: input.programCode, subject_name: subjectName, calendar_subject: calendarSubject,
-        system_type: systemType, grade, lessons_updated: programs.length, calendars_updated: Number(calendarRows?.count || 0) };
+    const calendarRows = await tx.$queryRawUnsafe('SELECT id FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE code = ? FOR UPDATE', input.programCode);
+    const programCode = input.newProgramCode ?? input.programCode;
+    if (programCode !== input.programCode && calendarRows.length) {
+        throw new Error('Chỉ được đổi mã chương trình khi chưa có lịch học nào được tạo');
+    }
+    if (programCode !== input.programCode) {
+        const duplicates = await tx.$queryRawUnsafe(`SELECT subject_code AS code FROM lessons WHERE subject_code = ?
+       UNION ALL SELECT code FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE code = ?
+       UNION ALL SELECT scopeKey AS code FROM scope_resources WHERE scopeType = 'PROGRAM' AND scopeKey = ?`, programCode, programCode, programCode);
+        if (duplicates.length)
+            throw new Error(`Mã chương trình ${programCode} đã tồn tại`);
+    }
+    await tx.$executeRawUnsafe('UPDATE lessons SET subject_code = ?, subject_name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE subject_code = ?', programCode, subjectName, input.programCode);
+    if (programCode === input.programCode) {
+        await tx.$executeRawUnsafe('UPDATE calendar SET subject = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE deleted_at IS NULL AND code = ?', calendarSubject, input.programCode);
+    }
+    if (programCode !== input.programCode) {
+        // Giữ cấu hình và quyền truy cập gắn với chương trình sau khi đổi mã.
+        await tx.$executeRawUnsafe('UPDATE role_program_scopes SET subjectCode = ? WHERE subjectCode = ?', programCode, input.programCode);
+        await tx.$executeRawUnsafe('UPDATE room_config SET code = ? WHERE code = ?', programCode, input.programCode);
+        await tx.$executeRawUnsafe('UPDATE program_teacher_banners SET program_code = ? WHERE program_code = ?', programCode, input.programCode);
+    }
+    await tx.$executeRawUnsafe("UPDATE scope_resources SET scopeKey = ?, displayName = ?, updatedAt = CURRENT_TIMESTAMP(3) WHERE scopeType = 'PROGRAM' AND scopeKey = ?", programCode, `${programCode} — ${subjectName}`, input.programCode);
+    return { program_code: programCode, subject_name: subjectName, calendar_subject: calendarSubject,
+        system_type: systemType, grade, lessons_updated: programs.length, calendars_updated: calendarRows.length };
 });
 exports.updateLessonProgramSubject = updateLessonProgramSubject;
 /**
@@ -81,10 +102,19 @@ const syncCalendarSlotsAfterLessonReorder = async (tx, _grade, subjectCode, less
          END,
          calendar_row.lesson_name = lesson.lesson_name,
          calendar_row.updated_at = CURRENT_TIMESTAMP
-     WHERE calendar_row.code = ?
+     WHERE calendar_row.deleted_at IS NULL AND calendar_row.code = ?
        AND calendar_row.learn_number IN (${learnNumberPlaceholders})`, subjectCode, ...lessonIds, subjectCode, ...learnNumbers);
 };
 const syncCalendarFromLesson = async (tx, lessonId) => (0, exports.syncCalendarsFromLessons)(tx, [lessonId]);
+const pastLessonCalendarWhere = (query) => {
+    const source = query.calendar_source === undefined ? undefined : (0, calendar_source_1.resolveCalendarSource)(query.calendar_source);
+    const sourceClause = source === undefined ? '' : source === 'feed'
+        ? " AND calendar.code LIKE 'feed-%'"
+        : " AND calendar.code NOT LIKE 'feed-%'";
+    return `(calendar.session_id = lessons.id
+    OR (calendar.code = lessons.subject_code AND calendar.learn_number = lessons.learn_number))
+    AND calendar.start_time <= NOW()${sourceClause}`;
+};
 const buildWhere = (query) => {
     const clauses = ['status = ?'];
     const values = [query.status ?? 1];
@@ -112,6 +142,10 @@ const buildWhere = (query) => {
         clauses.push('learn_number <= ?');
         values.push(query.to_learn_number);
     }
+    if (query.taught_status) {
+        const exists = query.taught_status === 'taught' ? 'EXISTS' : 'NOT EXISTS';
+        clauses.push(`${exists} (SELECT 1 FROM calendar WHERE ${pastLessonCalendarWhere(query)})`);
+    }
     if (query.keyword) {
         clauses.push('lesson_name LIKE ?');
         values.push(`%${query.keyword}%`);
@@ -129,25 +163,24 @@ const findLessons = async (query) => {
     const sortBy = query.sort_by ?? 'updated_at';
     const sortOrder = query.sort_order ?? 'desc';
     const programCode = query.subject_code || query.course_code;
+    const source = query.calendar_source === undefined ? undefined : (0, calendar_source_1.resolveCalendarSource)(query.calendar_source);
+    const sourceClause = source === undefined ? '' : source === 'feed' ? " AND calendar.code LIKE 'feed-%'" : " AND calendar.code NOT LIKE 'feed-%'";
     const selectSql = programCode
         ? `lessons.${LESSON_COLUMNS}, (
         SELECT COUNT(*)
-        FROM calendar
-        WHERE calendar.session_id = lessons.id
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
+        WHERE (calendar.session_id = lessons.id
            OR (calendar.code = lessons.subject_code
-             AND calendar.learn_number = lessons.learn_number)
+             AND calendar.learn_number = lessons.learn_number))${sourceClause}
       ) AS scheduled_count, (
         SELECT COUNT(*)
         FROM calendar
-        WHERE (calendar.session_id = lessons.id
-          OR (calendar.code = lessons.subject_code
-            AND calendar.learn_number = lessons.learn_number))
-          AND calendar.start_time <= NOW()
+        WHERE ${pastLessonCalendarWhere(query)}
       ) AS past_scheduled_count`
         : `lessons.${LESSON_COLUMNS}`;
     const selectValues = values;
-    const countRows = await prisma_1.default.$queryRawUnsafe(`SELECT COUNT(*) AS total FROM lessons ${whereSql}`, ...values);
-    const data = await prisma_1.default.$queryRawUnsafe(`SELECT ${selectSql} FROM lessons ${whereSql} ORDER BY ${sortBy} ${sortOrder.toUpperCase()} LIMIT ? OFFSET ?`, ...selectValues, limit, skip);
+    const countRows = await calendar_transaction_1.default.$queryRawUnsafe(`SELECT COUNT(*) AS total FROM lessons ${whereSql}`, ...values);
+    const data = await calendar_transaction_1.default.$queryRawUnsafe(`SELECT ${selectSql} FROM lessons ${whereSql} ORDER BY ${sortBy} ${sortOrder.toUpperCase()} LIMIT ? OFFSET ?`, ...selectValues, limit, skip);
     return {
         total: Number(countRows[0]?.total ?? 0),
         page,
@@ -157,7 +190,7 @@ const findLessons = async (query) => {
 };
 exports.findLessons = findLessons;
 const findLessonSubjectOptions = async () => {
-    return prisma_1.default.$queryRawUnsafe(`SELECT subject_name, MIN(subject_code) AS subject_code
+    return calendar_transaction_1.default.$queryRawUnsafe(`SELECT subject_name, MIN(subject_code) AS subject_code
      FROM lessons
      WHERE status <> 0
        AND subject_name IS NOT NULL
@@ -167,7 +200,8 @@ const findLessonSubjectOptions = async () => {
 };
 exports.findLessonSubjectOptions = findLessonSubjectOptions;
 const findLessonProgramOptions = async (allowedPrograms = null) => {
-    const rows = await prisma_1.default.$queryRawUnsafe(`SELECT program.subject_code,
+    const rows = await calendar_transaction_1.default.$queryRawUnsafe(`SELECT program.subject_code,
+            (SELECT COUNT(*) FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE calendar.code = program.subject_code) AS calendar_count,
             COALESCE(
              MAX(CASE
                 WHEN program.source_priority = 1
@@ -192,7 +226,7 @@ const findLessonProgramOptions = async (allowedPrograms = null) => {
        WHERE subject_code IS NOT NULL AND TRIM(subject_code) <> ''
        UNION ALL
        SELECT code AS subject_code, subject AS subject_name, NULL AS grade, NULL AS system_type, 0 AS source_priority
-       FROM calendar
+       FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
        WHERE code IS NOT NULL AND TRIM(code) <> ''
      ) AS program
      GROUP BY program.subject_code
@@ -203,7 +237,7 @@ const findLessonProgramOptions = async (allowedPrograms = null) => {
 };
 exports.findLessonProgramOptions = findLessonProgramOptions;
 const findLessonProgramByCode = async (programCode) => {
-    const rows = await prisma_1.default.$queryRawUnsafe(`SELECT grade, system_type, subject_name, subject_code
+    const rows = await calendar_transaction_1.default.$queryRawUnsafe(`SELECT grade, system_type, subject_name, subject_code
      FROM lessons
      WHERE status <> 0 AND subject_code = ?
      ORDER BY id ASC
@@ -211,14 +245,14 @@ const findLessonProgramByCode = async (programCode) => {
     return rows[0] ?? null;
 };
 exports.findLessonProgramByCode = findLessonProgramByCode;
-const findLessonCourseMappings = async (programCode) => prisma_1.default.$queryRawUnsafe(`SELECT mapping.id, mapping.lesson_id, mapping.package_id, mapping.course_id,
+const findLessonCourseMappings = async (programCode) => calendar_transaction_1.default.$queryRawUnsafe(`SELECT mapping.id, lesson.id AS lesson_id, mapping.package_id, mapping.course_id,
             lesson.learn_number, lesson.lesson_name
-     FROM lesson_course_mapping AS mapping
-     INNER JOIN lessons AS lesson ON lesson.id = mapping.lesson_id
+     FROM lessons AS lesson
+     LEFT JOIN lesson_course_mapping AS mapping ON lesson.id = mapping.lesson_id
      WHERE lesson.subject_code = ? AND lesson.status <> 0
      ORDER BY lesson.learn_number ASC, mapping.package_id ASC, mapping.course_id ASC`, programCode);
 exports.findLessonCourseMappings = findLessonCourseMappings;
-const updateLessonCourseMappings = async (input) => prisma_1.default.$transaction(async (tx) => {
+const updateLessonCourseMappings = async (input) => calendar_transaction_1.default.$transaction(async (tx) => {
     const params = [input.programCode];
     const lessonFilter = input.lessonIds?.length
         ? ` AND lesson.id IN (${input.lessonIds.map(() => '?').join(', ')})`
@@ -231,23 +265,9 @@ const updateLessonCourseMappings = async (input) => prisma_1.default.$transactio
      FOR UPDATE`, ...params);
     if (!lessons.length)
         throw new Error('Chương trình không có bài học phù hợp');
-    // Khi thao tác toàn bộ Chương trình, mapping phải được áp dụng cả cho bài
-    // đã từng diễn ra vì bài đó có thể được xếp lịch và giảng dạy lại sau này.
-    // Chỉ giữ cơ chế bảo vệ bài quá khứ với thao tác trên danh sách chọn cụ thể.
-    const locked = new Set();
-    if (input.lessonIds?.length) {
-        const lockedIds = await tx.$queryRawUnsafe(`SELECT DISTINCT lesson.id
-       FROM lessons AS lesson
-       INNER JOIN calendar AS calendar_row
-         ON calendar_row.session_id = lesson.id
-         OR (calendar_row.code = lesson.subject_code AND calendar_row.learn_number = lesson.learn_number)
-       WHERE lesson.subject_code = ?
-         AND calendar_row.start_time <= NOW()
-         AND lesson.id IN (${lessons.map(() => '?').join(', ')})`, input.programCode, ...lessons.map((lesson) => lesson.id));
-        lockedIds.forEach((row) => locked.add(String(row.id)));
-    }
-    const eligible = lessons.filter((lesson) => !locked.has(String(lesson.id)));
-    for (const lesson of eligible) {
+    // Mapping có thể cần được khôi phục cho bài đã diễn ra hoặc được dạy lại,
+    // kể cả khi chỉ thao tác trên các bài được chọn.
+    for (const lesson of lessons) {
         if (input.action === 'add') {
             await tx.$executeRawUnsafe(`INSERT INTO lesson_course_mapping (lesson_id, package_id, course_id)
          VALUES (?, ?, ?)
@@ -258,47 +278,46 @@ const updateLessonCourseMappings = async (input) => prisma_1.default.$transactio
          WHERE lesson_id = ? AND package_id = ? AND course_id = ?`, lesson.id, input.packageId, input.courseId);
         }
     }
-    return { affected: eligible.length, skipped_past: locked.size, total: lessons.length };
+    return { affected: lessons.length, skipped_past: 0, total: lessons.length };
 });
 exports.updateLessonCourseMappings = updateLessonCourseMappings;
 const findLessonsForExport = async (query) => {
     if (query.ids?.length) {
         const placeholders = query.ids.map(() => '?').join(', ');
-        return prisma_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE id IN (${placeholders}) ORDER BY grade ASC, subject_code ASC, learn_number ASC`, ...query.ids);
+        return calendar_transaction_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE id IN (${placeholders}) ORDER BY grade ASC, subject_code ASC, learn_number ASC`, ...query.ids);
     }
     const { whereSql, values } = buildWhere({ ...query, page: undefined, limit: undefined });
     const sortBy = query.sort_by ?? 'grade';
     const sortOrder = query.sort_order ?? 'asc';
-    return prisma_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons ${whereSql} ORDER BY ${sortBy} ${sortOrder.toUpperCase()}, subject_code ASC, learn_number ASC`, ...values);
+    return calendar_transaction_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons ${whereSql} ORDER BY ${sortBy} ${sortOrder.toUpperCase()}, subject_code ASC, learn_number ASC`, ...values);
 };
 exports.findLessonsForExport = findLessonsForExport;
 const findLessonById = async (id) => {
-    const rows = await prisma_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = ? AND status <> 0 LIMIT 1`, id);
+    const rows = await calendar_transaction_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = ? AND status <> 0 LIMIT 1`, id);
     return rows[0] ?? null;
 };
 exports.findLessonById = findLessonById;
 const findLessonByIdentity = async (_grade, subjectCode, learnNumber, excludeId) => {
-    const rows = await prisma_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE subject_code = ? AND learn_number = ? AND status <> 0${excludeId ? ' AND id <> ?' : ''} LIMIT 1`, ...(excludeId ? [subjectCode, learnNumber, excludeId] : [subjectCode, learnNumber]));
+    const rows = await calendar_transaction_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE subject_code = ? AND learn_number = ? AND status <> 0${excludeId ? ' AND id <> ?' : ''} LIMIT 1`, ...(excludeId ? [subjectCode, learnNumber, excludeId] : [subjectCode, learnNumber]));
     return rows[0] ?? null;
 };
 exports.findLessonByIdentity = findLessonByIdentity;
 const findNextLearnNumber = async (grade, subjectCode) => {
-    const rows = await prisma_1.default.$queryRawUnsafe('SELECT COALESCE(MAX(learn_number), 0) + 1 AS next_learn_number FROM lessons WHERE grade = ? AND subject_code = ? AND status <> 0', grade, subjectCode);
+    const rows = await calendar_transaction_1.default.$queryRawUnsafe('SELECT COALESCE(MAX(learn_number), 0) + 1 AS next_learn_number FROM lessons WHERE grade = ? AND subject_code = ? AND status <> 0', grade, subjectCode);
     return Number(rows[0]?.next_learn_number ?? 1);
 };
 exports.findNextLearnNumber = findNextLearnNumber;
 const findLessonsByGroup = async (_grade, subjectCode) => {
-    return prisma_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE subject_code = ? AND status <> 0 ORDER BY learn_number ASC, id ASC`, subjectCode);
+    return calendar_transaction_1.default.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE subject_code = ? AND status <> 0 ORDER BY learn_number ASC, id ASC`, subjectCode);
 };
 exports.findLessonsByGroup = findLessonsByGroup;
 const findPastScheduledLessonIds = async (ids) => {
     if (!ids.length)
         return new Set();
     const placeholders = ids.map(() => '?').join(', ');
-    const rows = await prisma_1.default.$queryRawUnsafe(`SELECT DISTINCT lesson.id
+    const rows = await calendar_transaction_1.default.$queryRawUnsafe(`SELECT DISTINCT lesson.id
      FROM lessons AS lesson
-     INNER JOIN calendar AS calendar_row
-       ON (calendar_row.session_id = lesson.id
+     INNER JOIN calendar calendar_row ON calendar_row.deleted_at IS NULL AND (calendar_row.session_id = lesson.id
          OR (calendar_row.code = lesson.subject_code
            AND calendar_row.learn_number = lesson.learn_number))
      WHERE lesson.id IN (${placeholders})
@@ -307,7 +326,7 @@ const findPastScheduledLessonIds = async (ids) => {
 };
 exports.findPastScheduledLessonIds = findPastScheduledLessonIds;
 const createLesson = async (payload) => {
-    return prisma_1.default.$transaction(async (tx) => {
+    return calendar_transaction_1.default.$transaction(async (tx) => {
         let learnNumber = payload.learn_number;
         if (learnNumber === undefined) {
             const nextRows = await tx.$queryRawUnsafe('SELECT COALESCE(MAX(learn_number), 0) + 1 AS next_learn_number FROM lessons WHERE subject_code = ? AND status <> 0', payload.subject_code);
@@ -326,7 +345,7 @@ const updateLesson = async (id, payload) => {
     const entries = Object.entries(payload);
     const setSql = entries.map(([key]) => `${key} = ?`).join(', ');
     const values = entries.map(([, value]) => value ?? null);
-    return prisma_1.default.$transaction(async (tx) => {
+    return calendar_transaction_1.default.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(`UPDATE lessons SET ${setSql}, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?`, ...values, id);
         await syncCalendarFromLesson(tx, id);
         const rows = await tx.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = ? AND status <> 0 LIMIT 1`, id);
@@ -339,7 +358,7 @@ const bulkUpdateLessons = async (ids, payload) => {
     const setSql = entries.map(([key]) => `${key} = ?`).join(', ');
     const values = entries.map(([, value]) => value ?? null);
     const placeholders = ids.map(() => '?').join(', ');
-    return prisma_1.default.$transaction(async (tx) => {
+    return calendar_transaction_1.default.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(`UPDATE lessons SET ${setSql}, updated_at = CURRENT_TIMESTAMP(3) WHERE id IN (${placeholders}) AND status <> 0`, ...values, ...ids);
         for (const id of ids)
             await syncCalendarFromLesson(tx, id);
@@ -351,7 +370,7 @@ const reorderLessonsInGroup = async (grade, subjectCode, orderedIds, learnNumber
     if (orderedIds.length !== learnNumbers.length) {
         throw new Error('Số lượng bài học và số thứ tự không khớp');
     }
-    await prisma_1.default.$transaction(async (tx) => {
+    await calendar_transaction_1.default.$transaction(async (tx) => {
         const idPlaceholders = orderedIds.map(() => '?').join(', ');
         // Tạm chuyển toàn bộ số hiện tại sang âm trong một câu lệnh để tránh
         // vi phạm unique (grade, subject_code, learn_number) khi hoán đổi.
@@ -387,7 +406,7 @@ const importLessons = async (rows, mode) => {
     let updated = 0;
     let skipped = 0;
     const nextLearnNumberByGroup = new Map();
-    await prisma_1.default.$transaction(async (tx) => {
+    await calendar_transaction_1.default.$transaction(async (tx) => {
         for (const row of rows) {
             let learnNumber = row.learn_number;
             const groupKey = `${row.grade}|${row.subject_code}`;
@@ -407,7 +426,7 @@ const importLessons = async (rows, mode) => {
                     continue;
                 }
                 const taughtRows = await tx.$queryRawUnsafe(`SELECT calendar_row.id
-           FROM calendar AS calendar_row
+           FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
            WHERE (calendar_row.session_id = ?
              OR (calendar_row.code = ? AND calendar_row.learn_number = ?))
              AND calendar_row.start_time <= NOW()
@@ -481,7 +500,7 @@ const importNewProgramLessons = async (rows) => {
         row.status ?? 1,
     ]);
     const programCodes = Array.from(new Set(normalizedRows.map((row) => row.subject_code)));
-    await prisma_1.default.$transaction(async (tx) => {
+    await calendar_transaction_1.default.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(`INSERT INTO lessons (
         grade, system_type, subject_code, subject_name, learn_number,
         lesson_name, status, updated_at
@@ -496,12 +515,12 @@ const importNewProgramLessons = async (rows) => {
 };
 exports.importNewProgramLessons = importNewProgramLessons;
 const deleteLessonIfUnscheduled = async (id) => {
-    return prisma_1.default.$transaction(async (tx) => {
+    return calendar_transaction_1.default.$transaction(async (tx) => {
         const lessons = await tx.$queryRawUnsafe(`SELECT ${LESSON_COLUMNS} FROM lessons WHERE id = ? AND status <> 0 LIMIT 1 FOR UPDATE`, id);
         const lesson = lessons[0] ?? null;
         if (!lesson)
             return { lesson: null, scheduledCount: 0 };
-        const counts = await tx.$queryRawUnsafe('SELECT COUNT(*) AS total FROM calendar WHERE session_id = ?', id);
+        const counts = await tx.$queryRawUnsafe('SELECT COUNT(*) AS total FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar WHERE session_id = ?', id);
         const scheduledCount = Number(counts[0]?.total ?? 0);
         if (scheduledCount > 0)
             return { lesson, scheduledCount };

@@ -3,17 +3,24 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.enqueueRescheduleSync = exports.withManualHocmaiQueue = exports.enqueueCalendarsSyncBulk = exports.reconcileCalendarMappingsAndEnqueue = exports.enqueueCalendarSync = void 0;
+exports.enqueueRescheduleSync = exports.withManualHocmaiQueue = exports.enqueueCalendarsSyncBulk = exports.reconcileCalendarMappingsAndEnqueue = exports.enqueueCalendarSync = exports.hasValidHocmaiLessonMapping = void 0;
+const calendar_lifecycle_1 = require("./calendar-lifecycle");
+const calendar_source_1 = require("./calendar-source");
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
 const MANUAL_QUEUE_SESSION_VARIABLE = '@lms_manual_hocmai_queue';
+const hasValidHocmaiLessonMapping = (mapping) => (String(mapping.lesson_id ?? '').trim() !== '');
+exports.hasValidHocmaiLessonMapping = hasValidHocmaiLessonMapping;
 const parseDocuments = (value) => {
     if (!value)
         return [];
     if (Array.isArray(value))
         return value;
+    let clean = String(value).trim() || '[]';
+    if (clean !== '[]' && !clean.endsWith(']'))
+        clean += ']';
     try {
-        const parsed = JSON.parse(String(value));
+        const parsed = JSON.parse(clean);
         return Array.isArray(parsed) ? parsed : [];
     }
     catch {
@@ -35,7 +42,7 @@ const loadCalendarForSync = async (tx, calendarId) => {
       lesson_status,
       lesson_document,
       lesson_noti
-    FROM calendar
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
     WHERE id = ${calendarId}
     LIMIT 1
   `;
@@ -48,9 +55,23 @@ const loadPackagesForKey = async (tx, key) => tx.$queryRaw `
   SELECT package_id, lesson_id
   FROM package_lesson_mapping
   WHERE \`key\` = ${key}
+    AND lesson_id IS NOT NULL AND TRIM(lesson_id) != ''
   ORDER BY id ASC
-`;
+`.then(mappings => mappings.filter(exports.hasValidHocmaiLessonMapping));
 const insertQueue = async (tx, input) => {
+    if (input.waitForCreate) {
+        // The external worker only consumes status=0. LMS releases status=4
+        // after the create job for this canceled key has actually succeeded.
+        await tx.$executeRaw `
+      INSERT INTO hocmai_sync_queue (
+        c_key, action, payload, status, operation_id, sequence_no
+      ) VALUES (
+        ${input.key}, ${input.action}, ${JSON.stringify(input.payload)},
+        4, ${input.operationId}, ${input.sequenceNo}
+      )
+    `;
+        return;
+    }
     await tx.$executeRaw `
     INSERT INTO hocmai_sync_queue (
       c_key,
@@ -87,8 +108,10 @@ const buildCalendarPayload = (calendar, mappings, action) => ({
         lesson_id: String(mapping.lesson_id),
     })),
 });
-const enqueueStatus = async (tx, operationId, sequenceNo, session) => {
+const enqueueStatus = async (tx, operationId, sequenceNo, session, waitForCreate = false) => {
     const calendar = await loadCalendarForSync(tx, Number(session.id));
+    if ((0, calendar_source_1.calendarSourceFromCode)(calendar.code) === 'feed')
+        return false;
     const key = String(calendar.key || '');
     if (!key)
         throw new Error('Lịch học không có key để tạo queue HMO');
@@ -100,6 +123,7 @@ const enqueueStatus = async (tx, operationId, sequenceNo, session) => {
         sequenceNo,
         key,
         action: 'update-status-lesson',
+        waitForCreate,
         payload: {
             c_key: key,
             status: String(calendar.lesson_status ?? 0),
@@ -111,6 +135,8 @@ const enqueueStatus = async (tx, operationId, sequenceNo, session) => {
 };
 const enqueueCalendar = async (tx, operationId, sequenceNo, action, session, payloadOverrides = {}) => {
     const calendar = await loadCalendarForSync(tx, Number(session.id));
+    if ((0, calendar_source_1.calendarSourceFromCode)(calendar.code) === 'feed')
+        return false;
     const key = String(calendar.key || '');
     if (!key)
         throw new Error('Lịch học không có key để tạo queue HMO');
@@ -119,12 +145,14 @@ const enqueueCalendar = async (tx, operationId, sequenceNo, action, session, pay
     // Không tạo một job chắc chắn lỗi/đẩy packages rỗng trong trạng thái này.
     if (!mappings.length)
         return false;
+    const reuse = session[calendar_lifecycle_1.CALENDAR_KEY_REUSE];
+    const storeAction = await (0, calendar_lifecycle_1.calendarStoreAction)(tx, key, reuse ? 'restore' : action);
     await insertQueue(tx, {
         operationId,
         sequenceNo,
         key,
-        action,
-        payload: buildCalendarPayload({ ...calendar, ...payloadOverrides }, mappings, action),
+        action: storeAction,
+        payload: buildCalendarPayload({ ...calendar, ...payloadOverrides }, mappings, storeAction),
     });
     return true;
 };
@@ -233,7 +261,6 @@ const reconcileCalendarMappingsAndEnqueue = async (tx, calendar, desiredMappings
 };
 exports.reconcileCalendarMappingsAndEnqueue = reconcileCalendarMappingsAndEnqueue;
 /**
- * Tạo lại queue từ ảnh chụp dữ liệu calendar hiện tại. Hàm chỉ đọc calendar /
  * mapping và INSERT hocmai_sync_queue, không ghi hay chạm updated_at calendar.
  */
 const enqueueCalendarsSyncBulk = async (tx, calendarIds, operationId = crypto_1.default.randomUUID()) => {
@@ -254,7 +281,7 @@ const enqueueCalendarsSyncBulk = async (tx, calendarIds, operationId = crypto_1.
       lesson_status,
       lesson_document,
       lesson_noti
-    FROM calendar
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
     WHERE id IN (${client_1.Prisma.join(ids)})
   `);
     const keys = calendars.map((calendar) => String(calendar.key || '')).filter(Boolean);
@@ -267,6 +294,8 @@ const enqueueCalendarsSyncBulk = async (tx, calendarIds, operationId = crypto_1.
         : [];
     const mappingsByKey = new Map();
     mappings.forEach((mapping) => {
+        if (!(0, exports.hasValidHocmaiLessonMapping)(mapping))
+            return;
         const key = String(mapping.key || '');
         const current = mappingsByKey.get(key) || [];
         current.push({ package_id: mapping.package_id, lesson_id: mapping.lesson_id });
@@ -275,24 +304,25 @@ const enqueueCalendarsSyncBulk = async (tx, calendarIds, operationId = crypto_1.
     const queuedIds = [];
     const skippedIds = [];
     const rows = [];
-    calendars.forEach((calendar) => {
+    for (const calendar of calendars) {
         const id = Number(calendar.id);
         const key = String(calendar.key || '');
         const calendarMappings = mappingsByKey.get(key) || [];
-        if (!key || !calendarMappings.length) {
+        if ((0, calendar_source_1.calendarSourceFromCode)(calendar.code) === 'feed' || !key || !calendarMappings.length) {
             skippedIds.push(id);
-            return;
+            continue;
         }
         queuedIds.push(id);
+        const action = await (0, calendar_lifecycle_1.calendarStoreAction)(tx, key, 'update');
         rows.push({
             c_key: key,
-            action: 'update',
-            payload: JSON.stringify(buildCalendarPayload(calendar, calendarMappings, 'update')),
+            action,
+            payload: JSON.stringify(buildCalendarPayload(calendar, calendarMappings, action)),
             status: 0,
             operation_id: operationId,
             sequence_no: rows.length + 1,
         });
-    });
+    }
     if (rows.length)
         await tx.hocmai_sync_queue.createMany({ data: rows });
     const foundIds = new Set(calendars.map((calendar) => Number(calendar.id)));
@@ -339,7 +369,7 @@ const enqueueRescheduleSync = async (tx, action, result, operationId = crypto_1.
         // Key _huy chưa tồn tại ở HMO: tạo trước ở trạng thái học, sau đó mới
         // chuyển nghỉ để API change-status có bản ghi đích hợp lệ.
         await enqueueCalendar(tx, operationId, sequenceNo++, 'create', canceledSession, { lesson_status: 0, lesson_noti: '' });
-        await enqueueStatus(tx, operationId, sequenceNo++, canceledSession);
+        await enqueueStatus(tx, operationId, sequenceNo++, canceledSession, true);
         if (!result.created_session) {
             throw new Error('Thiếu lịch mới để tạo queue dời lịch HMO');
         }
@@ -348,7 +378,7 @@ const enqueueRescheduleSync = async (tx, action, result, operationId = crypto_1.
     }
     if (action === 'following') {
         await enqueueCalendar(tx, operationId, sequenceNo++, 'create', canceledSession, { lesson_status: 0, lesson_noti: '' });
-        await enqueueStatus(tx, operationId, sequenceNo++, canceledSession);
+        await enqueueStatus(tx, operationId, sequenceNo++, canceledSession, true);
         for (const shiftedSession of result.shifted_sessions || []) {
             await enqueueCalendar(tx, operationId, sequenceNo++, 'update', shiftedSession);
         }

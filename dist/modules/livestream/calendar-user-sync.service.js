@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.syncCalendarTeachingUsers = exports.ensureCalendarScanTeachingUsers = exports.normalizeScanTeachingUsers = exports.ensureCalendarTeachingUsers = exports.resolveCalendarTeacherProfile = exports.buildCalendarRoomClassId = exports.buildCalendarClassId = exports.calendarDateAtMidnight = exports.excelDateSerialFromCalendarDate = exports.buildTeachingUserName = void 0;
 const client_1 = require("@prisma/client");
 const dateTime_1 = require("../../utils/dateTime");
+const calendar_source_1 = require("./calendar-source");
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const normalizeText = (value) => String(value ?? '').trim();
@@ -125,6 +126,7 @@ const resolveTeachingProfiles = async (client, calendar) => {
             where: {
                 username: { in: assistantUsernames },
                 can_view_stream_key: 0,
+                status: 1,
             },
             select: { username: true, display_name: true, student_hmid: true },
         })
@@ -143,23 +145,17 @@ const resolveTeachingProfiles = async (client, calendar) => {
     ];
 };
 const resolvePreviousTeachingProfiles = async (client, calendar) => {
+    // Thu hồi trợ giảng theo username đã lưu, kể cả profile đã bị vô hiệu hóa/xóa.
+    const assistants = parseAssistantTeachers(calendar.assistant_teacher)
+        .map((username) => ({ username, display_name: null }));
     try {
-        return {
-            profiles: await resolveTeachingProfiles(client, calendar),
-            hasLegacyIdentityIssue: false,
-        };
+        const teacher = await (0, exports.resolveCalendarTeacherProfile)(client, calendar.teacher);
+        return { profiles: [...(teacher ? [teacher] : []), ...assistants] };
     }
     catch (error) {
-        // Lịch cũ từng lưu display_name thay vì username. Nếu tên hiện trùng,
-        // không được chặn thao tác cập nhật lịch; user legacy sẽ không bị xóa
-        // cho đến khi người dùng chọn lại nhân sự bằng username.
-        if (error instanceof Error
-            && (error.message.includes('trùng nhiều tài khoản')
-                || error.message.includes('Không xác định được tài khoản giáo viên'))) {
-            return {
-                profiles: [],
-                hasLegacyIdentityIssue: true,
-            };
+        if (error instanceof Error && (error.message.includes('trùng nhiều tài khoản')
+            || error.message.includes('Không xác định được tài khoản giáo viên'))) {
+            return { profiles: assistants };
         }
         throw error;
     }
@@ -234,14 +230,18 @@ const upsertTeachingUser = async (client, calendar, profile, classId) => {
     }
 };
 /**
- * Bổ sung enrollment cho nhân sự đã gán trên calendar nhưng chưa có trong
- * users. Dùng ở cập nhật hàng loạt để khôi phục các lịch legacy đã tồn tại
- * trước khi cơ chế tự đồng bộ được bật. Với enrollment đã có, hàm chỉ vá
- * student_hmid còn thiếu và chuẩn hóa tên nhân sự; không xóa user.
+ * Đối soát enrollment theo phân công hiện tại, bao gồm thu hồi class_id thừa.
+ * Không xóa user hoặc thay đổi các quan hệ phân quyền của tài khoản.
  */
 const ensureCalendarTeachingUsers = async (client, calendar, profileCache, additionalProfiles = []) => {
-    if (!isActiveSchedule(calendar))
+    // Feed chỉ lưu lịch và phân công, không tự cấp enrollment trong users.
+    if ((0, calendar_source_1.calendarSourceFromCode)(calendar.code) === 'feed') {
+        return { created: 0, updated: 0, skipped: 1 };
+    }
+    if (!isActiveSchedule(calendar)) {
+        await removeLegacyTeachingUsersNotInNext(client, calendar, new Set());
         return { created: 0, updated: 0, skipped: 0 };
+    }
     const profileCacheKey = [
         normalizeText(calendar.teacher),
         parseAssistantTeachers(calendar.assistant_teacher).sort().join(','),
@@ -251,6 +251,9 @@ const ensureCalendarTeachingUsers = async (client, calendar, profileCache, addit
         profiles = await resolveTeachingProfiles(client, calendar);
         profileCache?.set(profileCacheKey, profiles);
     }
+    // Tài khoản bổ sung là ngoại lệ được cấp quyền ngoài phân công. Không
+    // dọn các user ngoài lịch tại đây vì không có metadata phân biệt chúng
+    // với tài khoản bổ sung đã được quét trước đó.
     profiles = Array.from(new Map([...profiles, ...additionalProfiles].map((profile) => [normalizeText(profile.username), profile])).values());
     if (!profiles.length)
         return { created: 0, updated: 0, skipped: 0 };
@@ -339,8 +342,11 @@ const normalizeScanTeachingUsers = (value) => {
 exports.normalizeScanTeachingUsers = normalizeScanTeachingUsers;
 /** Bổ sung các tài khoản được chọn riêng khi chạy Quét user nhân sự. */
 const ensureCalendarScanTeachingUsers = async (client, calendar, additionalUsers = (0, exports.normalizeScanTeachingUsers)(undefined)) => {
+    if ((0, calendar_source_1.calendarSourceFromCode)(calendar.code) === 'feed') {
+        return { created: 0, updated: 0, skipped: 1 };
+    }
     if (!isActiveSchedule(calendar))
-        return { created: 0, updated: 0, skipped: 0 };
+        return (0, exports.ensureCalendarTeachingUsers)(client, calendar);
     const profiles = additionalUsers.length
         ? await client.teacher_profiles.findMany({
             where: { username: { in: additionalUsers.map((user) => user.username) } },
@@ -358,8 +364,8 @@ const ensureCalendarScanTeachingUsers = async (client, calendar, additionalUsers
 exports.ensureCalendarScanTeachingUsers = ensureCalendarScanTeachingUsers;
 const isStillAssigned = async (client, calendar, profile) => {
     const rows = await client.$queryRaw(client_1.Prisma.sql `
-    SELECT teacher, assistant_teacher
-    FROM calendar
+    SELECT teacher, assistant_teacher, start_time
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
     WHERE code = ${calendar.code}
       AND learn_number = ${calendar.learn_number}
       AND (lesson_status IS NULL OR lesson_status <> 1)
@@ -369,46 +375,52 @@ const isStillAssigned = async (client, calendar, profile) => {
         normalizeText(profile.username),
         normalizeText(profile.display_name),
     ].filter(Boolean));
-    return rows.some((row) => (identifiers.has(normalizeText(row.teacher))
-        || parseAssistantTeachers(row.assistant_teacher).includes(profile.username)));
+    const classId = (0, exports.buildCalendarClassId)(calendar.code, calendar.start_time, calendar.learn_number);
+    const isDefaultSupport = (0, exports.normalizeScanTeachingUsers)(undefined)
+        .some((user) => user.username === profile.username);
+    return rows.some((row) => ((0, exports.buildCalendarClassId)(calendar.code, row.start_time, calendar.learn_number) === classId
+        && (isDefaultSupport || identifiers.has(normalizeText(row.teacher))
+            || parseAssistantTeachers(row.assistant_teacher).includes(profile.username))));
 };
 const removeUnassignedTeachingUser = async (client, calendar, profile) => {
-    // Một row users được định danh bởi username + code + learn_number. class_id
-    // là trạng thái lớp hiện tại, không phải thành phần identity của enrollment.
+    // Tài khoản hỗ trợ mặc định vẫn được phép vào lớp dù bỏ khỏi phân công.
+    if (isActiveSchedule(calendar)
+        && (0, exports.normalizeScanTeachingUsers)(undefined).some((user) => user.username === profile.username))
+        return;
     if (await isStillAssigned(client, calendar, profile))
         return;
-    await client.users.deleteMany({
+    await client.users.updateMany({
         where: {
             username: profile.username,
             code: calendar.code,
             learn_number: calendar.learn_number,
-            room_id: 1,
-            islearn: 0,
-            userRoles: { none: {} },
+            class_id: (0, exports.buildCalendarClassId)(calendar.code, calendar.start_time, calendar.learn_number),
         },
+        // Giữ nguyên user, HMID, trạng thái học và quyền quản trị; chỉ thu hồi lớp Live.
+        data: { class_id: null, updated_at: (0, dateTime_1.getVietnamWallClockDate)() },
     });
 };
 const removeLegacyTeachingUsersNotInNext = async (client, calendar, nextUsernames) => {
-    // Only runs with the Prisma client. Keeping this guard also makes the
-    // synchronizer usable by lightweight test clients.
     if (typeof client.users.findMany !== 'function')
         return;
     const users = await client.users.findMany({
         where: {
             code: calendar.code,
             learn_number: calendar.learn_number,
-            room_id: 1,
-            islearn: 0,
+            class_id: (0, exports.buildCalendarClassId)(calendar.code, calendar.start_time, calendar.learn_number),
         },
-        select: { username: true, name: true },
+        select: { username: true },
     });
-    for (const user of users) {
-        if (nextUsernames.has(user.username))
-            continue;
-        await removeUnassignedTeachingUser(client, calendar, {
-            username: user.username,
-            display_name: user.name,
-        });
+    const candidates = users.filter((user) => !nextUsernames.has(user.username));
+    if (!candidates.length)
+        return;
+    // Học viên cũng có room_id=1 và islearn=0. Chỉ dọn user thuộc nhân sự.
+    const profiles = await client.teacher_profiles.findMany({
+        where: { username: { in: candidates.map((user) => user.username) } },
+        select: { username: true, display_name: true },
+    });
+    for (const profile of profiles) {
+        await removeUnassignedTeachingUser(client, calendar, profile);
     }
 };
 const calendarSyncSignature = (calendar) => {
@@ -428,22 +440,38 @@ const calendarSyncSignature = (calendar) => {
 };
 /** Đồng bộ enrollment của giáo viên/trợ giảng theo trạng thái calendar cuối cùng. */
 const syncCalendarTeachingUsers = async (client, before, after) => {
+    if ((0, calendar_source_1.calendarSourceFromCode)(after.code) === 'feed')
+        return;
     if (before && calendarSyncSignature(before) === calendarSyncSignature(after))
         return;
     // Khi chỉ thay ngày/giờ của lịch cũ, teacher có thể là display_name trùng
-    // nhiều profile. Không cần resolve lại tên đó: cập nhật class_id trực tiếp
-    // trên các user đã được liên kết với code + learn_number.
+    // nhiều profile. Chỉ chuyển nhân sự đã có tại class_id cũ; không chuyển
+    // học viên hay user của một lớp khác cùng code + learn_number.
     if (before
         && isActiveSchedule(before)
         && isActiveSchedule(after)
         && teachingAssignmentsMatch(before, after)) {
         const classId = (0, exports.buildCalendarClassId)(after.code, after.start_time, after.learn_number);
+        const assignedProfiles = await client.teacher_profiles.findMany({
+            where: { status: 1, OR: [
+                    ...(normalizeText(after.teacher) ? [
+                        { username: normalizeText(after.teacher) },
+                        { display_name: normalizeText(after.teacher) },
+                    ] : []),
+                    { username: { in: [
+                                ...parseAssistantTeachers(after.assistant_teacher),
+                                ...(0, exports.normalizeScanTeachingUsers)(undefined).map((user) => user.username),
+                            ] } },
+                ] },
+            select: { username: true, display_name: true },
+        });
+        const assignedUsernames = new Set(assignedProfiles.map((profile) => profile.username));
         await client.users.updateMany({
             where: {
-                code: after.code,
-                learn_number: after.learn_number,
-                room_id: 1,
-                islearn: 0,
+                code: before.code,
+                learn_number: before.learn_number,
+                class_id: (0, exports.buildCalendarClassId)(before.code, before.start_time, before.learn_number),
+                username: { in: [...assignedUsernames] },
             },
             data: {
                 room_id: 1,
@@ -455,7 +483,7 @@ const syncCalendarTeachingUsers = async (client, before, after) => {
     }
     const previousProfileResolution = before && isActiveSchedule(before)
         ? await resolvePreviousTeachingProfiles(client, before)
-        : { profiles: [], hasLegacyIdentityIssue: false };
+        : { profiles: [] };
     const beforeProfiles = previousProfileResolution.profiles;
     const afterProfiles = isActiveSchedule(after)
         ? await resolveTeachingProfiles(client, after)
@@ -467,14 +495,14 @@ const syncCalendarTeachingUsers = async (client, before, after) => {
             await upsertTeachingUser(client, after, profile, classId);
         }
     }
+    if (!isActiveSchedule(after)) {
+        await removeLegacyTeachingUsersNotInNext(client, after, nextUsernames);
+    }
     if (before) {
         for (const profile of beforeProfiles) {
             if (!nextUsernames.has(profile.username)) {
                 await removeUnassignedTeachingUser(client, before, profile);
             }
-        }
-        if (previousProfileResolution.hasLegacyIdentityIssue) {
-            await removeLegacyTeachingUsersNotInNext(client, before, nextUsernames);
         }
     }
 };

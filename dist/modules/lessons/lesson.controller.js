@@ -187,10 +187,7 @@ const programs = async (req, res) => {
 };
 const createProgram = async (req, res) => {
     try {
-        const payload = (0, lesson_validation_1.validateLessonPayload)({
-            ...req.body,
-            learn_number: 1,
-        });
+        const payload = (0, lesson_validation_1.validateLessonProgramPayload)(req.body);
         const result = await (0, lesson_service_1.createNewProgram)(payload);
         return res.status(201).json({
             success: true,

@@ -3,13 +3,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.startCalendarStudentSyncWorker = exports.createCalendarStudentSyncCheck = exports.runCalendarStudentSync = exports.calendarStudentSyncRegisteredAt = exports.calendarStudentSyncWindow = void 0;
+exports.startCalendarStudentSyncWorker = exports.createCalendarStudentSyncCheck = exports.runCalendarStudentSync = exports.calendarStudentSyncCalendarWhere = exports.calendarStudentSyncRegisteredAt = exports.calendarStudentSyncWindow = void 0;
 const prisma_1 = __importDefault(require("../../lib/prisma"));
+const calendar_source_1 = require("./calendar-source");
 const dateTime_1 = require("../../utils/dateTime");
 const logger_1 = require("../../utils/logger");
 const teams_notifications_1 = require("../teams-notifications");
 const calendar_student_sync_service_1 = require("./calendar-student-sync.service");
 const CHECK_INTERVAL_MS = 30_000;
+const SYNC_INTERVAL_MINUTES = 5;
 const START_HOUR = 17;
 const END_HOUR = 23;
 let timer = null;
@@ -29,8 +31,14 @@ const calendarStudentSyncRegisteredAt = (now = new Date()) => {
     return [String(date.getUTCDate()).padStart(2, '0'), String(date.getUTCMonth() + 1).padStart(2, '0'), date.getUTCFullYear()].join('/');
 };
 exports.calendarStudentSyncRegisteredAt = calendarStudentSyncRegisteredAt;
+const calendarStudentSyncCalendarWhere = (start, end) => ({
+    start_time: { gte: start, lt: end },
+    code: { not: { startsWith: 'feed-' } },
+    OR: [{ lesson_status: null }, { lesson_status: { not: 1 } }],
+});
+exports.calendarStudentSyncCalendarWhere = calendarStudentSyncCalendarWhere;
 const runCalendarStudentSync = async (now = new Date()) => {
-    const { start, end, current } = (0, exports.calendarStudentSyncWindow)(now);
+    const { start, end } = (0, exports.calendarStudentSyncWindow)(now);
     await prisma_1.default.$executeRaw `
     UPDATE calendar_student_sync_runs
     SET status='interrupted', active_key=NULL, finished_at=NOW(3),
@@ -60,28 +68,86 @@ const runCalendarStudentSync = async (now = new Date()) => {
     let skipped = 0;
     const errors = [];
     try {
-        // Thời gian lịch được lưu theo Vietnam wall-clock; chỉ lấy buổi hôm nay chưa bắt đầu.
-        const calendars = await prisma_1.default.calendar.findMany({
-            where: {
-                start_time: { gte: current, lt: end },
-                OR: [{ lesson_status: null }, { lesson_status: { not: 1 } }],
-            },
-            select: { id: true, code: true },
+        // Thời gian lịch được lưu theo Vietnam wall-clock; quét mọi buổi trong ngày,
+        // kể cả buổi đang học/đã kết thúc, loại lịch nghỉ và chương trình Feed.
+        const candidates = await prisma_1.default.calendar.findMany({
+            where: (0, exports.calendarStudentSyncCalendarWhere)(start, end),
+            select: { id: true, code: true, key: true },
             orderBy: [{ code: 'asc' }, { learn_number: 'asc' }],
         });
+        // Giữ cùng quy tắc prefix không phân biệt hoa/thường, kể cả khi DB dùng collation phân biệt hoa/thường.
+        const calendars = candidates.filter(calendar => (0, calendar_source_1.calendarSourceFromCode)(calendar.code) !== 'feed');
         calendarsTotal = calendars.length;
         const byProgram = new Map();
         calendars.forEach((calendar) => byProgram.set(calendar.code, [...(byProgram.get(calendar.code) || []), calendar.id]));
         programs = byProgram.size;
+        const productsByProgram = new Map();
+        let prefetchedByProduct;
+        try {
+            const keys = calendars.map((calendar) => calendar.key?.trim()).filter((key) => Boolean(key));
+            const packageMappings = keys.length
+                ? await prisma_1.default.package_lesson_mapping.findMany({
+                    where: { key: { in: keys } },
+                    select: { key: true, package_id: true },
+                })
+                : [];
+            const productsByKey = new Map();
+            packageMappings.forEach((mapping) => {
+                const key = String(mapping.key || "").trim();
+                const productId = String(mapping.package_id || "").trim();
+                if (!key || !productId)
+                    return;
+                const products = productsByKey.get(key) || new Set();
+                products.add(productId);
+                productsByKey.set(key, products);
+            });
+            calendars.forEach((calendar) => {
+                const products = productsByProgram.get(calendar.code) || new Set();
+                productsByKey.get(String(calendar.key || "").trim())?.forEach((productId) => products.add(productId));
+                productsByProgram.set(calendar.code, products);
+            });
+            const allProductIds = [...new Set([...productsByProgram.values()].flatMap((products) => [...products]))];
+            if (allProductIds.length) {
+                const users = await (0, calendar_student_sync_service_1.fetchCalendarRegisteredStudents)(allProductIds, registeredAt);
+                const requestedProducts = new Set(allProductIds);
+                if (users.some((user) => !requestedProducts.has(String(user.product_id || '').trim()))) {
+                    throw new Error('API HOCMAI trả học viên có product_id không khớp các package được yêu cầu');
+                }
+                prefetchedByProduct = new Map();
+                users.forEach((user) => {
+                    const productId = String(user.product_id || "").trim();
+                    const productUsers = prefetchedByProduct.get(productId) || [];
+                    productUsers.push(user);
+                    prefetchedByProduct.set(productId, productUsers);
+                });
+                logger_1.logger.info("Calendar student sync fetched " + users.length + " users from " + allProductIds.length + " packages");
+            }
+        }
+        catch (error) {
+            prefetchedByProduct = undefined;
+            // API gộp lỗi thì trở lại cách quét riêng từng chương trình để không chặn cả lượt.
+            logger_1.logger.warn("Calendar student sync combined fetch failed, falling back by program:", error?.message || error);
+        }
         for (const [code, ids] of byProgram) {
             try {
-                const result = await (0, calendar_student_sync_service_1.syncCalendarStudents)(ids, registeredAt);
+                const prefetchedUsers = prefetchedByProduct
+                    ? [...(productsByProgram.get(code) || [])].flatMap((productId) => prefetchedByProduct.get(productId) || [])
+                    : undefined;
+                const result = await (0, calendar_student_sync_service_1.syncCalendarStudents)(ids, registeredAt, undefined, prefetchedUsers);
                 inserted += result.inserted;
                 skipped += result.skipped;
-                if (!result.failed)
+                logger_1.logger.info('Calendar student sync program result', {
+                    runId: String(runId), code, registeredAt, calendars: ids.length,
+                    apiRows: result.apiUsers, uniqueApiUsers: result.uniqueApiUsers,
+                    mappedRows: result.mappedRows, duplicateRows: result.duplicateRows,
+                    uniqueEnrollments: result.uniqueEnrollments, inserted: result.inserted,
+                    skipped: result.skipped, failed: result.failed, unmatched: result.unmatched,
+                });
+                if (!result.failed && !result.unmatched)
                     await (0, calendar_student_sync_service_1.markCalendarsStudentSynced)(ids);
-                if (result.failed)
-                    errors.push({ code, message: 'Có ' + result.failed + ' học viên không hợp lệ' });
+                if (result.failed || result.unmatched)
+                    errors.push({ code, message: 'Có ' + result.failed + ' enrollment không hợp lệ hoặc chưa ghi được vào database; '
+                            + result.unmatched + ' dòng API không khớp package của lịch' });
             }
             catch (error) {
                 errors.push({ code, message: String(error?.message || 'Không thể đồng bộ chương trình') });
@@ -124,15 +190,20 @@ const createCalendarStudentSyncCheck = (sync = exports.runCalendarStudentSync, n
         const current = now();
         const parts = vietnamTimeParts(current);
         const hour = Number(parts.hour);
-        if (hour < START_HOUR || hour > END_HOUR || !['00', '30'].includes(parts.minute))
+        if (hour < START_HOUR || hour > END_HOUR)
             return;
-        const slot = current.toISOString().slice(0, 10) + ':' + parts.hour + ':' + parts.minute;
+        // Run once per five-minute window even after a restart or a delayed timer.
+        const slotMinute = String(Math.floor(Number(parts.minute) / SYNC_INTERVAL_MINUTES) * SYNC_INTERVAL_MINUTES).padStart(2, '0');
+        const slot = (0, exports.calendarStudentSyncRegisteredAt)(current) + ':' + parts.hour + ':' + slotMinute;
         if (running || lastSlot === slot)
             return;
         running = true;
         try {
             const result = await sync(current);
-            lastSlot = slot;
+            // A database lock held by another worker is not a completed run.
+            if (!(result && typeof result === 'object' && 'started' in result && result.started === false)) {
+                lastSlot = slot;
+            }
             onSuccess(result);
         }
         catch (error) {
@@ -151,7 +222,7 @@ const startCalendarStudentSyncWorker = () => {
     void check();
     timer = setInterval(() => void check(), CHECK_INTERVAL_MS);
     timer.unref();
-    logger_1.logger.info('Calendar student sync cron enabled at 17:00–23:30 every 30 minutes (Asia/Ho_Chi_Minh)');
+    logger_1.logger.info('Calendar student sync cron enabled at 17:00–23:55 every 5 minutes (Asia/Ho_Chi_Minh)');
     return () => { if (timer)
         clearInterval(timer); timer = null; };
 };

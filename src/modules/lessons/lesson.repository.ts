@@ -1,5 +1,5 @@
 import { resolveCalendarSource } from '../livestream/calendar-source';
-import prisma from '../../lib/prisma';
+import prisma from '../../lib/calendar-transaction';
 import { LessonExportQuery, LessonImportMode, LessonImportResult, LessonImportRow, LessonListQuery, LessonPayload } from './lesson.types';
 
 // Các trường tài liệu/nội dung buổi học vẫn được giữ ở DB để không mất dữ liệu

@@ -1,3 +1,7 @@
+import {getCalendarClassificationOptions} from './calendar-classification-filters';
+import {approvalSubmissionReason,approvalSubmissionTitle} from '../calendar-approvals/calendar-approval.reason';
+import { accountPolicy } from '../calendar-approvals/calendar-approval.access';
+import { approvals } from '../calendar-approvals/calendar-approval.service';
 import { Request, Response, NextFunction } from 'express';
 import * as livestreamService from './livestream.service';
 import { retryCanceledCalendarStatus } from './hocmai-canceled-status.service';
@@ -552,7 +556,15 @@ export const importFile = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    const result = await importCalendarFromSheet(importRows, getChangeActor(req));
+    const policy=await accountPolicy(req.user.userId);
+    const needsApproval=policy.required_operations.some(op=>['create','import','mapping'].includes(op));
+    if(needsApproval&&req.header('X-Calendar-Submit-Approval')!=='true') {res.status(409).json({success:false,code:'APPROVAL_REQUIRED',message:'File nhập lịch cần gửi duyệt.'});return;}
+    const approvalReason=needsApproval?approvalSubmissionReason(req,res,'import'):undefined;if(needsApproval&&!approvalReason)return;
+    const result = await importCalendarFromSheet(importRows, getChangeActor(req),needsApproval);
+    if(result.status==='preview') {
+      const request=await approvals.create(req.user,{command:{action:'import',payload:{mode:'create',rows:result.rows,internal:result.internal}},reason:approvalReason,title:approvalSubmissionTitle(req),submit:true},req.header('Idempotency-Key'),true);
+      res.status(202).json({success:true,data:{approval_required:true,request},message:'Đã gửi duyệt file nhập lịch.'});return;
+    }
     if (result.status === 'validation_error') {
       res.status(400).json({
         success: false,
@@ -624,11 +636,20 @@ export const updateImportFile = async (req: Request, res: Response): Promise<voi
       });
       return;
     }
+    const policy=await accountPolicy(req.user.userId);
+    const needsApproval=policy.required_operations.some(op=>['update','import','mapping'].includes(op));
+    if(needsApproval&&req.header('X-Calendar-Submit-Approval')!=='true') {res.status(409).json({success:false,code:'APPROVAL_REQUIRED',message:'File cập nhật cần gửi duyệt.'});return;}
+    const approvalReason=needsApproval?approvalSubmissionReason(req,res,'import'):undefined;if(needsApproval&&!approvalReason)return;
     const result = await updateCalendarsFromSheet(
       importRows,
       getChangeActor(req),
-      rawExistingDataMode
+      rawExistingDataMode,needsApproval
     );
+    if(result.status==='preview') {
+      if(!result.rows.length){res.json({success:true,data:{count:0},message:"File không có thay đổi"});return;}
+      const request=await approvals.create(req.user,{command:{action:"import",payload:{mode:"update",rows:result.rows}},reason:approvalReason,title:approvalSubmissionTitle(req),submit:true},req.header("Idempotency-Key"),true);
+      res.status(202).json({success:true,data:{approval_required:true,request},message:"Đã gửi duyệt file cập nhật."});return;
+    }
     if (result.status === 'validation_error') {
       res.status(400).json({
         success: false,
@@ -714,4 +735,9 @@ export const importMappings = async (req: Request, res: Response): Promise<void>
   } catch (err: any) {
     res.status(400).json({ success: false, message: err.message });
   }
+};
+
+export const getClassificationOptions=async(req:Request,res:Response,next:NextFunction)=>{
+ try{res.json({success:true,data:await getCalendarClassificationOptions(getProgramScopeFilter(req.user,'calendar.view'))});}
+ catch(error){next(error);}
 };

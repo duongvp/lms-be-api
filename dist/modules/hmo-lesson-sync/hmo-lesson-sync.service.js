@@ -4,14 +4,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isHmoLessonSyncRunning = exports.startHmoLessonSync = exports.matchCalendarsForCourse = exports.titleSimilarity = exports.compatibleParts = exports.calendarOccurrence = exports.normalizeTitle = exports.markInterruptedHmoLessonSyncRuns = void 0;
-const prisma_1 = __importDefault(require("../../lib/prisma"));
+const calendar_transaction_1 = __importDefault(require("../../lib/calendar-transaction"));
 const hocmai_course_outline_service_1 = require("../../integrations/hocmai-course-outline.service");
 const logger_1 = require("../../utils/logger");
 const hocmai_sync_queue_service_1 = require("../livestream/hocmai-sync-queue.service");
 let runningPromise = null;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const INTERRUPTED_AFTER_MINUTES = 3;
-const markInterruptedHmoLessonSyncRuns = async () => prisma_1.default.$executeRawUnsafe(`
+const markInterruptedHmoLessonSyncRuns = async () => calendar_transaction_1.default.$executeRawUnsafe(`
   UPDATE hmo_lesson_sync_runs
   SET status='interrupted', active_key=NULL,
       last_error='Tiến trình backend bị ngắt hoặc mất kết nối. Có thể quét lại.',
@@ -68,7 +68,7 @@ const scheduleMonthYear = (value) => {
 };
 const sectionMonthYear = (value) => {
     const normalized = canonical(value);
-    const match = /(?:^|\b)thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(normalized);
+    const match = /(?:^|[^a-z0-9])thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(normalized);
     if (!match)
         return undefined;
     const month = Number(match[1]);
@@ -118,7 +118,7 @@ exports.titleSimilarity = titleSimilarity;
 // Cùng quy tắc với màn cập nhật hàng loạt: phân ứng viên trên cả nhóm lịch;
 // mỗi calendar nhận một Lesson ID riêng trong từng Course.
 const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
-    const candidates = rawCandidates.map(parseCandidate);
+    const candidates = rawCandidates.filter((candidate) => !String(candidate.sectionName ?? '').normalize('NFC').toLowerCase().includes('(bỏ)')).map(parseCandidate);
     const rawEvaluated = calendarRows.map((row, index) => {
         // Modal hàng loạt mặc định dùng tên chuẩn trong bảng lessons để match.
         // Tên calendar có thể chứa [Lịch n], [HỌC BÙ] hoặc hậu tố vận hành và chỉ
@@ -143,6 +143,7 @@ const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
                 sessionQuality: sessionMatchQuality(row.start_time, candidate.sectionName),
                 sessionKey: candidate.sectionId
                     || `index:${candidate.sectionIndex ?? "unknown"}:${candidate.sectionName || ""}`,
+                nonMonthlySession: !sectionMonthYear(candidate.sectionName),
             };
         }).filter((item) => Boolean(item)).sort((left, right) => (right.teacherMatchQuality - left.teacherMatchQuality
             || Number(right.exactTitle) - Number(left.exactTitle)
@@ -158,11 +159,22 @@ const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
         : undefined;
     const evaluated = rawEvaluated.map(({ row, index, teacher, allMatches }) => {
         const exactSessionMatches = allMatches.filter((item) => item.sessionQuality === 2);
-        const sessionMatches = exactSessionMatches.length
+        let sessionMatches = exactSessionMatches.length
             ? exactSessionMatches
             : inferredSessionKey
                 ? allMatches.filter((item) => item.sessionKey === inferredSessionKey)
                 : [];
+        // Mỗi lần gọi chỉ xét một Course. Một lịch có một ứng viên thì không chặn theo tháng.
+        if (calendarRows.length === 1 && allMatches.length === 1) {
+            sessionMatches = allMatches;
+        }
+        if (!sessionMatches.length) {
+            let fallback = allMatches.filter((item) => item.nonMonthlySession && item.exactTitle);
+            const bestQuality = fallback[0]?.teacherMatchQuality;
+            fallback = fallback.filter((item) => item.teacherMatchQuality === bestQuality);
+            if (new Set(fallback.map((item) => item.sessionKey)).size === 1)
+                sessionMatches = fallback;
+        }
         if (!sessionMatches.length && allMatches.length) {
             return {
                 row,
@@ -177,6 +189,17 @@ const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
         let matches = bestTeacherQuality === undefined
             ? sessionMatches
             : sessionMatches.filter((item) => item.teacherMatchQuality === bestTeacherQuality);
+        // Chỉ xét trùng Lesson sau khi đã ưu tiên session đúng tháng.
+        const equivalentMatches = matches.filter((item) => item.candidate.title === matches[0]?.candidate.title);
+        if (calendarRows.length === 1
+            && (0, exports.calendarOccurrence)(row.lesson_name, row.lesson_count) <= 1
+            && equivalentMatches.length > 1) {
+            return {
+                row, index, teacher, matches: [],
+                ambiguousCount: equivalentMatches.length,
+                ambiguityReason: 'MULTIPLE_MATCHES',
+            };
+        }
         if (matches[0] && !matches[0].exactTitle) {
             const competing = matches.find((item, matchIndex) => matchIndex > 0
                 && item.teacherMatched === matches[0].teacherMatched
@@ -230,7 +253,7 @@ const matchCalendarsForCourse = (calendarRows, rawCandidates) => {
 };
 exports.matchCalendarsForCourse = matchCalendarsForCourse;
 const addIssue = async (runId, row, code, message, pair) => {
-    await prisma_1.default.$executeRaw `
+    await calendar_transaction_1.default.$executeRaw `
     INSERT INTO hmo_lesson_sync_issues
       (run_id, program_code, lesson_id, calendar_id, learn_number, lesson_name, teacher,
        course_id, package_id, error_code, message)
@@ -247,10 +270,10 @@ const executeRun = async (runId) => {
         heartbeatUpdating = true;
         try {
             if (currentProgram === undefined) {
-                await prisma_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET heartbeat_at=NOW(3) WHERE id=${runId} AND status='running'`;
+                await calendar_transaction_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET heartbeat_at=NOW(3) WHERE id=${runId} AND status='running'`;
             }
             else {
-                await prisma_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET heartbeat_at=NOW(3), current_program=${currentProgram} WHERE id=${runId} AND status='running'`;
+                await calendar_transaction_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET heartbeat_at=NOW(3), current_program=${currentProgram} WHERE id=${runId} AND status='running'`;
             }
         }
         catch (error) {
@@ -263,14 +286,14 @@ const executeRun = async (runId) => {
     await updateHeartbeat(null);
     const heartbeatTimer = setInterval(() => { void updateHeartbeat(); }, HEARTBEAT_INTERVAL_MS);
     try {
-        const rows = await prisma_1.default.$queryRaw `
+        const rows = await calendar_transaction_1.default.$queryRaw `
       SELECT c.id AS calendar_id, c.key, c.code, c.code AS program_code, c.learn_number, c.lesson_count,
         c.teacher, tp.display_name AS teacher_name, l.id AS lesson_id,
         l.subject_code, l.lesson_name AS source_lesson_name,
         c.lesson_name, lcm.package_id, lcm.course_id,
         plm.lesson_id AS mapped_hmo_lesson_id,
         (c.start_time > NOW() AND COALESCE(c.lesson_status, 0) <> 1) AS is_target
-      FROM calendar c
+      FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS c
       INNER JOIN lessons l ON l.id = c.session_id AND l.status <> 0
       LEFT JOIN teacher_profiles tp ON tp.username = c.teacher
       LEFT JOIN lesson_course_mapping lcm ON lcm.lesson_id = l.id
@@ -278,13 +301,14 @@ const executeRun = async (runId) => {
         ON plm.key = c.key
        AND plm.package_id = lcm.package_id
        AND plm.course_id = lcm.course_id
-      WHERE COALESCE(c.lesson_status, 0) <> 1
+      WHERE c.code NOT LIKE 'feed-%'
+        AND COALESCE(c.lesson_status, 0) <> 1
       ORDER BY l.subject_code, l.learn_number, c.start_time, c.id
     `;
         const targetRows = rows.filter((row) => Boolean(Number(row.is_target)));
         const programs = Array.from(new Set(targetRows.map((row) => String(row.subject_code))));
         const lessons = Array.from(new Set(targetRows.map((row) => String(row.lesson_id))));
-        await prisma_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET programs_total=${programs.length}, lessons_total=${lessons.length} WHERE id=${runId}`;
+        await calendar_transaction_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET programs_total=${programs.length}, lessons_total=${lessons.length} WHERE id=${runId}`;
         const pairs = Array.from(new Map(rows.filter((row) => row.package_id && row.course_id).map((row) => {
             const pair = { packageId: String(row.package_id), courseId: String(row.course_id) };
             return [`${pair.packageId}::${pair.courseId}`, pair];
@@ -361,13 +385,14 @@ const executeRun = async (runId) => {
                 let failure = false;
                 for (const pair of configuredPairs) {
                     const pairKey = `${pair.packageId}::${pair.courseId}`;
-                    // Mapping do quản trị viên chọn và đã lưu là nguồn tin cậy. Không
-                    // gọi lại outline HMO cho cặp này, vì HMO có thể trả rỗng tạm thời
-                    // dù Lesson ID đã được gán hợp lệ trong calendar.
+                    // Giữ mapping đã lưu trừ ID được HMO xác nhận thuộc section (BỎ).
+                    // Khi HMO lỗi/rỗng tạm thời, không tự hủy mapping của quản trị viên.
                     const existingMapping = calendarRows.find((item) => (String(item.package_id) === pair.packageId
                         && String(item.course_id) === pair.courseId
                         && String(item.mapped_hmo_lesson_id || '').trim()));
-                    if (existingMapping?.mapped_hmo_lesson_id) {
+                    const ignoredLessonIds = outlineByPair.get(pairKey)?.ignoredLessonIds || [];
+                    if (existingMapping?.mapped_hmo_lesson_id
+                        && !ignoredLessonIds.includes(String(existingMapping.mapped_hmo_lesson_id))) {
                         nextMappings.push({
                             package_id: pair.packageId,
                             course_id: pair.courseId,
@@ -392,7 +417,7 @@ const executeRun = async (runId) => {
                         const ambiguous = match?.errorCode === 'AMBIGUOUS';
                         const message = ambiguous
                             ? match?.ambiguityReason === 'SESSION_UNCERTAIN'
-                                ? `Course ${pair.courseId} không có session Tháng M/YYYY khớp ngày lịch; cần chọn Session/Lesson ID thủ công.`
+                                ? `Course ${pair.courseId} chưa xác định được session phù hợp theo ngày lịch hoặc tên bài và giáo viên; cần chọn Session/Lesson ID thủ công.`
                                 : `Course ${pair.courseId} có ${match?.candidateCount || 2} tên bài gần giống cùng khớp; cần chọn thủ công.`
                             : `Course ${pair.courseId} không có Lesson ID phù hợp sau khi phân theo tên bài, giáo viên và session.`;
                         await addIssue(runId, row, ambiguous ? 'AMBIGUOUS' : 'NO_MATCH', message, pair);
@@ -412,7 +437,7 @@ const executeRun = async (runId) => {
                     failedLessonIds.add(String(row.lesson_id));
                     continue;
                 }
-                const mappingResult = await prisma_1.default.$transaction((tx) => (0, hocmai_sync_queue_service_1.reconcileCalendarMappingsAndEnqueue)(tx, row, nextMappings), {
+                const mappingResult = await calendar_transaction_1.default.$transaction((tx) => (0, hocmai_sync_queue_service_1.reconcileCalendarMappingsAndEnqueue)(tx, row, nextMappings), {
                     maxWait: 10_000,
                     // Prisma mặc định đóng interactive transaction sau 5 giây. Job có
                     // thể phải chờ lock khi calendar đang được cập nhật đồng thời.
@@ -427,16 +452,16 @@ const executeRun = async (runId) => {
                 programsFailed += 1;
             lessonsFailed += failedLessonIds.size;
             lessonsSynced += Array.from(syncedLessonIds).filter((id) => !failedLessonIds.has(id)).length;
-            await prisma_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET programs_processed=${programsProcessed}, programs_failed=${programsFailed}, lessons_synced=${lessonsSynced}, lessons_failed=${lessonsFailed}, calendars_synced=${calendarsSynced}, heartbeat_at=NOW(3) WHERE id=${runId}`;
+            await calendar_transaction_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET programs_processed=${programsProcessed}, programs_failed=${programsFailed}, lessons_synced=${lessonsSynced}, lessons_failed=${lessonsFailed}, calendars_synced=${calendarsSynced}, heartbeat_at=NOW(3) WHERE id=${runId}`;
         }
-        await prisma_1.default.$executeRaw `
+        await calendar_transaction_1.default.$executeRaw `
       UPDATE hmo_lesson_sync_runs SET status=${lessonsFailed ? 'completed_with_errors' : 'completed'},
         active_key=NULL, current_program=NULL, heartbeat_at=NOW(3), finished_at=NOW(3) WHERE id=${runId}
     `;
     }
     catch (error) {
         const message = String(error?.message || error).slice(0, 2000);
-        await prisma_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET status='failed', active_key=NULL, current_program=NULL, heartbeat_at=NOW(3), last_error=${message}, finished_at=NOW(3) WHERE id=${runId}`.catch(() => undefined);
+        await calendar_transaction_1.default.$executeRaw `UPDATE hmo_lesson_sync_runs SET status='failed', active_key=NULL, current_program=NULL, heartbeat_at=NOW(3), last_error=${message}, finished_at=NOW(3) WHERE id=${runId}`.catch(() => undefined);
         logger_1.logger.error('HMO lesson sync failed:', message);
     }
     finally {
@@ -447,7 +472,7 @@ const startHmoLessonSync = async (triggerType, startedBy) => {
     await (0, exports.markInterruptedHmoLessonSyncRuns)();
     let inserted;
     try {
-        inserted = await prisma_1.default.$executeRaw `INSERT INTO hmo_lesson_sync_runs (trigger_type, active_key, started_by, heartbeat_at) VALUES (${triggerType}, 'global', ${startedBy || null}, NOW(3))`;
+        inserted = await calendar_transaction_1.default.$executeRaw `INSERT INTO hmo_lesson_sync_runs (trigger_type, active_key, started_by, heartbeat_at) VALUES (${triggerType}, 'global', ${startedBy || null}, NOW(3))`;
     }
     catch (error) {
         if (String(error?.code) === 'P2010' || String(error?.message).includes('Duplicate'))
@@ -456,7 +481,7 @@ const startHmoLessonSync = async (triggerType, startedBy) => {
     }
     if (!inserted)
         return { started: false, message: 'Không thể tạo lượt đồng bộ' };
-    const [{ id }] = await prisma_1.default.$queryRaw `SELECT id FROM hmo_lesson_sync_runs WHERE active_key='global' LIMIT 1`;
+    const [{ id }] = await calendar_transaction_1.default.$queryRaw `SELECT id FROM hmo_lesson_sync_runs WHERE active_key='global' LIMIT 1`;
     runningPromise = executeRun(id).finally(() => { runningPromise = null; });
     void runningPromise;
     return { started: true, runId: String(id) };

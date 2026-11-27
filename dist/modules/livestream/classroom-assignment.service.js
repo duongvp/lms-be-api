@@ -6,7 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.applyClassroomAssignment = exports.previewClassroomAssignment = exports.summarizeTopClassLessonAttendance = exports.normalizeClassroomAssignmentId = exports.normalizeClassroomAssignmentUpdateMode = exports.buildClassroomAssignmentHistoryRows = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const client_1 = require("@prisma/client");
-const prisma_1 = __importDefault(require("../../lib/prisma"));
+const calendar_transaction_1 = __importDefault(require("../../lib/calendar-transaction"));
 const classroom_assignment_algorithm_1 = require("./classroom-assignment.algorithm");
 const calendar_user_sync_service_1 = require("./calendar-user-sync.service");
 const CLASSROOM_ASSIGNMENT_HISTORY_CHUNK_SIZE = 500;
@@ -235,7 +235,7 @@ const loadAssignmentContext = async (client, calendarId, options = {}) => {
         throw new Error('Không tìm thấy lịch học');
     const schedulableRows = await client.$queryRaw(client_1.Prisma.sql `
     SELECT calendar_row.id
-    FROM calendar AS calendar_row
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
     LEFT JOIN lessons AS session_lesson
       ON session_lesson.id = calendar_row.session_id
      AND session_lesson.status <> 0
@@ -564,9 +564,9 @@ const toResponse = (context, operationId) => {
         })),
     };
 };
-const previewClassroomAssignment = async (calendarId, options = {}) => (toResponse(await loadAssignmentContext(prisma_1.default, calendarId, options)));
+const previewClassroomAssignment = async (calendarId, options = {}) => (toResponse(await loadAssignmentContext(calendar_transaction_1.default, calendarId, options)));
 exports.previewClassroomAssignment = previewClassroomAssignment;
-const applyClassroomAssignment = async (calendarId, actor = {}, options = {}) => prisma_1.default.$transaction(async (tx) => {
+const applyClassroomAssignment = async (calendarId, actor = {}, options = {}) => calendar_transaction_1.default.$transaction(async (tx) => {
     // Rebuild inside the transaction so apply never commits a stale preview.
     const context = await loadAssignmentContext(tx, calendarId, options);
     const eligibleStudentIds = getEligibleStudentIds(context);

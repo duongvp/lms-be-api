@@ -1,3 +1,4 @@
+import {withCalendarMutexMock} from './calendar-transaction.fixture';
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import {
@@ -53,7 +54,7 @@ const mockEvgProvisioning = (context: TestContext, calendars: any[]) => {
     users: { findMany: async () => [] },
     room_config: { findUnique: async () => null, upsert: async (data: any) => { configs.push(data.create); return data.create; } },
   };
-  context.mock.method(prisma, '$transaction', async (operation: any) => operation(tx));
+  context.mock.method(prisma, '$transaction', async (operation: any) => operation(withCalendarMutexMock(tx)));
   return { requests, rooms, configs };
 };
 

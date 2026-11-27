@@ -1,3 +1,4 @@
+import {withCalendarMutexMock} from './calendar-transaction.fixture';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import prisma from '../src/lib/prisma';
@@ -7,10 +8,10 @@ import { validateLessonProgramSubjectUpdatePayload } from '../src/modules/lesson
 const runRename = async (calendarIds: number[], duplicate = false, newProgramCode = 'toan-6-2027', renameCode = true) => {
   const originalTransaction = prisma.$transaction;
   const writes: Array<{ sql: string; values: unknown[] }> = [];
-  prisma.$transaction = (async (callback: any) => callback({
+  prisma.$transaction = (async (callback: any) => callback(withCalendarMutexMock({
     $queryRawUnsafe: async (sql: string) => {
       if (sql.includes('SELECT system_type')) return [{ system_type: 'topclass', grade: 6, subject_name: 'Nhập nhầm' }];
-      if (sql.includes('SELECT id FROM calendar')) {
+      if (sql.includes('SELECT id FROM calendar') || sql.includes('SELECT id FROM (SELECT * FROM calendar')) {
         assert.match(sql, /FOR UPDATE/);
         assert.doesNotMatch(sql, /lesson_status|start_time/);
         return calendarIds.map((id) => ({ id }));
@@ -22,7 +23,7 @@ const runRename = async (calendarIds: number[], duplicate = false, newProgramCod
       writes.push({ sql, values });
       return 1;
     },
-  })) as typeof prisma.$transaction;
+  }))) as typeof prisma.$transaction;
   try {
     const result = await updateLessonProgramSubject({
       programCode: 'nham-6-2027', subjectName: 'Toán', newProgramCode: renameCode ? newProgramCode : undefined,

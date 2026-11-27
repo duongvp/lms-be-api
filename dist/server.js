@@ -5,29 +5,35 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const app_1 = __importDefault(require("./app"));
+const calendar_approval_socket_1 = require("./modules/calendar-approvals/calendar-approval.socket");
 const teams_notifications_1 = require("./modules/teams-notifications");
 const hmo_lesson_sync_worker_1 = require("./modules/hmo-lesson-sync/hmo-lesson-sync.worker");
 const calendar_sheet_export_worker_1 = require("./modules/livestream/calendar-sheet-export.worker");
 const calendar_attendance_sync_worker_1 = require("./modules/livestream/calendar-attendance-sync.worker");
 const calendar_teaching_user_sync_worker_1 = require("./modules/livestream/calendar-teaching-user-sync.worker");
 const calendar_student_sync_worker_1 = require("./modules/livestream/calendar-student-sync.worker");
+const hocmai_canceled_status_worker_1 = require("./modules/livestream/hocmai-canceled-status.worker");
 const PORT = process.env.PORT || 5000;
 const server = app_1.default.listen(PORT, () => {
     console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
+const calendarSocket = (0, calendar_approval_socket_1.attachCalendarApprovalSocket)(server);
 const stopTeamsWorker = (0, teams_notifications_1.startTeamsNotificationWorker)();
 const stopHmoLessonSyncWorker = (0, hmo_lesson_sync_worker_1.startHmoLessonSyncWorker)();
 const stopCalendarSheetExportWorker = (0, calendar_sheet_export_worker_1.startCalendarSheetExportWorker)();
 const stopCalendarAttendanceSyncWorker = (0, calendar_attendance_sync_worker_1.startCalendarAttendanceSyncWorker)();
 const stopCalendarTeachingUserSyncWorker = (0, calendar_teaching_user_sync_worker_1.startCalendarTeachingUserSyncWorker)();
 const stopCalendarStudentSyncWorker = (0, calendar_student_sync_worker_1.startCalendarStudentSyncWorker)();
+const stopCanceledStatusGate = (0, hocmai_canceled_status_worker_1.startCanceledStatusGate)();
 const shutdown = () => {
+    stopCanceledStatusGate();
     stopCalendarStudentSyncWorker();
     stopCalendarTeachingUserSyncWorker();
     stopCalendarAttendanceSyncWorker();
     stopCalendarSheetExportWorker();
     stopTeamsWorker();
     stopHmoLessonSyncWorker();
+    calendarSocket.close();
     server.close(() => process.exit(0));
 };
 process.once('SIGTERM', shutdown);

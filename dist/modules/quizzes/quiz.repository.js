@@ -120,7 +120,7 @@ const findQuizClassOptions = async (allowedPrograms = null) => {
     const rows = await prisma_1.default.$queryRawUnsafe(`SELECT calendar.code,
             MAX(NULLIF(TRIM(calendar.subject), '')) AS subject_name,
             COUNT(DISTINCT calendar.learn_number) AS lesson_count
-     FROM calendar
+     FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
      WHERE calendar.code IS NOT NULL AND TRIM(calendar.code) <> ''
      GROUP BY calendar.code
      ORDER BY subject_name ASC, calendar.code ASC`);
@@ -142,7 +142,7 @@ const findQuizLessonOptions = async (code) => {
               MAX(NULLIF(TRIM(calendar.subject), ''))
             ) AS subject_name,
             MAX(lesson.grade) AS grade
-     FROM calendar
+     FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar
      LEFT JOIN lessons AS lesson ON lesson.id = calendar.session_id
      WHERE calendar.code = ?
      GROUP BY calendar.learn_number

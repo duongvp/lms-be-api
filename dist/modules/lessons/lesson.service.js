@@ -55,6 +55,7 @@ exports.changeLessonCourseMappings = changeLessonCourseMappings;
 const changeLessonProgramSubject = async (payload) => ((0, serializer_1.serializeBigInt)(await (0, lesson_repository_1.updateLessonProgramSubject)({
     programCode: payload.program_code,
     subjectName: payload.subject_name,
+    newProgramCode: payload.subject_code,
 })));
 exports.changeLessonProgramSubject = changeLessonProgramSubject;
 const getLessonDetail = async (id) => {

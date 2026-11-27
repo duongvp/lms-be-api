@@ -24,18 +24,32 @@ const parseSuccessfulResponse = (payload, pair) => {
     }
     // `section.id` chỉ là ID nhóm nội dung. Lesson ID HMO cần dùng trong lịch là
     // ID của phần tử nằm trong `section.lessons[]`.
-    const lessons = course.sections.flatMap((section, sectionIndex) => (Array.isArray(section?.lessons) ? section.lessons : []).map((lesson, lessonIndex) => ({
-        lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
-        name: String(lesson?.name ?? '').trim() || undefined,
-        sectionId: String(section?.id ?? '').trim() || undefined,
-        sectionName: String(section?.name ?? '').trim() || undefined,
-        sectionIndex,
-        lessonIndex,
-    }))).filter((lesson) => lesson.lessonId);
+    const ignoredLessonIds = new Set();
+    const lessons = course.sections.flatMap((section, sectionIndex) => {
+        // Loại section đánh dấu bỏ trước khi đối chiếu Lesson ID HMO.
+        if (String(section?.name ?? '').normalize('NFC').toLowerCase().includes('(bỏ)')) {
+            for (const lesson of Array.isArray(section?.lessons) ? section.lessons : []) {
+                const id = String(lesson?.id ?? lesson?.lessonId ?? '').trim();
+                if (id)
+                    ignoredLessonIds.add(id);
+            }
+            return [];
+        }
+        return (Array.isArray(section?.lessons) ? section.lessons : []).map((lesson, lessonIndex) => ({
+            lessonId: String(lesson?.id ?? lesson?.lessonId ?? '').trim(),
+            name: String(lesson?.name ?? '').trim() || undefined,
+            sectionId: String(section?.id ?? '').trim() || undefined,
+            sectionName: String(section?.name ?? '').trim() || undefined,
+            sectionIndex,
+            lessonIndex,
+        }));
+    }).filter((lesson) => lesson.lessonId);
     return {
         packageId: pair.packageId,
         courseId: pair.courseId,
         exists: true,
+        // ID vẫn có trong section hợp lệ được phép tiếp tục dùng.
+        ignoredLessonIds: [...ignoredLessonIds].filter((id) => !lessons.some((lesson) => lesson.lessonId === id)),
         lessons: Array.from(new Map(lessons.map((lesson) => [lesson.lessonId, lesson])).values()),
     };
 };

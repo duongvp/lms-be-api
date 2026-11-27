@@ -1,3 +1,5 @@
+import {calendarClassificationCondition} from './calendar-classification-filters';
+import { runObservedCalendarWrite } from '../../lib/calendar-transaction';
 import { CALENDAR_KEY_REUSE, claimDeletedCalendarKey, auditCalendarKeyReuse, writeCalendarLifecycleLog } from './calendar-lifecycle';
 import crypto from 'crypto';
 import { assertCalendarSourceUnchanged, calendarSourceFromCode, resolveCalendarSource } from './calendar-source';
@@ -5,7 +7,7 @@ import { calendarTimeNotification } from './calendar-time-notification';
 import { swapTimeValue } from './calendar-swap-time';
 import { Prisma } from '@prisma/client';
 import ApiError from '../../utils/ApiError';
-import prisma from '../../lib/prisma';
+import prisma from '../../lib/calendar-transaction';
 import { resolveCalendarExportSystem } from './calendar-export-system';
 import { assistantExportNames, uniqueExportIds } from './calendar-export-fields';
 import { resolvePackagesByCourseId } from '../../integrations/package-course-sheet.service';
@@ -1654,7 +1656,7 @@ export const validateSwapScheduleConflicts = async (
 
 
 // 1.1. Thêm từng lịch
-export const createSingle = async (data: any, changeActor?: CalendarChangeActor) => {
+const createSingleImpl = async (data: any, changeActor?: CalendarChangeActor) => {
   resolveCalendarSource(data?.calendar_source);
   const resolvedMappings = await resolvePackageLessonMappings(
     data?.package_lesson_mappings
@@ -1931,7 +1933,7 @@ export const getHocmaiSectionsForProgramLesson = async (
 };
 
 // 1.2. Thêm nhiều lịch
-export const createBulk = async (config: any, changeActor?: CalendarChangeActor) => {
+const createBulkImpl = async (config: any, changeActor?: CalendarChangeActor) => {
   // We assume frontend sends fully constructed objects in an array "calendars"
   const { calendars } = config;
   if (config.calendar_source !== undefined) {
@@ -2048,7 +2050,7 @@ export const createBulk = async (config: any, changeActor?: CalendarChangeActor)
   }));
 };
 
-export const createValidatedCalendarImport = async (
+const createValidatedCalendarImportImpl = async (
   rows: ResolvedCalendarImportRow[],
   changeActor?: CalendarChangeActor
 ) => {
@@ -2109,7 +2111,7 @@ export const createValidatedCalendarImport = async (
   });
 };
 
-export const createValidatedInternalCalendarImport = async (
+const createValidatedInternalCalendarImportImpl = async (
   rows: ResolvedCalendarImportRow[],
   changeActor?: CalendarChangeActor
 ) => {
@@ -2669,7 +2671,7 @@ const rescheduleSessionInTransaction = async (
   return result;
 };
 
-export const rescheduleSession = async (
+const rescheduleSessionImpl = async (
   id: number,
   payload: any,
   changeActor?: CalendarChangeActor
@@ -2681,7 +2683,7 @@ export const rescheduleSession = async (
 ));
 
 /** Hoán đổi vị trí thời gian của hai buổi, giữ nguyên toàn bộ nội dung và phân công. */
-export const swapSessionTimes = async (
+const swapSessionTimesImpl = async (
   payload: any,
   changeActor?: CalendarChangeActor
 ) => {
@@ -2746,7 +2748,7 @@ export const swapSessionTimes = async (
   ));
 };
 
-export const bulkRescheduleSessions = async (
+const bulkRescheduleSessionsImpl = async (
   payload: any,
   changeActor?: CalendarChangeActor
 ) => {
@@ -2836,7 +2838,7 @@ export const bulkRescheduleSessions = async (
 };
 
 // 2.1 & 2.2 Sửa lịch
-export const updateSchedule = async (
+const updateScheduleImpl = async (
   id: number,
   data: any,
   updateMode: string,
@@ -2952,13 +2954,13 @@ export const updateSchedule = async (
 };
 
 // 2.3 Nghỉ không dời
-export const cancelSession = async (
+const cancelSessionImpl = async (
   id: number,
   payload: any,
   changeActor?: CalendarChangeActor
 ) => rescheduleSession(id, { ...payload, mode: 'cancel' }, changeActor);
 
-export const deleteSession = async (
+const deleteSessionImpl = async (
   id: number,
   changeActor?: CalendarChangeActor
 ) => withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => withManualHocmaiQueue(tx, async () => {
@@ -2991,7 +2993,7 @@ export const deleteSession = async (
   return deleted;
 })));
 
-export const restoreSession = async (id: number, changeActor?: CalendarChangeActor) =>
+const restoreSessionImpl = async (id: number, changeActor?: CalendarChangeActor) =>
   withCalendarTriggerErrorHint(() => withSerializableTransaction(async (tx) => withManualHocmaiQueue(tx, async () => {
     const rows = await tx.$queryRaw<any[]>`SELECT * FROM calendar WHERE id = ${id} FOR UPDATE`;
     const current = rows[0];
@@ -3618,6 +3620,8 @@ const buildCalendarListQuery = async (
       ...(programCondition ? [programCondition] : []),
     ],
   };
+  const classification=await calendarClassificationCondition(query,effectivePrograms);
+  if(classification)where.AND=[...(Array.isArray(where.AND)?where.AND:[]),classification];
   if (calendarId !== undefined) where.id = calendarId;
   if (calendarIds) where.AND = [...(Array.isArray(where.AND) ? where.AND : []), { id: { in: calendarIds } }];
 
@@ -4102,7 +4106,7 @@ export const previewCalendarMappingUpdates = async (payload: any) => {
   };
 };
 
-export const updateCalendarMappings = async (
+const updateCalendarMappingsImpl = async (
   payload: any,
   changeActor?: CalendarChangeActor
 ) => {
@@ -4190,7 +4194,7 @@ const enqueueBulkCalendarUpdate = async (tx: any, before: any, after: any) =>
   enqueueCalendarSync(tx, crypto.randomUUID(), 1, 'update', after);
 
 // Sửa nhiều lịch (Bulk Update)
-export const updateBulk = async (
+const updateBulkImpl = async (
   config: any,
   changeActor?: CalendarChangeActor
 ) => {
@@ -4674,3 +4678,37 @@ export const backfillMissingCalendarTeachingUsers = async (ids?: number[], addit
     errors,
   };
 };
+
+// Read-only helpers for approval planning. No calendar/queue writes occur here.
+export const approvalPreviewHelpers = {
+  prepareCreate: prepareCalendarCreateData,
+  copySession: copySessionData,
+  rescheduleNames: getRescheduleLessonNameOptions,
+  assertModifiable: assertCanUpdateSessionMappings,
+};
+
+export const createSingle: typeof createSingleImpl = (...args) => runObservedCalendarWrite('createSingle', args, () => createSingleImpl(...args));
+
+export const createBulk: typeof createBulkImpl = (...args) => runObservedCalendarWrite('createBulk', args, () => createBulkImpl(...args));
+
+export const createValidatedCalendarImport: typeof createValidatedCalendarImportImpl = (...args) => runObservedCalendarWrite('createValidatedCalendarImport', args, () => createValidatedCalendarImportImpl(...args));
+
+export const createValidatedInternalCalendarImport: typeof createValidatedInternalCalendarImportImpl = (...args) => runObservedCalendarWrite('createValidatedInternalCalendarImport', args, () => createValidatedInternalCalendarImportImpl(...args));
+
+export const rescheduleSession: typeof rescheduleSessionImpl = (...args) => runObservedCalendarWrite('rescheduleSession', args, () => rescheduleSessionImpl(...args));
+
+export const swapSessionTimes: typeof swapSessionTimesImpl = (...args) => runObservedCalendarWrite('swapSessionTimes', args, () => swapSessionTimesImpl(...args));
+
+export const bulkRescheduleSessions: typeof bulkRescheduleSessionsImpl = (...args) => runObservedCalendarWrite('bulkRescheduleSessions', args, () => bulkRescheduleSessionsImpl(...args));
+
+export const updateSchedule: typeof updateScheduleImpl = (...args) => runObservedCalendarWrite('updateSchedule', args, () => updateScheduleImpl(...args));
+
+export const cancelSession: typeof cancelSessionImpl = (...args) => runObservedCalendarWrite('cancelSession', args, () => cancelSessionImpl(...args));
+
+export const deleteSession: typeof deleteSessionImpl = (...args) => runObservedCalendarWrite('deleteSession', args, () => deleteSessionImpl(...args));
+
+export const restoreSession: typeof restoreSessionImpl = (...args) => runObservedCalendarWrite('restoreSession', args, () => restoreSessionImpl(...args));
+
+export const updateCalendarMappings: typeof updateCalendarMappingsImpl = (...args) => runObservedCalendarWrite('updateCalendarMappings', args, () => updateCalendarMappingsImpl(...args));
+
+export const updateBulk: typeof updateBulkImpl = (...args) => runObservedCalendarWrite('updateBulk', args, () => updateBulkImpl(...args));

@@ -1,3 +1,4 @@
+import { requireOfficialOperation } from '../calendar-approvals/calendar-approval.routes';
 import { Router } from "express";
 import multer from "multer";
 import lessonController from "./lesson.controller";
@@ -58,6 +59,7 @@ router.post(
 );
 router.post(
   "/scorm-name-sync/apply",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.update"]),
   lessonController.applyScormNameSync,
 );
@@ -92,6 +94,7 @@ router.post(
 );
 router.post(
   "/hocmai-scorm-name-sync/apply",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.update"]),
   authorizeProgram("lessons.update", (req) =>
     String(req.body?.program_code || ""),
@@ -113,6 +116,7 @@ router.post(
 );
 router.post(
   "/scorm-name-sync/course-mappings/apply",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.update"]),
   authorizeProgram("lessons.update", (req) =>
     String(req.body?.program_code || ""),
@@ -139,6 +143,7 @@ router.get(
 );
 router.post(
   "/options/programs",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.create"]),
   authorizeProgram("lessons.create", (req) =>
     String(req.body?.subject_code || ""),
@@ -156,6 +161,7 @@ router.get(
 );
 router.put(
   "/course-mappings",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.update"]),
   authorizeProgram("lessons.update", (req) =>
     String(req.body?.program_code || ""),
@@ -164,6 +170,7 @@ router.put(
 );
 router.patch(
   "/options/programs/:programCode/subject",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.update"]),
   authorizeProgram("lessons.update", (req) =>
     String(req.params.programCode || ""),
@@ -173,6 +180,7 @@ router.patch(
 );
 router.patch(
   "/bulk",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.update"]),
   authorizePrograms("lessons.update", (req) =>
     lessonCodesByIds(req.body?.ids || []),
@@ -182,6 +190,7 @@ router.patch(
 );
 router.patch(
   "/reorder",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.update"]),
   authorizeProgram("lessons.update", (req) =>
     String(req.body?.subject_code || ""),
@@ -217,6 +226,7 @@ router.get(
 );
 router.post(
   "/import",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.import"]),
   upload.single("file"),
   lessonController.importFile,
@@ -229,6 +239,7 @@ router.get(
 );
 router.post(
   "/",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.create"]),
   authorizeProgram("lessons.create", (req) =>
     String(req.body?.subject_code || ""),
@@ -238,6 +249,7 @@ router.post(
 );
 router.put(
   "/:id",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.update"]),
   authorizePrograms("lessons.update", (req) =>
     lessonCodesByIds([req.params.id]),
@@ -247,6 +259,7 @@ router.put(
 );
 router.delete(
   "/:id",
+  requireOfficialOperation(['update','mapping']),
   authorize(["lessons.delete"]),
   authorizePrograms("lessons.delete", (req) =>
     lessonCodesByIds([req.params.id]),

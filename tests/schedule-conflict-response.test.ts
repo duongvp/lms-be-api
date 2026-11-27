@@ -1,3 +1,4 @@
+import {withCalendarMutexMock} from './calendar-transaction.fixture';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import prisma from '../src/lib/prisma';
@@ -14,10 +15,10 @@ const conflict = {
 test('bulk create preserves structured conflict IDs and program when prefixing lesson errors', async () => {
   const transaction = prisma.$transaction;
   const expected = new ScheduleConflictError([conflict]);
-  prisma.$transaction = (async (operation: any) => operation({
+  prisma.$transaction = (async (operation: any) => operation(withCalendarMutexMock({
     $executeRawUnsafe: async () => 0,
     calendar: { findFirst: async () => null, findMany: async () => { throw expected; } },
-  })) as any;
+  }))) as any;
   try {
     await assert.rejects(createBulk({ calendars: [{
       code: 'QA-NEW', learn_number: 1, lesson_name: 'QA lesson', teacher: 'QA Teacher',

@@ -1,3 +1,4 @@
+import {withCalendarMutexMock} from './calendar-transaction.fixture';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import prisma from '../src/lib/prisma';
@@ -195,7 +196,7 @@ test('đổi ngày chỉ chuyển nhân sự được gán, giữ nguyên học 
 for (const mode of ['quick', 'common', 'separate', 'omitted']) {
   test(`luồng lưu lịch ${mode} xử lý trợ giảng rỗng/không gửi trường`, async (t) => {
     const f = fixture();
-    t.mock.method(prisma, '$transaction', async (operation: any) => operation(f.client));
+    t.mock.method(prisma, '$transaction', async (operation: any) => operation(withCalendarMutexMock(f.client)));
     t.mock.method(prisma, '$queryRaw', f.client.$queryRaw);
     const originalCalendar = prisma.calendar;
     (prisma as any).calendar = f.client.calendar;
@@ -222,7 +223,7 @@ test('cron thực tế quét cả lịch đã bỏ trợ giảng và lịch hủ
   const before = { ...f.calendars[0] };
   f.calendars[0].assistant_teacher = null;
   await syncCalendarTeachingUsers(f.client, before, f.calendars[0]);
-  t.mock.method(prisma, '$transaction', async (operation: any) => operation(f.client));
+  t.mock.method(prisma, '$transaction', async (operation: any) => operation(withCalendarMutexMock(f.client)));
   t.mock.method(prisma, '$executeRaw', async () => 1);
   t.mock.method(prisma, '$queryRaw', async (sql: any, ...values: any[]) => {
     const text = Array.isArray(sql) ? sql.join('?') : sql.sql;
@@ -263,7 +264,7 @@ test('quét dùng phân công mới nhất sau khi lấy khóa lịch, không d�
     }
     return originalQuery(sql, ...values);
   };
-  t.mock.method(prisma, '$transaction', async (operation: any) => operation(f.client));
+  t.mock.method(prisma, '$transaction', async (operation: any) => operation(withCalendarMutexMock(f.client)));
   const result = await backfillMissingCalendarTeachingUsers([10]);
   assert.equal(locked, true);
   assert.equal(result.failed, 0);

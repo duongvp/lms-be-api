@@ -8,10 +8,11 @@ exports.RBAC_MENU_MODULES = [
     { code: 'room_config', label: 'Cấu hình phòng học' },
     { code: 'teacher_profile', label: 'Giáo viên & Trợ giảng' },
     { code: 'users', label: 'Quản trị viên' },
+    { code: 'teaching_report', label: 'Báo cáo giảng dạy' },
     { code: 'roles', label: 'Vai trò thành viên' },
 ];
 exports.RBAC_MENU_MODULE_CODES = exports.RBAC_MENU_MODULES.map(({ code }) => code);
 // Vai trò thành viên là màn cấu hình quyền, không phải dữ liệu nghiệp vụ
 // cần kiểm soát theo từng field.
-exports.RBAC_FIELD_MODULE_CODES = exports.RBAC_MENU_MODULE_CODES.filter((code) => code !== 'roles');
+exports.RBAC_FIELD_MODULE_CODES = exports.RBAC_MENU_MODULE_CODES.filter((code) => !['roles', 'teaching_report'].includes(code));
 exports.RBAC_MENU_LABELS = Object.fromEntries(exports.RBAC_MENU_MODULES.map(({ code, label }) => [code, label]));

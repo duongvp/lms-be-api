@@ -112,7 +112,7 @@ router.put(
     authorize(['users.update']),
     authorizeRoleAssignment,
     authorizeFields('users', (req) =>
-        Object.keys(req.body || {}).filter((field) => !['roleIds', 'programScope'].includes(field))
+        Object.keys(req.body || {}).filter((field) => !['roleIds', 'programScope', 'approvalPolicy'].includes(field))
     ),
     userController.updateUser
 );

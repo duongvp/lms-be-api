@@ -1,5 +1,8 @@
 import { Request, Response } from 'express';
 import RoleService from './role.service';
+import {freshUser, requirePermission} from '../calendar-approvals/calendar-approval.access';
+import {APPROVAL_MODULES} from '../approval-policy/approval-policy.registry';
+import {validateModulePolicies} from '../approval-policy/approval-policy.service';
 import { getRoleProgramScope, listProgramResources, updateRoleProgramScope } from './program-scope.service';
 import FieldPermissionService from './field-permission.service';
 import { SuccessResponse, ErrorResponse } from '../../utils/apiResponse';
@@ -137,6 +140,11 @@ const getRoleById = async (req: Request, res: Response) => {
 const createRole = async (req: Request, res: Response) => {
     try {
         const roleData = req.body;
+        if (roleData?.approvalPolicy !== undefined) {
+            const policy=validateModulePolicies(roleData.approvalPolicy);
+            const actor=await freshUser(req.user.userId);
+            for(const key of Object.keys(policy)) requirePermission(actor,APPROVAL_MODULES.find(module=>module.key===key)!.managePermission);
+        }
         const newRole = await RoleService.createRoleWithPermissions(roleData);
         // Using HTTP 201 for creation, though SuccessResponse returns 200, we can use res directly or stick to SuccessResponse
         return res.status(201).json({
@@ -153,6 +161,11 @@ const updateRole = async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const roleData = req.body;
+        if (roleData?.approvalPolicy !== undefined) {
+            const policy=validateModulePolicies(roleData.approvalPolicy);
+            const actor=await freshUser(req.user.userId);
+            for(const key of Object.keys(policy)) requirePermission(actor,APPROVAL_MODULES.find(module=>module.key===key)!.managePermission);
+        }
         const updatedRole = await RoleService.updateRoleWithPermissions(id as any, roleData);
         return SuccessResponse(res, 'Role updated successfully', updatedRole);
     } catch (error: any) {

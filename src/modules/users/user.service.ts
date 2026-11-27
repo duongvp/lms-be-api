@@ -3,6 +3,7 @@ import prisma from '../../lib/prisma';
 import { randomUUID } from 'crypto';
 import ApiError from '../../utils/ApiError';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
+import {freshUser,saveAccountPolicyInTransaction} from '../calendar-approvals/calendar-approval.access';
 import { invalidateUserAccessCache } from '../../services/authorization.service';
 
 type UserProgramScopeInput = {
@@ -295,7 +296,7 @@ const UserService = {
         }
     },
 
-    async updateUser(userId: number, data: any) {
+    async updateUser(userId: number, data: any, actorUserId?:number) {
         try {
             // Kiểm tra user tồn tại
             const existingUser = await prisma.users.findUnique({
@@ -331,7 +332,10 @@ const UserService = {
             // users.updated_at chưa khai báo @updatedAt trong Prisma schema.
             updateData.updated_at = getVietnamWallClockDate();
 
+            const policyActor=data.approvalPolicy!==undefined ? await freshUser(Number(actorUserId)) : undefined;
             await prisma.$transaction(async (tx) => {
+                // Validate the policy snapshot before changing roles, and commit all account edits atomically.
+                if(data.approvalPolicy!==undefined) await saveAccountPolicyInTransaction(policyActor,userId,data.approvalPolicy,tx);
                 await tx.users.update({ where: { id: userId }, data: updateData });
 
                 if (data.roleIds !== undefined) {

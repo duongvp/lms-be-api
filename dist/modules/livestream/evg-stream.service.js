@@ -4,11 +4,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.provisionCalendarsEvgBulk = exports.provisionCalendarEvgStream = exports.buildEvgStreamName = exports.resolveEvgRoomIds = exports.extractEvgStreamAlias = exports.buildEvgPlaybackUrl = void 0;
-const prisma_1 = __importDefault(require("../../lib/prisma"));
+const calendar_transaction_1 = __importDefault(require("../../lib/calendar-transaction"));
 const evg_live_stream_service_1 = require("../../integrations/evg-live-stream.service");
 const calendar_user_sync_service_1 = require("./calendar-user-sync.service");
 const program_teacher_banner_service_1 = require("../program-teacher-banners/program-teacher-banner.service");
-const EVG_MIN_ROOM_COUNT = 25;
+const evg_status_1 = require("./evg-status");
 const EVG_PLAYBACK_BASE_URL = 'https://evg-stream.hocmai.net/live';
 const buildEvgPlaybackUrl = (streamAlias) => {
     const normalizedStreamAlias = String(streamAlias || '').trim();
@@ -38,7 +38,7 @@ const normalizeEvgNamePart = (value) => String(value ?? '')
  * được lấy theo phân lớp thực tế và các stream đã tồn tại.
  */
 const resolveEvgRoomIds = (roomIds) => Array.from(new Set([
-    ...Array.from({ length: EVG_MIN_ROOM_COUNT }, (_, index) => index + 1),
+    ...Array.from({ length: evg_status_1.EVG_MIN_ROOM_COUNT }, (_, index) => index + 1),
     ...roomIds
         .map((value) => Number(value))
         .filter((roomId) => Number.isInteger(roomId) && roomId > 0),
@@ -78,18 +78,22 @@ const normalizeBannerUrlOverride = (value) => {
 const provisionCalendarEvgStream = async (calendarId, actorUsername, mode = 'skip_existing', bannerUrlOverride) => {
     if (!Number.isInteger(calendarId) || calendarId <= 0)
         throw new Error('ID lịch học không hợp lệ');
-    const calendar = await prisma_1.default.calendar.findUnique({ where: { id: calendarId } });
+    const calendar = await calendar_transaction_1.default.calendar.findUnique({ where: { id: calendarId } });
     if (!calendar)
         throw new Error('Không tìm thấy lịch học');
-    if (Number(calendar.lesson_status ?? 0) === 1)
+    if (Number(calendar.lesson_status ?? 0) === 1) {
         throw new Error('Không tạo EVG cho lịch đã nghỉ học');
+    }
     if (!['skip_existing', 'overwrite'].includes(mode))
         throw new Error('Chế độ xử lý EVG không hợp lệ');
     if (calendar.evg_stream && mode === 'skip_existing') {
-        return { skipped: true, operation: 'skipped', reason: 'Lịch học đã có EVG', calendar };
+        const statuses = await (0, evg_status_1.getCalendarEvgStatuses)(calendar_transaction_1.default, [calendar]);
+        if (statuses.get(calendar.id)?.evg_provisioned) {
+            return { skipped: true, operation: 'skipped', reason: 'Lịch học đã có EVG và cấu hình phòng đầy đủ', calendar };
+        }
     }
     const manualBannerUrl = normalizeBannerUrlOverride(bannerUrlOverride);
-    const configuredBanner = manualBannerUrl || await (0, program_teacher_banner_service_1.resolveProgramTeacherBanner)(prisma_1.default, calendar.code, calendar.teacher);
+    const configuredBanner = manualBannerUrl || await (0, program_teacher_banner_service_1.resolveProgramTeacherBanner)(calendar_transaction_1.default, calendar.code, calendar.teacher);
     if (!configuredBanner) {
         throw new Error(`Chưa cấu hình banner cho chương trình ${calendar.code} và giáo viên ${calendar.teacher || '(trống)'}. Nhập URL background EVG để dùng banner tạm thời.`);
     }
@@ -98,11 +102,11 @@ const provisionCalendarEvgStream = async (calendarId, actorUsername, mode = 'ski
     // mới; chế độ bỏ qua chỉ gọi create khi calendar chưa có evg_stream.
     const evg = await (0, evg_live_stream_service_1.createEvgLiveStream)(requestName);
     const evgPlaybackUrl = (0, exports.buildEvgPlaybackUrl)(evg.streamAlias);
-    const result = await prisma_1.default.$transaction(async (tx) => {
+    const result = await calendar_transaction_1.default.$transaction(async (tx) => {
         const latest = await tx.calendar.findUnique({ where: { id: calendarId } });
         if (!latest)
             throw new Error('Lịch học không còn tồn tại');
-        if (mode === 'skip_existing' && latest.evg_stream) {
+        if (mode === 'skip_existing' && latest.evg_stream && latest.evg_stream !== calendar.evg_stream) {
             throw new Error('Lịch học vừa được tạo EVG bởi một yêu cầu khác');
         }
         const bannerUrl = manualBannerUrl || await (0, program_teacher_banner_service_1.resolveProgramTeacherBanner)(tx, latest.code, latest.teacher);

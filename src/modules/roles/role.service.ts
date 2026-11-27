@@ -1,4 +1,6 @@
 import prisma from '../../lib/prisma';
+import { invalidateUserAccessCache } from '../../services/authorization.service';
+import {normalizeModulePolicies,validateModulePolicies} from '../approval-policy/approval-policy.service';
 import ApiError from '../../utils/ApiError';
 import FieldPermissionService from './field-permission.service';
 import { getVietnamWallClockDate } from '../../utils/dateTime';
@@ -16,6 +18,11 @@ const ACTION_LABELS: Record<string, string> = {
     import: 'Nhập file',
     export: 'Xuất file',
     approve: 'Duyệt',
+    reject: 'Từ chối duyệt lịch',
+    submit_approval: 'Gửi duyệt lịch',
+    'approval.view': 'Xem yêu cầu duyệt lịch',
+    'history.view': 'Xem lịch sử duyệt lịch',
+    'workflow.manage': 'Cấu hình duyệt lịch',
     grade: 'Chấm điểm',
     reset_password: 'Đặt lại mật khẩu',
     status: 'Đổi trạng thái',
@@ -68,6 +75,7 @@ const RoleService = {
                 name: role.name,
                 description: role.description,
                 isActive: role.isActive,
+                approvalPolicy: normalizeModulePolicies(role.approval_policy),
                 fieldPolicy: role.fieldPolicy,  // <-- thêm dòng này
                 permissions: role.rolePermissions.map(rp => ({
                     key: rp.permission.code,
@@ -84,6 +92,7 @@ const RoleService = {
     async createRoleWithPermissions(roleData: any) {
         try {
             return await prisma.$transaction(async (tx) => {
+                if(roleData.approvalPolicy!==undefined) await tx.$queryRaw`SELECT id FROM calendar_approval_mutex WHERE id=1 FOR UPDATE`;
                 // 1. Check if code or name exists
                 const code = roleData.code || roleData.role_name.toLowerCase().replace(/\s+/g, '_');
                 const name = roleData.role_name || roleData.name;
@@ -128,6 +137,7 @@ const RoleService = {
                         code: code,
                         name: name,
                         description: roleData.description || null,
+                        approval_policy: roleData.approvalPolicy !== undefined ? validateModulePolicies(roleData.approvalPolicy) : {},
                         fieldPolicy,
                         createdAt: getVietnamWallClockDate(),
                         updatedAt: getVietnamWallClockDate(),
@@ -154,6 +164,7 @@ const RoleService = {
                         code: newRole.code,
                         name: newRole.name,
                         fieldPolicy: newRole.fieldPolicy,
+                        approvalPolicy: normalizeModulePolicies(newRole.approval_policy),
                         permissions: newRole.rolePermissions.map(rp => rp.permission.code)
                     }
                 };
@@ -167,7 +178,8 @@ const RoleService = {
     async updateRoleWithPermissions(roleId: string | number, roleData: any) {
         try {
             const id = BigInt(roleId);
-            return await prisma.$transaction(async (tx) => {
+            const result = await prisma.$transaction(async (tx) => {
+                if(roleData.approvalPolicy!==undefined) await tx.$queryRaw`SELECT id FROM calendar_approval_mutex WHERE id=1 FOR UPDATE`;
                 // 1. Check existing role
                 const existingRole = await tx.roles.findUnique({
                     where: { id }
@@ -181,6 +193,7 @@ const RoleService = {
                 const updateData: any = {};
                 updateData.updatedAt = getVietnamWallClockDate();
                 if (name) updateData.name = name;
+                if (roleData.approvalPolicy !== undefined) updateData.approval_policy = {...normalizeModulePolicies(existingRole.approval_policy),...validateModulePolicies(roleData.approvalPolicy)};
                 if (roleData.description !== undefined) updateData.description = roleData.description;
                 if (roleData.fieldPolicy !== undefined) {
                     updateData.fieldPolicy = await FieldPermissionService.validateFieldPolicy(roleData.fieldPolicy);
@@ -233,6 +246,7 @@ const RoleService = {
                         name: updatedRole.name,
                         description: updatedRole.description,
                         fieldPolicy: updatedRole.fieldPolicy,
+                        approvalPolicy: normalizeModulePolicies(updatedRole.approval_policy),
                         permissions: updatedRole.rolePermissions.map(rp => ({
                             key: rp.permission.code,
                             name: rp.permission.name
@@ -240,6 +254,8 @@ const RoleService = {
                     }
                 };
             });
+            invalidateUserAccessCache();
+            return result;
         } catch (error: any) {
             if (error instanceof ApiError) throw error;
             throw new ApiError('Failed to update role: ' + error.message, 500);

@@ -4,6 +4,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const role_service_1 = __importDefault(require("./role.service"));
+const calendar_approval_access_1 = require("../calendar-approvals/calendar-approval.access");
+const approval_policy_registry_1 = require("../approval-policy/approval-policy.registry");
+const approval_policy_service_1 = require("../approval-policy/approval-policy.service");
 const program_scope_service_1 = require("./program-scope.service");
 const field_permission_service_1 = __importDefault(require("./field-permission.service"));
 const apiResponse_1 = require("../../utils/apiResponse");
@@ -138,6 +141,12 @@ const getRoleById = async (req, res) => {
 const createRole = async (req, res) => {
     try {
         const roleData = req.body;
+        if (roleData?.approvalPolicy !== undefined) {
+            const policy = (0, approval_policy_service_1.validateModulePolicies)(roleData.approvalPolicy);
+            const actor = await (0, calendar_approval_access_1.freshUser)(req.user.userId);
+            for (const key of Object.keys(policy))
+                (0, calendar_approval_access_1.requirePermission)(actor, approval_policy_registry_1.APPROVAL_MODULES.find(module => module.key === key).managePermission);
+        }
         const newRole = await role_service_1.default.createRoleWithPermissions(roleData);
         // Using HTTP 201 for creation, though SuccessResponse returns 200, we can use res directly or stick to SuccessResponse
         return res.status(201).json({
@@ -154,6 +163,12 @@ const updateRole = async (req, res) => {
     try {
         const { id } = req.params;
         const roleData = req.body;
+        if (roleData?.approvalPolicy !== undefined) {
+            const policy = (0, approval_policy_service_1.validateModulePolicies)(roleData.approvalPolicy);
+            const actor = await (0, calendar_approval_access_1.freshUser)(req.user.userId);
+            for (const key of Object.keys(policy))
+                (0, calendar_approval_access_1.requirePermission)(actor, approval_policy_registry_1.APPROVAL_MODULES.find(module => module.key === key).managePermission);
+        }
         const updatedRole = await role_service_1.default.updateRoleWithPermissions(id, roleData);
         return (0, apiResponse_1.SuccessResponse)(res, 'Role updated successfully', updatedRole);
     }

@@ -95,7 +95,7 @@ const getProgramSchedules = async (programCode) => prisma_1.default.$queryRaw `
     c.lesson_name AS calendar_lesson_name, c.lesson_count,
     c.start_time, c.teacher,
     tp.display_name AS teacher_name, lcm.package_id, lcm.course_id
-  FROM calendar c
+  FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS c
   INNER JOIN lessons l ON l.id = c.session_id AND l.status <> 0
   LEFT JOIN teacher_profiles tp ON tp.username = c.teacher
   LEFT JOIN lesson_course_mapping lcm ON lcm.lesson_id = l.id
@@ -116,7 +116,7 @@ const sectionMonthYear = (value) => {
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
-    const match = /(?:^|\b)thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(normalized);
+    const match = /(?:^|[^a-z0-9])thang\s*(\d{1,2})(?:\s*[\/-]\s*(\d{4}))?/.exec(normalized);
     if (!match)
         return undefined;
     const month = Number(match[1]);

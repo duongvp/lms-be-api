@@ -49,7 +49,7 @@ const updateUser = async (req, res) => {
     try {
         const { id } = req.params;
         const userData = req.body;
-        const updatedUser = await user_service_1.default.updateUser(Number(id), userData);
+        const updatedUser = await user_service_1.default.updateUser(Number(id), userData, Number(req.user?.userId));
         return (0, apiResponse_1.SuccessResponse)(res, 'User updated successfully', updatedUser);
     }
     catch (error) {

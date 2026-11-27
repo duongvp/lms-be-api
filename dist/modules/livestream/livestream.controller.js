@@ -36,14 +36,21 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.exportGoogleSheetProgress = exports.exportGoogleSheet = exports.getCalendar = exports.getCalendarTeacherFilterOptions = exports.resetCalendarAttendance = exports.getCalendarAttendanceResetStudents = exports.syncCalendarAttendance = exports.deleteSession = exports.cancelSession = exports.provisionEvgStreamsBulk = exports.provisionEvgStream = exports.swapSessionTimes = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.getStudentSyncProgress = exports.syncStudents = exports.resendToHocmai = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = void 0;
+exports.getClassificationOptions = exports.importMappings = exports.previewMappingImport = exports.updateMappings = exports.previewMappingUpdates = exports.updateImportFile = exports.importFile = exports.importTemplate = exports.exportFile = exports.exportGoogleSheetProgress = exports.exportGoogleSheet = exports.getCalendar = exports.getCalendarHeaderFilterOptions = exports.getCalendarTeacherFilterOptions = exports.resetCalendarAttendance = exports.getCalendarAttendanceResetStudents = exports.syncCalendarAttendance = exports.restoreSession = exports.deleteSession = exports.cancelSession = exports.provisionEvgStreamsBulk = exports.provisionEvgStream = exports.swapSessionTimes = exports.rescheduleSession = exports.updateSchedule = exports.applyStudentClassroomAssignment = exports.previewStudentClassroomAssignment = exports.getStudentSyncProgress = exports.syncStudents = exports.retryCanceledHocmaiStatus = exports.resendToHocmai = exports.backfillMissingTeachingUsers = exports.updateBulk = exports.commitAutoSchedule = exports.getProgramLessonsHocmaiSections = exports.getProgramLessonHocmaiSections = exports.getPrograms = exports.getProgramLessons = exports.previewAutoSchedule = exports.createBulk = exports.createSingle = exports.exportRoomReport = exports.getRoomReportLiveTimes = exports.getRoomReport = void 0;
+const calendar_classification_filters_1 = require("./calendar-classification-filters");
+const calendar_approval_reason_1 = require("../calendar-approvals/calendar-approval.reason");
+const calendar_approval_access_1 = require("../calendar-approvals/calendar-approval.access");
+const calendar_approval_service_1 = require("../calendar-approvals/calendar-approval.service");
 const livestreamService = __importStar(require("./livestream.service"));
+const hocmai_canceled_status_service_1 = require("./hocmai-canceled-status.service");
+const calendar_source_1 = require("./calendar-source");
 const field_permission_service_1 = __importDefault(require("../roles/field-permission.service"));
 const calendar_sheet_export_service_1 = require("./calendar-sheet-export.service");
 const livestream_io_1 = require("./livestream.io");
 const google_sheet_csv_1 = require("../../integrations/google-sheet-csv");
 const google_sheet_export_job_1 = require("../../integrations/google-sheet-export-job");
 const auto_schedule_service_1 = require("./auto-schedule.service");
+const calendar_room_report_service_1 = require("./calendar-room-report.service");
 const calendar_import_service_1 = require("./calendar-import.service");
 const authorization_service_1 = require("../../services/authorization.service");
 const classroom_assignment_service_1 = require("./classroom-assignment.service");
@@ -52,6 +59,50 @@ const getChangeActor = (req) => ({
     userId: Number(req.user?.userId),
     username: String(req.user?.username || ''),
 });
+const roomReportContext = (req, exportMode) => {
+    const viewScope = (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view');
+    const exportScope = exportMode ? (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.export') : null;
+    const scope = viewScope === null ? exportScope : exportScope === null ? viewScope : viewScope.filter((code) => exportScope.includes(code));
+    const isAdmin = Boolean(req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin'));
+    return (query) => livestreamService.getCalendar(query, scope, isAdmin, true);
+};
+const getRoomReport = async (req, res, next) => {
+    try {
+        const build = req.query.include_attendance === 'false' ? calendar_room_report_service_1.getCalendarRoomReportSchedules : calendar_room_report_service_1.getCalendarRoomReport;
+        res.json({ success: true, data: await build(req.query, roomReportContext(req, false)) });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getRoomReport = getRoomReport;
+const getRoomReportLiveTimes = async (req, res, next) => {
+    try {
+        res.json({ success: true, data: await (0, calendar_room_report_service_1.getCalendarRoomReportLiveTimes)(req.query, roomReportContext(req, false)) });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getRoomReportLiveTimes = getRoomReportLiveTimes;
+const exportRoomReport = async (req, res, next) => {
+    try {
+        const report = await (0, calendar_room_report_service_1.getCalendarRoomReport)(req.query, roomReportContext(req, true), true);
+        const file = (0, calendar_room_report_service_1.buildCalendarRoomReportWorkbook)(report.data, report.group_by);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename="bao-cao-lop-hoc.xlsx"');
+        res.send(file);
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.exportRoomReport = exportRoomReport;
+const conflictErrorResponse = (res, err) => res.status(400).json({
+    success: false,
+    message: err.message,
+    ...(Array.isArray(err?.conflicts) ? { conflicts: err.conflicts } : {}),
+});
 const createSingle = async (req, res, next) => {
     try {
         console.log(req.body);
@@ -59,7 +110,7 @@ const createSingle = async (req, res, next) => {
         res.status(201).json({ success: true, data: result });
     }
     catch (err) {
-        res.status(400).json({ success: false, message: err.message });
+        conflictErrorResponse(res, err);
     }
 };
 exports.createSingle = createSingle;
@@ -69,7 +120,7 @@ const createBulk = async (req, res, next) => {
         res.status(201).json({ success: true, data: result });
     }
     catch (err) {
-        res.status(400).json({ success: false, message: err.message });
+        conflictErrorResponse(res, err);
     }
 };
 exports.createBulk = createBulk;
@@ -84,7 +135,7 @@ const previewAutoSchedule = async (req, res, next) => {
 exports.previewAutoSchedule = previewAutoSchedule;
 const getProgramLessons = async (req, res, next) => {
     try {
-        const data = await livestreamService.getProgramLessonsForScheduling(String(req.params.code || ''));
+        const data = await livestreamService.getProgramLessonsForScheduling(String(req.params.code || ''), req.query.calendar_source);
         res.status(200).json({ success: true, data });
     }
     catch (error) {
@@ -128,11 +179,16 @@ const commitAutoSchedule = async (req, res, next) => {
     try {
         const preview = (0, auto_schedule_service_1.previewAutoSchedule)(req.body);
         const calendars = preview.calendars.map(({ auto_schedule, ...calendar }) => calendar);
-        const data = await livestreamService.createBulk({ calendars }, getChangeActor(req));
+        const data = await livestreamService.createBulk({ calendars, allow_shared_staff_schedule: req.body?.allow_shared_staff_schedule }, getChangeActor(req));
         res.status(201).json({ success: true, data: { ...preview, calendars: data } });
     }
     catch (error) {
-        next(error);
+        if (error instanceof livestreamService.ScheduleConflictError) {
+            conflictErrorResponse(res, error);
+        }
+        else {
+            next(error);
+        }
     }
 };
 exports.commitAutoSchedule = commitAutoSchedule;
@@ -145,7 +201,7 @@ const updateBulk = async (req, res, next) => {
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
-        res.status(400).json({ success: false, message: err.message });
+        conflictErrorResponse(res, err);
     }
 };
 exports.updateBulk = updateBulk;
@@ -156,7 +212,7 @@ const backfillMissingTeachingUsers = async (req, res) => {
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
-        res.status(400).json({ success: false, message: err.message });
+        conflictErrorResponse(res, err);
     }
 };
 exports.backfillMissingTeachingUsers = backfillMissingTeachingUsers;
@@ -170,10 +226,20 @@ const resendToHocmai = async (req, res) => {
         });
     }
     catch (err) {
-        res.status(400).json({ success: false, message: err.message });
+        conflictErrorResponse(res, err);
     }
 };
 exports.resendToHocmai = resendToHocmai;
+const retryCanceledHocmaiStatus = async (req, res) => {
+    try {
+        const result = await (0, hocmai_canceled_status_service_1.retryCanceledCalendarStatus)(req.params.id);
+        res.status(200).json({ success: true, data: result });
+    }
+    catch (error) {
+        conflictErrorResponse(res, error);
+    }
+};
+exports.retryCanceledHocmaiStatus = retryCanceledHocmaiStatus;
 const syncStudents = async (req, res, next) => {
     try {
         res.status(202).json({
@@ -235,7 +301,7 @@ const updateSchedule = async (req, res, next) => {
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
-        res.status(400).json({ success: false, message: err.message });
+        conflictErrorResponse(res, err);
     }
 };
 exports.updateSchedule = updateSchedule;
@@ -246,7 +312,7 @@ const rescheduleSession = async (req, res, next) => {
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
-        res.status(400).json({ success: false, message: err.message });
+        conflictErrorResponse(res, err);
     }
 };
 exports.rescheduleSession = rescheduleSession;
@@ -256,7 +322,7 @@ const swapSessionTimes = async (req, res, next) => {
         res.status(200).json({ success: true, data: result });
     }
     catch (err) {
-        res.status(400).json({ success: false, message: err.message });
+        conflictErrorResponse(res, err);
     }
 };
 exports.swapSessionTimes = swapSessionTimes;
@@ -303,6 +369,16 @@ const deleteSession = async (req, res, next) => {
     }
 };
 exports.deleteSession = deleteSession;
+const restoreSession = async (req, res, next) => {
+    try {
+        const data = await livestreamService.restoreSession(Number(req.params.id), getChangeActor(req));
+        res.json({ success: true, data });
+    }
+    catch (error) {
+        res.status(error.statusCode || 400).json({ success: false, message: error.message });
+    }
+};
+exports.restoreSession = restoreSession;
 const syncCalendarAttendance = async (req, res, next) => {
     try {
         const data = await livestreamService.syncCalendarAttendance(req.body?.ids, req.body?.preview === true);
@@ -343,6 +419,16 @@ const getCalendarTeacherFilterOptions = async (req, res, next) => {
     }
 };
 exports.getCalendarTeacherFilterOptions = getCalendarTeacherFilterOptions;
+const getCalendarHeaderFilterOptions = async (req, res, next) => {
+    try {
+        const data = await livestreamService.getCalendarHeaderFilterOptions(req.query, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view'), Boolean(req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin')));
+        res.status(200).json({ success: true, data });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getCalendarHeaderFilterOptions = getCalendarHeaderFilterOptions;
 const getCalendar = async (req, res, next) => {
     try {
         const result = await livestreamService.getCalendar(req.query, (0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view'), Boolean(req.user?.permissions?.includes('*') || req.user?.roles?.includes('admin')));
@@ -354,6 +440,9 @@ const getCalendar = async (req, res, next) => {
                 ...record,
                 // id/can_modify là metadata phục vụ thao tác, không phải cột dữ liệu.
                 id: source.id,
+                deleted_at: source.deleted_at ?? null,
+                can_restore: Boolean(source.deleted_at && source.key),
+                calendar_source: (0, calendar_source_1.calendarSourceFromCode)(source.code),
                 session_id: source.session_id == null ? null : String(source.session_id),
                 can_modify: livestreamService.isSessionModifiable(source, now),
                 classroom_assigned: source.classroom_assigned === true,
@@ -367,7 +456,7 @@ const getCalendar = async (req, res, next) => {
         });
     }
     catch (err) {
-        res.status(400).json({ success: false, message: err.message });
+        res.status(err.statusCode || 400).json({ success: false, message: err.message });
     }
 };
 exports.getCalendar = getCalendar;
@@ -421,6 +510,7 @@ const importTemplate = async (req, res) => {
 exports.importTemplate = importTemplate;
 const importFile = async (req, res) => {
     try {
+        (0, calendar_source_1.assertLivestreamCalendarSource)(req.body?.calendar_source);
         const sheetUrl = String(req.body?.sheet_url || '').trim();
         if (!req.file && !sheetUrl) {
             res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
@@ -455,7 +545,21 @@ const importFile = async (req, res) => {
             });
             return;
         }
-        const result = await (0, calendar_import_service_1.importCalendarFromSheet)(importRows, getChangeActor(req));
+        const policy = await (0, calendar_approval_access_1.accountPolicy)(req.user.userId);
+        const needsApproval = policy.required_operations.some(op => ['create', 'import', 'mapping'].includes(op));
+        if (needsApproval && req.header('X-Calendar-Submit-Approval') !== 'true') {
+            res.status(409).json({ success: false, code: 'APPROVAL_REQUIRED', message: 'File nhập lịch cần gửi duyệt.' });
+            return;
+        }
+        const approvalReason = needsApproval ? (0, calendar_approval_reason_1.approvalSubmissionReason)(req, res, 'import') : undefined;
+        if (needsApproval && !approvalReason)
+            return;
+        const result = await (0, calendar_import_service_1.importCalendarFromSheet)(importRows, getChangeActor(req), needsApproval);
+        if (result.status === 'preview') {
+            const request = await calendar_approval_service_1.approvals.create(req.user, { command: { action: 'import', payload: { mode: 'create', rows: result.rows, internal: result.internal } }, reason: approvalReason, title: (0, calendar_approval_reason_1.approvalSubmissionTitle)(req), submit: true }, req.header('Idempotency-Key'), true);
+            res.status(202).json({ success: true, data: { approval_required: true, request }, message: 'Đã gửi duyệt file nhập lịch.' });
+            return;
+        }
         if (result.status === 'validation_error') {
             res.status(400).json({
                 success: false,
@@ -480,6 +584,7 @@ const importFile = async (req, res) => {
 exports.importFile = importFile;
 const updateImportFile = async (req, res) => {
     try {
+        (0, calendar_source_1.assertLivestreamCalendarSource)(req.body?.calendar_source);
         const sheetUrl = String(req.body?.sheet_url || '').trim();
         if (!req.file && !sheetUrl) {
             res.status(400).json({ success: false, message: 'Vui lòng chọn file hoặc dán link Google Sheets' });
@@ -522,7 +627,25 @@ const updateImportFile = async (req, res) => {
             });
             return;
         }
-        const result = await (0, calendar_import_service_1.updateCalendarsFromSheet)(importRows, getChangeActor(req), rawExistingDataMode);
+        const policy = await (0, calendar_approval_access_1.accountPolicy)(req.user.userId);
+        const needsApproval = policy.required_operations.some(op => ['update', 'import', 'mapping'].includes(op));
+        if (needsApproval && req.header('X-Calendar-Submit-Approval') !== 'true') {
+            res.status(409).json({ success: false, code: 'APPROVAL_REQUIRED', message: 'File cập nhật cần gửi duyệt.' });
+            return;
+        }
+        const approvalReason = needsApproval ? (0, calendar_approval_reason_1.approvalSubmissionReason)(req, res, 'import') : undefined;
+        if (needsApproval && !approvalReason)
+            return;
+        const result = await (0, calendar_import_service_1.updateCalendarsFromSheet)(importRows, getChangeActor(req), rawExistingDataMode, needsApproval);
+        if (result.status === 'preview') {
+            if (!result.rows.length) {
+                res.json({ success: true, data: { count: 0 }, message: "File không có thay đổi" });
+                return;
+            }
+            const request = await calendar_approval_service_1.approvals.create(req.user, { command: { action: "import", payload: { mode: "update", rows: result.rows } }, reason: approvalReason, title: (0, calendar_approval_reason_1.approvalSubmissionTitle)(req), submit: true }, req.header("Idempotency-Key"), true);
+            res.status(202).json({ success: true, data: { approval_required: true, request }, message: "Đã gửi duyệt file cập nhật." });
+            return;
+        }
         if (result.status === 'validation_error') {
             res.status(400).json({
                 success: false,
@@ -605,3 +728,12 @@ const importMappings = async (req, res) => {
     }
 };
 exports.importMappings = importMappings;
+const getClassificationOptions = async (req, res, next) => {
+    try {
+        res.json({ success: true, data: await (0, calendar_classification_filters_1.getCalendarClassificationOptions)((0, authorization_service_1.getProgramScopeFilter)(req.user, 'calendar.view')) });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.getClassificationOptions = getClassificationOptions;

@@ -1,3 +1,4 @@
+import {withCalendarMutexMock} from './calendar-transaction.fixture';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import prisma from '../src/lib/prisma';
@@ -38,7 +39,7 @@ test('create/update enforce metadata, original lesson title and active teaching 
   (prisma.teacher_profiles as any).findMany = async ({where}:any) => profiles.filter(profile=>profile.can_view_stream_key===where.can_view_stream_key && profile.status===where.status);
   (prisma as any).$transaction = async (operation:any) => {
     transactions++;
-    return operation({$executeRawUnsafe:async()=>1,calendar:{findMany:async()=>[{...calendar}]}});
+    return operation(withCalendarMutexMock({$executeRawUnsafe:async()=>1,calendar:{findMany:async()=>[{...calendar}]}}));
   };
   const invalidUpdate = async (input:CalendarImportRow, field?:string) => {
     const before = transactions;

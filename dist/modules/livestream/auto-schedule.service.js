@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.previewAutoSchedule = void 0;
+const calendar_source_1 = require("./calendar-source");
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 const dateOnly = (date) => [
@@ -134,6 +135,8 @@ const nextStudyDate = (cursor, weekdays, holidays, weekInterval = 1, anchorDate)
 };
 const previewAutoSchedule = (payload) => {
     const programCode = String(payload?.program_code || '').trim();
+    const calendarSource = (0, calendar_source_1.calendarSourceFromCode)(programCode);
+    (0, calendar_source_1.assertCalendarSourceUnchanged)({ code: programCode }, payload);
     if (!programCode)
         throw new Error('Vui lòng chọn Chương trình');
     if (!['topclass', 'topuni'].includes(payload?.system_type)) {
@@ -163,7 +166,16 @@ const previewAutoSchedule = (payload) => {
         holidays.add(rule.date);
         holidayHandlingByDate.set(rule.date, rule.handling);
     });
-    const sequence = orderedSessions(payload.blocks, payload.strategy || 'by_block', payload.system_type === 'topuni' ? 1 : undefined);
+    const hasLessonRange = payload.from_learn_number !== undefined || payload.to_learn_number !== undefined;
+    const fromLearnNumber = payload.from_learn_number;
+    const toLearnNumber = payload.to_learn_number;
+    if (hasLessonRange && (!Number.isInteger(fromLearnNumber) || !Number.isInteger(toLearnNumber)
+        || fromLearnNumber <= 0 || toLearnNumber < fromLearnNumber)) {
+        throw new Error('Khoảng bài không hợp lệ: Từ bài và Đến bài phải là số nguyên dương, Đến bài phải lớn hơn hoặc bằng Từ bài');
+    }
+    const sequence = orderedSessions(payload.blocks, payload.strategy || 'by_block', payload.system_type === 'topuni' ? 1 : undefined).filter(({ lesson }) => !hasLessonRange || (lesson.learn_number >= fromLearnNumber && lesson.learn_number <= toLearnNumber));
+    if (!sequence.length)
+        throw new Error('Không có bài học trong khoảng đã chọn');
     const holidayHandling = payload.holiday_handling === 'next_session'
         || (payload.system_type === 'topuni'
             && payload.holiday_handling === undefined
@@ -247,6 +259,7 @@ const previewAutoSchedule = (payload) => {
                 ? `${renderNamePattern(prefix, occurrence)}${masterLessonName}${renderNamePattern(suffix, occurrence)}`.slice(0, 400)
                 : masterLessonName;
         return {
+            calendar_source: calendarSource,
             system_type: payload.system_type,
             code: programCode,
             learn_number: lesson.learn_number,

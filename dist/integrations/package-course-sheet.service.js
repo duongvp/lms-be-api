@@ -5,7 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.clearPackageCourseSheetCache = exports.listPackageCoursesFromSheet = exports.resolvePackagesByCourseId = void 0;
 const ApiError_1 = __importDefault(require("../utils/ApiError"));
-const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1m_KNVZc5PMu-UQi2PCrEGuXAfVM0NPGEghRbEYnJeH0/edit?usp=sharing';
+const DEFAULT_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1JHtpHua04oLpnozsn-YtWz9UE0ZINFJeLE0BnDKjJW8/edit?usp=sharing';
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 let cache = null;
 let refreshPromise = null;
@@ -149,8 +149,8 @@ const downloadRows = async () => {
     }
     return rowsByCourseId;
 };
-const getRowsByCourseId = async () => {
-    if (cache && cache.expiresAt > Date.now())
+const getRowsByCourseId = async (forceRefresh = false) => {
+    if (!forceRefresh && cache && cache.expiresAt > Date.now())
         return cache.rowsByCourseId;
     try {
         // Nhiều request mở modal cùng lúc chỉ tạo một kết nối tới Google Sheet.
@@ -167,7 +167,7 @@ const getRowsByCourseId = async () => {
     catch (error) {
         // Nếu sheet tạm thời lỗi, tiếp tục dùng snapshot gần nhất thay vì làm gián
         // đoạn tạo lịch. Lần khởi động đầu tiên vẫn bắt buộc đọc sheet thành công.
-        if (cache)
+        if (!forceRefresh && cache)
             return cache.rowsByCourseId;
         throw error;
     }
@@ -189,7 +189,7 @@ const resolvePackagesByCourseId = async (courseIdInput) => {
     return rows;
 };
 exports.resolvePackagesByCourseId = resolvePackagesByCourseId;
-const listPackageCoursesFromSheet = async () => (Array.from((await getRowsByCourseId()).values())
+const listPackageCoursesFromSheet = async (forceRefresh = false) => (Array.from((await getRowsByCourseId(forceRefresh)).values())
     .flat()
     .sort((left, right) => (left.course_id.localeCompare(right.course_id, undefined, { numeric: true })
     || left.package_id.localeCompare(right.package_id, undefined, { numeric: true }))));

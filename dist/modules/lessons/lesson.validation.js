@@ -3,7 +3,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.validateLessonImportRows = exports.validateLessonCourseMappingPayload = exports.validateLessonReorderPayload = exports.validateLessonBulkUpdatePayload = exports.validateLessonProgramSubjectUpdatePayload = exports.validateLessonPayload = exports.validateLessonId = exports.validateLessonExportQuery = exports.validateLessonListQuery = void 0;
+exports.validateLessonImportRows = exports.validateLessonCourseMappingPayload = exports.validateLessonReorderPayload = exports.validateLessonBulkUpdatePayload = exports.validateLessonProgramSubjectUpdatePayload = exports.validateLessonPayload = exports.validateLessonProgramPayload = exports.validateLessonId = exports.validateLessonExportQuery = exports.validateLessonListQuery = void 0;
+const calendar_source_1 = require("../livestream/calendar-source");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const SORTABLE_FIELDS = new Set([
     'id',
@@ -81,6 +82,10 @@ const validateLessonListQuery = (query) => {
         throw new ApiError_1.default('limit phải nằm trong khoảng 1-100', 400);
     const sortBy = stringOrUndefined(query.sort_by);
     const sortOrder = stringOrUndefined(query.sort_order);
+    const taughtStatus = query.taught_status === '' ? undefined : query.taught_status;
+    if (taughtStatus !== undefined && taughtStatus !== 'taught' && taughtStatus !== 'untaught') {
+        throw new ApiError_1.default('taught_status chỉ hỗ trợ taught hoặc untaught', 400);
+    }
     const courseCode = stringOrUndefined(query.course_code);
     const subjectCode = stringOrUndefined(query.subject_code);
     if (sortBy && !SORTABLE_FIELDS.has(sortBy)) {
@@ -109,6 +114,8 @@ const validateLessonListQuery = (query) => {
         from_learn_number: fromLearnNumber,
         to_learn_number: toLearnNumber,
         keyword: stringOrUndefined(query.keyword),
+        taught_status: taughtStatus,
+        calendar_source: query.calendar_source === undefined ? undefined : (0, calendar_source_1.resolveCalendarSource)(query.calendar_source),
         course_code: courseCode,
         status: optionalInteger(query.status, 'status'),
         sort_by: sortBy ?? 'learn_number',
@@ -146,6 +153,24 @@ const validateLessonIds = (value) => {
     }
     return value.map((item) => (0, exports.validateLessonId)(item));
 };
+const validateLessonProgramPayload = (body) => {
+    const source = body?.calendar_source === undefined ? undefined : (0, calendar_source_1.resolveCalendarSource)(body.calendar_source);
+    const code = String(body?.subject_code || '').trim();
+    if (source === 'livestream' && (0, calendar_source_1.calendarSourceFromCode)(code) === 'feed') {
+        throw new ApiError_1.default('Mã chương trình Livestream không được bắt đầu bằng feed-', 400);
+    }
+    const subject_code = source === 'feed' && code && (0, calendar_source_1.calendarSourceFromCode)(code) !== 'feed' ? `feed-${code}` : code;
+    if ((0, calendar_source_1.calendarSourceFromCode)(subject_code) === 'feed' && subject_code.length > 30) {
+        throw new ApiError_1.default('Mã chương trình Feed không được quá 30 ký tự, bao gồm feed-, để tương thích cột calendar.code', 400);
+    }
+    return (0, exports.validateLessonPayload)({
+        ...body,
+        subject_code,
+        learn_number: 1,
+        lesson_name: body?.lesson_name == null || (typeof body.lesson_name === 'string' && !body.lesson_name.trim()) ? 'Bài 1' : body.lesson_name,
+    });
+};
+exports.validateLessonProgramPayload = validateLessonProgramPayload;
 const validateLessonPayload = (body, isUpdate = false) => {
     rejectCalendarOnlyFields(body ?? {});
     const payload = {};
@@ -190,10 +215,19 @@ const validateLessonPayload = (body, isUpdate = false) => {
     return payload;
 };
 exports.validateLessonPayload = validateLessonPayload;
-const validateLessonProgramSubjectUpdatePayload = (body) => ({
-    program_code: requiredString(body?.program_code, 'program_code', 100),
-    subject_name: requiredString(body?.subject_name, 'subject_name', 100),
-});
+const validateLessonProgramSubjectUpdatePayload = (body) => {
+    const payload = {
+        program_code: requiredString(body?.program_code, 'program_code', 100),
+        subject_name: requiredString(body?.subject_name, 'subject_name', 100),
+    };
+    if (body?.subject_code !== undefined) {
+        payload.subject_code = requiredString(body.subject_code, 'subject_code', 100);
+        if (!/^[A-Za-z0-9_-]+$/.test(payload.subject_code)) {
+            throw new ApiError_1.default('Mã chương trình chỉ dùng chữ không dấu, số, dấu gạch ngang hoặc gạch dưới', 400);
+        }
+    }
+    return payload;
+};
 exports.validateLessonProgramSubjectUpdatePayload = validateLessonProgramSubjectUpdatePayload;
 const validateLessonBulkUpdatePayload = (body) => {
     const ids = validateLessonIds(body.ids);

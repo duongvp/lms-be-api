@@ -104,6 +104,6 @@ router.get('/:id', authorize(['users.view']), user_controller_1.default.getUserB
  *       200:
  *         description: Cập nhật thành công
  */
-router.put('/:id', authorize(['users.update']), authorizeRoleAssignment, authorizeFields('users', (req) => Object.keys(req.body || {}).filter((field) => !['roleIds', 'programScope'].includes(field))), user_controller_1.default.updateUser);
+router.put('/:id', authorize(['users.update']), authorizeRoleAssignment, authorizeFields('users', (req) => Object.keys(req.body || {}).filter((field) => !['roleIds', 'programScope', 'approvalPolicy'].includes(field))), user_controller_1.default.updateUser);
 router.delete('/:id', authorize(['users.delete']), authorizeAdmin, user_controller_1.default.deleteUser);
 exports.default = router;

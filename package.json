@@ -36,7 +36,10 @@
     "db:calendar-source-rollback-triggers": "tsx prisma/scripts/rollbackCalendarSourceTriggers.ts",
     "test:calendar-detail-report": "node --import tsx --test tests/calendar-detail-report.test.ts tests/calendar-detail-report-auth.test.ts",
     "test:teaching-reports": "node --import tsx --test tests/teaching-reports.test.ts",
-    "test:teaching-reports:integration": "node --import tsx tests/teaching-reports.integration.ts"
+    "test:teaching-reports:integration": "node --import tsx tests/teaching-reports.integration.ts",
+    "db:calendar-approval-rbac": "tsx prisma/scripts/syncCalendarApprovalRbac.ts",
+    "test:calendar-approval": "node --import tsx --test tests/calendar-approval.test.ts",
+    "test:calendar-approval:integration": "node --import tsx tests/calendar-approval.integration.ts"
   },
   "keywords": [],
   "author": "",
@@ -47,6 +50,7 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
     "nodemon": "^3.1.14",
+    "socket.io-client": "^4.8.4",
     "ts-node": "^10.9.2",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
@@ -61,6 +65,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
     "prisma": "^5.22.0",
+    "socket.io": "^4.8.4",
     "xlsx": "^0.18.5",
     "xlsx-js-style": "^1.2.0"
   }

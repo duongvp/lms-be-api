@@ -8,6 +8,7 @@ const prisma_1 = __importDefault(require("../../lib/prisma"));
 const crypto_1 = require("crypto");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const dateTime_1 = require("../../utils/dateTime");
+const calendar_approval_access_1 = require("../calendar-approvals/calendar-approval.access");
 const authorization_service_1 = require("../../services/authorization.service");
 const normalizeProgramScope = (scope) => {
     if (scope === undefined)
@@ -257,7 +258,7 @@ const UserService = {
             throw new ApiError_1.default('Failed to fetch user', 500);
         }
     },
-    async updateUser(userId, data) {
+    async updateUser(userId, data, actorUserId) {
         try {
             // Kiểm tra user tồn tại
             const existingUser = await prisma_1.default.users.findUnique({
@@ -297,7 +298,11 @@ const UserService = {
                 updateData.room_id = data.room_id;
             // users.updated_at chưa khai báo @updatedAt trong Prisma schema.
             updateData.updated_at = (0, dateTime_1.getVietnamWallClockDate)();
+            const policyActor = data.approvalPolicy !== undefined ? await (0, calendar_approval_access_1.freshUser)(Number(actorUserId)) : undefined;
             await prisma_1.default.$transaction(async (tx) => {
+                // Validate the policy snapshot before changing roles, and commit all account edits atomically.
+                if (data.approvalPolicy !== undefined)
+                    await (0, calendar_approval_access_1.saveAccountPolicyInTransaction)(policyActor, userId, data.approvalPolicy, tx);
                 await tx.users.update({ where: { id: userId }, data: updateData });
                 if (data.roleIds !== undefined) {
                     if (!Array.isArray(data.roleIds))

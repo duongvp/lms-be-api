@@ -77,7 +77,7 @@ const syncFutureStreams = async (programCode, teacherProfileId, bannerUrl) => pr
   UPDATE stream stream_row
   JOIN (
     SELECT DISTINCT calendar_row.code, calendar_row.learn_number
-    FROM calendar calendar_row
+    FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
     JOIN teacher_profiles profile ON profile.id = ${teacherProfileId}
     WHERE calendar_row.code = ${programCode}
       AND calendar_row.start_time >= NOW()
@@ -103,7 +103,7 @@ const createBanner = async (payload, actor) => {
         return (0, exports.getBanner)(Number(ids[0].id));
     }
     catch (error) {
-        if (error?.code === 'P2002')
+        if (error?.code === 'P2002' || (error?.code === 'P2010' && String(error?.meta?.code) === '1062'))
             throw new ApiError_1.default('Chương trình và giáo viên này đã có banner', 409);
         throw error;
     }
@@ -129,7 +129,7 @@ const updateBanner = async (id, payload, actor) => {
         return (0, exports.getBanner)(id);
     }
     catch (error) {
-        if (error?.code === 'P2002')
+        if (error?.code === 'P2002' || (error?.code === 'P2010' && String(error?.meta?.code) === '1062'))
             throw new ApiError_1.default('Chương trình và giáo viên này đã có banner', 409);
         throw error;
     }
@@ -150,7 +150,7 @@ const getBannerOptions = async (programCode, teacherProfileId) => {
         ? await prisma_1.default.$queryRaw(client_1.Prisma.sql `
         SELECT calendar_row.code,
           COALESCE(MAX(lesson.subject_name), MAX(calendar_row.subject), calendar_row.code) subject_name
-        FROM calendar calendar_row
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         JOIN teacher_profiles profile ON profile.id = ${teacherProfileId}
           AND (
             LOWER(calendar_row.teacher) = LOWER(profile.username)
@@ -166,7 +166,7 @@ const getBannerOptions = async (programCode, teacherProfileId) => {
         : await prisma_1.default.$queryRaw(client_1.Prisma.sql `
         SELECT calendar_row.code,
           COALESCE(MAX(lesson.subject_name), MAX(calendar_row.subject), calendar_row.code) subject_name
-        FROM calendar calendar_row
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         LEFT JOIN (
           SELECT subject_code, MAX(subject_name) subject_name
           FROM lessons WHERE status <> 0 GROUP BY subject_code
@@ -177,7 +177,7 @@ const getBannerOptions = async (programCode, teacherProfileId) => {
     const teachersRaw = programCode
         ? await prisma_1.default.$queryRaw(client_1.Prisma.sql `
         SELECT DISTINCT profile.id, profile.username, profile.display_name
-        FROM calendar calendar_row
+        FROM (SELECT * FROM calendar WHERE deleted_at IS NULL) AS calendar_row
         JOIN teacher_profiles profile ON
           LOWER(calendar_row.teacher) = LOWER(profile.username)
           OR LOWER(calendar_row.teacher) = LOWER(profile.display_name)

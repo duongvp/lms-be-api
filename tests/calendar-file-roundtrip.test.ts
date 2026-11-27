@@ -1,3 +1,4 @@
+import {withCalendarMutexMock} from './calendar-transaction.fixture';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as XLSX from 'xlsx';
@@ -69,10 +70,10 @@ test('time-only overwrite preserves stored assignments and document metadata, su
   (prisma.calendar as any).findMany = async () => [{...current}];
   (prisma.teacher_profiles as any).findMany = async () => [{username: 'teacher@example.test', display_name: 'Cô An'}];
   (prisma as any).$queryRaw = async () => [{id:1n, subject_code:'PROGRAM', learn_number:5, system_type:'topuni', subject_name:'Toán', lesson_name:'Bài 5'}];
-  (prisma as any).$transaction = async (callback: any) => callback({
+  (prisma as any).$transaction = async (callback: any) => callback(withCalendarMutexMock({
     $executeRawUnsafe: async (_sql: string, ...values: unknown[]) => {captured = values;},
     calendar: {findMany: async () => []},
-  });
+  }));
   try {
     const unchanged = await updateCalendarsFromSheet(validateFile([{
       ...fixture, lesson_document: 'https://example.test/doc',

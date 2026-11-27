@@ -1,3 +1,4 @@
+import {withCalendarMutexMock} from './calendar-transaction.fixture';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import prisma from '../src/lib/prisma';
@@ -26,7 +27,7 @@ for (const action of ['add', 'delete'] as const) {
           return 1;
         },
       };
-      prisma.$transaction = (async (callback: any) => callback(tx)) as typeof prisma.$transaction;
+      prisma.$transaction = (async (callback: any) => callback(withCalendarMutexMock(tx))) as typeof prisma.$transaction;
       try {
         const result = await updateLessonCourseMappings({
           programCode: 'toan-6',

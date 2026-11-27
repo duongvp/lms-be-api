@@ -3,6 +3,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const approval_policy_routes_1 = require("./modules/approval-policy/approval-policy.routes");
+const calendar_approval_routes_1 = require("./modules/calendar-approvals/calendar-approval.routes");
+const report_routes_1 = __importDefault(require("./modules/teaching-reports/report.routes"));
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const auth_1 = require("./modules/auth");
@@ -25,6 +28,7 @@ const allowedCorsOrigins = new Set((process.env.CORS_ORIGINS
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean));
+app.use('/api/calendar-change-requests', express_1.default.json({ limit: '2mb' }));
 app.use(express_1.default.json());
 app.use((req, res, next) => {
     console.log(">>>", req.method, req.url);
@@ -38,6 +42,7 @@ app.use((0, cors_1.default)({
     },
     credentials: true,
 }));
+app.use("/api/teaching-reports", report_routes_1.default);
 app.use("/api/users", users_1.userRoutes);
 app.use("/api/roles", roles_1.roleRoutes);
 app.use("/api/modules", modules_1.moduleRoutes);
@@ -48,6 +53,8 @@ app.use("/api/quizzes", quizzes_1.quizRoutes);
 app.use("/api/dashboard", dashboard_1.dashboardRoutes);
 app.use("/api/room-config", room_config_1.roomConfigRoutes);
 app.use("/api/program-teacher-banners", program_teacher_banners_1.programTeacherBannerRoutes);
+app.use("/api/calendar-change-requests", calendar_approval_routes_1.calendarApprovalRoutes);
+app.use("/api/approval-policies", approval_policy_routes_1.approvalPolicyRoutes);
 app.use("/api/livestreams", livestream_1.livestreamRoute);
 app.use("/livestreams", livestream_1.livestreamRoute);
 app.use("/api/auth", auth_1.authRoutes);

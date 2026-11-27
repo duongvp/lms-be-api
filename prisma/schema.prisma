@@ -479,6 +479,8 @@ model users {
   @@index([student_hmid], map: "idx_users_hmid")
   @@index([name], map: "idx_users_name")
   @@index([room_id], map: "idx_users_room")
+  approvalAccount calendar_approval_accounts?
+
 }
 
 /// Append-only audit trail for every classroom reassignment. The current
@@ -602,6 +604,7 @@ model roles {
   description        String?                   @db.VarChar(255)
   isActive           Boolean                   @default(true)
   fieldPolicy        Json?
+  approval_policy    Json?
   createdAt          DateTime                  @default(now())
   updatedAt          DateTime                  @updatedAt
   userRoles          userRoles[]
@@ -750,4 +753,94 @@ model moduleFields {
   @@unique([moduleId, fieldCode])
   @@index([moduleId])
   @@map("module_fields")
+}
+
+/// Per-account approval configuration. Existing RBAC and account program scope still apply.
+model calendar_approval_accounts {
+  user_id Int @id @db.UnsignedInt
+  can_approve Boolean @default(false)
+  required_operations Json
+  operation_overrides Json?
+  user users @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  version Int @default(1)
+  updated_by Int @db.UnsignedInt
+  updated_at DateTime @default(now()) @updatedAt @db.DateTime(3)
+}
+
+model calendar_approval_requests {
+  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
+  public_id String @unique @db.Char(36)
+  created_by Int @db.UnsignedInt
+  creator_name String @db.VarChar(150)
+  operation String @db.VarChar(20)
+  status String @default("DRAFT") @db.VarChar(20)
+  revision Int @default(1)
+  lock_version Int @default(1)
+  command Json
+  program_codes Json
+  before_data Json
+  proposed_data Json
+  base_hash String @db.Char(64)
+  title String? @db.VarChar(255)
+  reason String @db.VarChar(1000)
+  decision_reason String? @db.VarChar(1000)
+  decided_by Int? @db.UnsignedInt
+  result_data Json?
+  idempotency_key String? @db.VarChar(100)
+  input_hash String? @db.Char(64)
+  approval_policy_snapshot Json?
+  submitted_at DateTime? @db.DateTime(3)
+  decided_at DateTime? @db.DateTime(3)
+  created_at DateTime @default(now()) @db.DateTime(3)
+  updated_at DateTime @default(now()) @updatedAt @db.DateTime(3)
+  @@unique([created_by,idempotency_key])
+  @@index([created_by,status,id])
+  @@index([status,submitted_at])
+}
+
+model calendar_approval_revisions {
+  request_id BigInt @db.UnsignedBigInt
+  revision Int
+  command Json
+  before_data Json
+  proposed_data Json
+  base_hash String @db.Char(64)
+  program_codes Json
+  title String? @db.VarChar(255)
+  reason String @db.VarChar(1000)
+  submitted_by Int @db.UnsignedInt
+  approval_policy_snapshot Json?
+  submitted_at DateTime @default(now()) @db.DateTime(3)
+  @@id([request_id,revision])
+}
+
+model calendar_approval_audit {
+  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
+  request_id BigInt? @db.UnsignedBigInt
+  revision Int?
+  actor_id Int @db.UnsignedInt
+  actor_name String @db.VarChar(150)
+  action String @db.VarChar(40)
+  before_data Json
+  after_data Json
+  reason String @db.VarChar(1000)
+  created_at DateTime @default(now()) @db.DateTime(3)
+  @@index([request_id,id])
+}
+
+model calendar_approval_notifications {
+  id BigInt @id @default(autoincrement()) @db.UnsignedBigInt
+  event_id String @db.Char(36)
+  request_id BigInt @db.UnsignedBigInt
+  recipient_id Int @db.UnsignedInt
+  event_type String @db.VarChar(40)
+  read_at DateTime? @db.DateTime(3)
+  created_at DateTime @default(now()) @db.DateTime(3)
+  @@unique([event_id,recipient_id])
+  @@index([recipient_id,read_at,id])
+}
+
+/// All schedule writers use this lock to serialize conflict checks and apply.
+model calendar_approval_mutex {
+  id Int @id
 }

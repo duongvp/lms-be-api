@@ -3,11 +3,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getCalendarStudentSyncJob = exports.startCalendarStudentSync = exports.markCalendarsStudentSynced = exports.syncCalendarStudents = exports.buildStudentDisplayName = void 0;
+exports.getCalendarStudentSyncJob = exports.startCalendarStudentSync = exports.markCalendarsStudentSynced = exports.syncCalendarStudents = exports.fetchCalendarRegisteredStudents = exports.normalizeRegistrationAuditDate = exports.fetchRegistrationApiPage = exports.loadRegistrationApiConfig = exports.buildStudentDisplayName = void 0;
 const crypto_1 = require("crypto");
 const prisma_1 = __importDefault(require("../../lib/prisma"));
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const calendar_user_sync_service_1 = require("./calendar-user-sync.service");
+const calendar_student_timestamp_1 = require("./calendar-student-timestamp");
 const MAX_CALENDARS_PER_SYNC = 500;
 let syncRunning = false;
 let jobRunning = false;
@@ -60,6 +61,7 @@ const loadApiConfig = () => {
         skipFinishTime: normalizeText(process.env.HOCMAI_LIVE_USER_SKIP_FINISHTIME) || '1',
     };
 };
+exports.loadRegistrationApiConfig = loadApiConfig;
 const normalizeOptionalRegisteredAt = (value) => {
     if (value === undefined || value === null)
         return undefined;
@@ -78,8 +80,15 @@ const normalizeOptionalRegisteredAt = (value) => {
     }
     return registeredAt;
 };
+exports.normalizeRegistrationAuditDate = normalizeOptionalRegisteredAt;
 const fetchApiPage = async (config, productIds, registeredAt, page) => {
     const url = new URL(config.url);
+    // Configuration may contain example package query parameters. Only request
+    // the packages selected for this run, without duplicate packages[0] values.
+    for (const key of [...url.searchParams.keys()]) {
+        if (/^packages(?:\[.*\])?$/.test(key))
+            url.searchParams.delete(key);
+    }
     url.searchParams.set('page', String(page));
     url.searchParams.set('limit', String(config.limit));
     url.searchParams.set('skip_finishtime', config.skipFinishTime);
@@ -108,6 +117,9 @@ const fetchApiPage = async (config, productIds, registeredAt, page) => {
             if (!payload || payload.status !== 'success' || !Array.isArray(payload.data)) {
                 throw new ApiError_1.default(`API HOCMAI trả dữ liệu không hợp lệ ở trang ${page}`, 502);
             }
+            if (payload.current_page !== undefined && Number(payload.current_page) !== page) {
+                throw new ApiError_1.default(`API HOCMAI trả sai trang: yêu cầu ${page}, nhận ${payload.current_page}`, 502);
+            }
             return payload;
         }
         catch (error) {
@@ -124,6 +136,7 @@ const fetchApiPage = async (config, productIds, registeredAt, page) => {
     }
     throw new ApiError_1.default(`Không thể tải trang ${page} từ API HOCMAI`, 502);
 };
+exports.fetchRegistrationApiPage = fetchApiPage;
 const fetchAllUsers = async (productIds, registeredAt, onProgress) => {
     const config = loadApiConfig();
     const firstPage = await fetchApiPage(config, productIds, registeredAt, 1);
@@ -132,8 +145,12 @@ const fetchAllUsers = async (productIds, registeredAt, onProgress) => {
         throw new ApiError_1.default('API HOCMAI trả tổng học viên không hợp lệ', 502);
     }
     const perPage = Number(firstPage.per_page || config.limit);
+    if (!Number.isSafeInteger(perPage) || perPage < 1
+        || (firstPage.last_page !== undefined && (!Number.isSafeInteger(Number(firstPage.last_page)) || Number(firstPage.last_page) < 0))) {
+        throw new ApiError_1.default('API HOCMAI trả thông tin phân trang không hợp lệ', 502);
+    }
     const calculatedLastPage = perPage > 0 ? Math.max(1, Math.ceil(total / perPage)) : 1;
-    const lastPage = Math.max(1, Number(firstPage.last_page || calculatedLastPage));
+    const lastPage = Math.max(1, calculatedLastPage, Number(firstPage.last_page || 0) || 0);
     const users = [...firstPage.data];
     onProgress?.(Math.round(10 + 55 / lastPage), `Đã quét trang 1/${lastPage} từ API HOCMAI`);
     for (let page = 2; page <= lastPage; page += 1) {
@@ -141,8 +158,21 @@ const fetchAllUsers = async (productIds, registeredAt, onProgress) => {
         users.push(...payload.data);
         onProgress?.(Math.round(10 + (55 * page) / lastPage), `Đã quét trang ${page}/${lastPage} từ API HOCMAI`);
     }
+    if (users.length !== total) {
+        throw new ApiError_1.default("API HOCMAI trả số dòng không khớp: " + users.length + "/" + total + " học viên", 502);
+    }
     return { users, total };
 };
+const fetchCalendarRegisteredStudents = async (rawProductIds, registeredAt) => {
+    const productIds = [...new Set(rawProductIds.map(normalizeText).filter(Boolean))];
+    const users = [];
+    for (let index = 0; index < productIds.length; index += 50) {
+        const batch = await fetchAllUsers(productIds.slice(index, index + 50), registeredAt);
+        users.push(...batch.users);
+    }
+    return users;
+};
+exports.fetchCalendarRegisteredStudents = fetchCalendarRegisteredStudents;
 const loadMappings = async (calendarIds) => {
     const calendars = await prisma_1.default.calendar.findMany({
         where: { id: { in: calendarIds } },
@@ -326,9 +356,17 @@ const syncCalendarStudents = async (rawIds, rawRegisteredAt, onProgress, prefetc
         let completedBatches = 0;
         for (let index = 0; index < newRows.length; index += 200) {
             const batch = newRows.slice(index, index + 200);
-            const write = await prisma_1.default.users.createMany({ data: batch, skipDuplicates: true });
+            const timestamps = await (0, calendar_student_timestamp_1.calendarStudentTimestamps)(prisma_1.default);
+            const write = await prisma_1.default.users.createMany({ data: batch.map(row => ({ ...row, ...timestamps })), skipDuplicates: true });
             inserted += write.count;
-            skipped += batch.length - write.count;
+            if (write.count < batch.length) {
+                // INSERT IGNORE can reject rows for a different unique index as well.
+                // Only count an actual enrollment as skipped; missing rows are errors.
+                const afterWrite = await loadExistingEnrollments(batch);
+                const remaining = batch.filter((row) => !afterWrite.has(enrollmentKey(row))).length;
+                failed += remaining;
+                skipped += Math.max(0, batch.length - write.count - remaining);
+            }
             completedBatches += 1;
             onProgress?.(Math.round(76 + (23 * completedBatches) / totalBatches), `Đã thêm ${inserted}/${newRows.length} enrollment`);
         }

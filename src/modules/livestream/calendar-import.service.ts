@@ -1,7 +1,7 @@
 import { reconcileCalendarMappingsAndEnqueue, withManualHocmaiQueue, enqueueCalendarSync } from './hocmai-sync-queue.service';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
-import prisma from '../../lib/prisma';
+import prisma from '../../lib/calendar-transaction';
 import {
   fetchHocmaiCourseOutlines,
   HmoCourseOutlineError,
@@ -680,8 +680,9 @@ const validateDatabaseDuplicates = async (
 
 export const importCalendarFromSheet = async (
   inputRows: CalendarImportRow[],
-  changeActor?: { userId: number; username: string }
-) => {
+  changeActor?: { userId: number; username: string },
+  previewOnly = false
+):Promise<any> => {
   const directRows = inputRows.filter((row) => row.sourceFormat === 'direct');
   if (directRows.length && directRows.length !== inputRows.length) {
     const errors: CalendarImportError[] = [{
@@ -728,6 +729,7 @@ export const importCalendarFromSheet = async (
       errors,
     };
     const resolvedRows = inputRows.map((row) => ({ ...row, mappings: mappingValidation?.mappingsByRow.get(row.row) || [] }));
+    if(previewOnly) return {status:'preview',rows:resolvedRows,internal:true};
     const created = await createValidatedInternalCalendarImport(resolvedRows, changeActor);
     return {
       status: 'success' as const,
@@ -787,6 +789,7 @@ export const importCalendarFromSheet = async (
     };
   }
 
+  if(previewOnly) return {status:'preview',rows:validation.resolvedRows,internal:false};
   const created = await createValidatedCalendarImport(
     validation.resolvedRows,
     changeActor
@@ -814,8 +817,9 @@ const importCalendarContext = (calendar: any): NonNullable<CalendarImportError['
 export const updateCalendarsFromSheet = async (
   inputRows: CalendarImportRow[],
   changeActor?: { userId: number; username: string },
-  existingDataMode: 'skip' | 'overwrite' = 'skip'
-) => {
+  existingDataMode: 'skip' | 'overwrite' = 'skip',
+  previewOnly = false
+):Promise<any> => {
   const errors: CalendarImportError[] = [];
   const directRows = inputRows.filter((row) => row.sourceFormat === 'direct');
   if (directRows.length !== inputRows.length) {
@@ -1051,13 +1055,33 @@ export const updateCalendarsFromSheet = async (
     errors,
   };
 
+  if(previewOnly) return {status:'preview',rows:changedRows.map(r=>({id:r.current.id,key:r.key,data:r.data,nextMappings:r.nextMappings}))};
+  await applyValidatedCalendarUpdates(changedRows,changeActor);
+
+  return {
+    status: 'success' as const,
+    count: changedRows.length,
+    unchangedRows: inputRows.length - changedRows.length,
+    summary: {
+      ...buildSummary(inputRows, [], 0, 0),
+      successRows: changedRows.length,
+      failedRows: 0,
+      unchangedRows: inputRows.length - changedRows.length,
+    },
+  };
+};
+
+
+
+// Both direct imports and approved imports use exactly the same write/queue pipeline.
+async function applyValidatedCalendarUpdates(changedRows:any[],changeActor?:{userId:number;username:string}) {
   if (changedRows.length) {
     const fields = [
       'session_id', 'subject', 'start_time', 'end_time', 'teacher',
       'assistant_teacher', 'lesson_name', 'lesson_document', 'evg_banner', 'evg_stream',
       'lesson_baitap', 'lesson_status',
     ] as const;
-    await prisma.$transaction(async (tx) => {
+    return prisma.$transaction(async (tx) => {
       const manualQueue = changedRows.some(update => update.nextMappings !== undefined);
       const applyUpdates = async () => {
         const assignments = fields.map((field) => (
@@ -1109,6 +1133,7 @@ export const updateCalendarsFromSheet = async (
             }] : [];
           })
         );
+        return updatedCalendars;
       };
       return manualQueue ? withManualHocmaiQueue(tx, applyUpdates) : applyUpdates();
     }, {
@@ -1117,16 +1142,21 @@ export const updateCalendarsFromSheet = async (
       timeout: 30_000,
     });
   }
+  return [];
+}
 
-  return {
-    status: 'success' as const,
-    count: changedRows.length,
-    unchangedRows: inputRows.length - changedRows.length,
-    summary: {
-      ...buildSummary(inputRows, [], 0, 0),
-      successRows: changedRows.length,
-      failedRows: 0,
-      unchangedRows: inputRows.length - changedRows.length,
-    },
-  };
-};
+// Payloads are produced exclusively by validated import preview on the server.
+// No external reads or nested transaction may happen during the approve apply.
+export async function applyApprovedCalendarImport(tx:any, payload:any, actor:any) {
+  if(payload.mode==='create') {
+    const rows=payload.rows.map((r:any)=>({...r,calendar:{...r.calendar,session_id:r.calendar.session_id==null?undefined:BigInt(r.calendar.session_id)}}));
+    return payload.internal?createValidatedInternalCalendarImport(rows,actor):createValidatedCalendarImport(rows,actor);
+  }
+  const changedRows=[];
+  for(const item of payload.rows) {
+    const current=await tx.calendar.findUniqueOrThrow({where:{id:item.id}});
+    const data={...item.data,start_time:new Date(item.data.start_time),end_time:new Date(item.data.end_time),session_id:item.data.session_id==null?null:BigInt(item.data.session_id)};
+    changedRows.push({key:current.key,current,data,nextMappings:item.nextMappings});
+  }
+  return applyValidatedCalendarUpdates(changedRows,actor);
+}

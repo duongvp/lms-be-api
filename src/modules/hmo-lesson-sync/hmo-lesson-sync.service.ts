@@ -1,4 +1,4 @@
-import prisma from '../../lib/prisma';
+import prisma from '../../lib/calendar-transaction';
 import { fetchHocmaiCourseOutlines } from '../../integrations/hocmai-course-outline.service';
 import { logger } from '../../utils/logger';
 import { reconcileCalendarMappingsAndEnqueue } from '../livestream/hocmai-sync-queue.service';

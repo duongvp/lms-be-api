@@ -1,0 +1,70 @@
+import assert from 'node:assert/strict';
+import {freshUser} from '../src/modules/calendar-approvals/calendar-approval.access';
+import {approvals} from '../src/modules/calendar-approvals/calendar-approval.service';
+
+export async function verifyApprovalWithdrawal(prisma:any,creatorId:number){
+ const creator=await freshUser(creatorId);
+ const reviewerUser=await prisma.users.findFirstOrThrow({where:{username:'qa-decision-one'}});
+ const reviewer=await freshUser(reviewerUser.id);
+ const code='qa-withdraw';
+ const lesson=await prisma.lessons.create({data:{subject_code:code,subject_name:'QA withdrawal',learn_number:1,lesson_name:'Original proposal'}});
+ const command={action:'create',payload:{code,session_id:String(lesson.id),lesson_name:'Original proposal',start_time:'2035-10-01T09:00:00.000Z',end_time:'2035-10-01T10:00:00.000Z'}};
+ const request:any=await approvals.create(creator,{command,title:'Ôn tập bổ sung',reason:'Withdraw test',submit:true});
+ const input={revision:request.revision,lock_version:request.lock_version};
+ const id=BigInt(request.id);
+ const archived=await prisma.calendar_approval_revisions.findUniqueOrThrow({where:{request_id_revision:{request_id:id,revision:1}}});
+ const officialCount=await prisma.calendar.count(),queueCount=await prisma.hocmai_sync_queue.count();
+ assert.equal(request.capabilities.withdraw,true);
+ assert.equal((await approvals.detail(reviewer,id)).capabilities.withdraw,false);
+ await assert.rejects(approvals.transition(reviewer,id,'withdraw',input),/Chỉ người gửi/);
+ await assert.rejects(approvals.transition(creator,id,'withdraw',{...input,lock_version:0}),/vừa thay đổi/);
+ // A failure while recording withdrawal must not partially change request state.
+ await prisma.$executeRawUnsafe("ALTER TABLE calendar_approval_audit ADD CONSTRAINT qa_fail_withdraw CHECK (action <> 'request.withdrawn' OR request_id <> "+request.id+")");
+ await assert.rejects(approvals.transition(creator,id,'withdraw',input));
+ await prisma.$executeRawUnsafe('ALTER TABLE calendar_approval_audit DROP CHECK qa_fail_withdraw');
+ assert.equal((await prisma.calendar_approval_requests.findUniqueOrThrow({where:{id}})).status,'PENDING');
+ assert.equal(await prisma.calendar_approval_notifications.count({where:{request_id:id,event_type:'request.withdrawn'}}),0);
+ const draft:any=await approvals.transition(creator,id,'withdraw',input);
+ assert.equal(draft.id,request.id);assert.equal(draft.status,'DRAFT');assert.equal(draft.revision,2);assert.equal(draft.lock_version,request.lock_version+1);
+ assert.equal(draft.submitted_at,null);assert.equal(draft.capabilities.approve,false);assert.equal(draft.capabilities.reject,false);assert.equal(draft.capabilities.withdraw,false);assert.equal(draft.capabilities.edit,true);
+ assert.equal(await prisma.calendar.count(),officialCount);assert.equal(await prisma.hocmai_sync_queue.count(),queueCount);
+ assert.deepEqual(await prisma.calendar_approval_revisions.findUniqueOrThrow({where:{request_id_revision:{request_id:id,revision:1}}}),archived);
+ const originalRecipients=await prisma.calendar_approval_notifications.findMany({where:{request_id:id,event_type:'request.submitted'}});
+ for(const notification of originalRecipients)assert.equal(await prisma.calendar_approval_notifications.count({where:{request_id:id,event_type:'request.withdrawn',recipient_id:notification.recipient_id}}),1);
+ await assert.rejects(approvals.detail(reviewer,id),/thu hồi/);
+ await assert.rejects(approvals.transition(reviewer,id,'approve',input),/thu hồi/);
+ assert.ok(!(await approvals.list(reviewer,{mine:'false'})).rows.some((row:any)=>row.id===request.id));
+ const edited:any=await approvals.edit(creator,id,{lock_version:draft.lock_version,reason:'Adjusted proposal',edit_patch:{lesson_name:'Revised proposal',start_time:'2035-10-01T11:00:00.000Z',end_time:'2035-10-01T12:00:00.000Z'}});
+ assert.equal(edited.revision,2);
+ await assert.rejects(approvals.transition(creator,id,'submit',{revision:edited.revision,lock_version:edited.lock_version,reason:'   '}),/lý do/);
+ const resubmitted:any=await approvals.transition(creator,id,'submit',{revision:edited.revision,lock_version:edited.lock_version,reason:'Lý do gửi lại sau điều chỉnh',title:'Ôn tập sau điều chỉnh'});
+ assert.equal(resubmitted.title,'Ôn tập sau điều chỉnh');
+ assert.equal(archived.title,'Ôn tập bổ sung');
+ assert.equal((await prisma.calendar_approval_revisions.findUniqueOrThrow({where:{request_id_revision:{request_id:id,revision:2}}})).title,'Ôn tập sau điều chỉnh');
+ assert.equal(resubmitted.reason,'Lý do gửi lại sau điều chỉnh');
+ assert.equal((await prisma.calendar_approval_revisions.findUniqueOrThrow({where:{request_id_revision:{request_id:id,revision:2}}})).reason,'Lý do gửi lại sau điều chỉnh');
+ assert.equal(resubmitted.revision,2);assert.equal(resubmitted.status,'PENDING');
+ assert.equal(await prisma.calendar_approval_revisions.count({where:{request_id:id}}),2);
+ assert.equal((await prisma.calendar_approval_revisions.findUniqueOrThrow({where:{request_id_revision:{request_id:id,revision:1}}})).reason,'Withdraw test');
+ assert.equal(await prisma.calendar_approval_notifications.count({where:{request_id:id,event_type:'request.resubmitted',recipient_id:reviewerUser.id}}),1);
+ await assert.rejects(approvals.transition(reviewer,id,'approve',input),/vừa thay đổi/);
+ const approved:any=await approvals.transition(reviewer,id,'approve',{revision:resubmitted.revision,lock_version:resubmitted.lock_version});
+ assert.equal(approved.status,'APPROVED');
+ const official=await prisma.calendar.findFirstOrThrow({where:{code}});
+ assert.equal(official.lesson_name,'Revised proposal');assert.equal(official.start_time.toISOString(),'2035-10-01T11:00:00.000Z');
+ await assert.rejects(approvals.transition(creator,id,'withdraw',{revision:approved.revision,lock_version:approved.lock_version}),/Chỉ có thể thu hồi/);
+ const checks=['withdrawal is owner-only, versioned and atomic; keeps submitted snapshot and official calendar; resubmission applies only the revised content'];
+ for(const [index,order] of [['withdraw','approve'],['approve','withdraw']].entries()){
+  const race:any=await approvals.create(creator,{command:{action:'update',id:official.id,payload:{lesson_name:'Race '+index}},reason:'Race withdrawal',submit:true});
+  const before=await prisma.calendar.findUniqueOrThrow({where:{id:official.id}});
+  const results=await Promise.allSettled(order.map(action=>approvals.transition(action==='withdraw'?creator:reviewer,BigInt(race.id),action,{revision:race.revision,lock_version:race.lock_version})));
+  assert.equal(results.filter(result=>result.status==='fulfilled').length,1);
+  const winner=order[results.findIndex(result=>result.status==='fulfilled')];
+  const final=await prisma.calendar_approval_requests.findUniqueOrThrow({where:{id:BigInt(race.id)}});
+  assert.equal(final.status,winner==='withdraw'?'DRAFT':'APPROVED');
+  const audit=await prisma.calendar_approval_audit.findMany({where:{request_id:final.id,action:{in:['request.withdrawn','request.approved']}}});assert.equal(audit.length,1);
+  assert.equal((await prisma.calendar.findUniqueOrThrow({where:{id:official.id}})).lesson_name,winner==='withdraw'?before.lesson_name:'Race '+index);
+  checks.push('concurrent '+order.join('/')+' accepts exactly one action without applying a withdrawn version');
+ }
+ return checks;
+}

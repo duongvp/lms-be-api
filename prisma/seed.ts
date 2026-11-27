@@ -268,7 +268,7 @@ async function main() {
       },
       permissions: allPermissions
         .filter(p =>
-          (p.code.startsWith('calendar.') && !p.code.startsWith('calendar.report.')) ||
+          ((p.code.startsWith('calendar.') && !['calendar.approve','calendar.reject','calendar.approval.view','calendar.submit_approval','calendar.history.view','calendar.workflow.manage'].includes(p.code)) && !p.code.startsWith('calendar.report.')) ||
           p.code === 'lessons.view' ||
           p.code.startsWith('quiz.') ||
           p.code.startsWith('stream.') ||

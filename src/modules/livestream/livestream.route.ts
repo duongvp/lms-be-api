@@ -1,3 +1,4 @@
+import { scheduleApprovalGate, requireOfficialOperation } from '../calendar-approvals/calendar-approval.routes';
 import { Router } from 'express';
 import multer from 'multer';
 import * as livestreamController from './livestream.controller';
@@ -134,6 +135,13 @@ const normalizeCalendarFields = (fields: string[]) => Array.from(new Set(
     })
 ));
 
+// Empty staff values on a new record do not assign or clear anyone.
+// Updates still check explicit empty values, since they can remove existing staff.
+const calendarCreateFields=(items:any[])=>normalizeCalendarFields(items.flatMap(item=>
+  Object.keys(item||{}).filter(field=>field!=='system_type'&&(!['teacher','assistant_teacher'].includes(field)
+    || (Array.isArray(item[field])?item[field].some((value:any)=>String(value||'').trim()):String(item[field]||'').trim())))
+));
+
 router.use(authenticate);
 router.use('/room-report/calendars/:calendarId', createCalendarDetailReportRouter(async req => {
   const request = req as typeof req & { detailProgramCodes?: string[] };
@@ -166,6 +174,7 @@ router.get('/room-report/export', authorize(['calendar.view']), authorize(['cale
 router.post('/export/google-sheet', authorize(['calendar.export']), livestreamController.exportGoogleSheet);
 router.get('/export/google-sheet/:jobId', authorize(['calendar.export']), livestreamController.exportGoogleSheetProgress);
 router.get('/template', authorize(['calendar.import']), livestreamController.importTemplate);
+router.get('/classification-options', authorize(['calendar.view']), livestreamController.getClassificationOptions);
 router.get('/programs', authorize(['calendar.view']), livestreamController.getPrograms);
 router.get('/programs/:code/lessons', authorize(['calendar.view']), authorizeProgram('calendar.view', (req) => String(req.params.code)), livestreamController.getProgramLessons);
 router.post(
@@ -202,6 +211,7 @@ router.put(
   '/mapping',
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', (req) => calendarCodesFromUpdates(req.body?.updates || [])),
+  scheduleApprovalGate('mapping'),
   livestreamController.updateMappings
 );
 router.post(
@@ -218,6 +228,7 @@ router.put(
   authorizePrograms('calendar.update', (req) => calendarCodesByIds(
     (req.body?.updates || []).map((item: any) => item?.id)
   )),
+  scheduleApprovalGate('mapping'),
   livestreamController.importMappings
 );
 router.post(
@@ -225,7 +236,8 @@ router.post(
   authorize(['calendar.create']),
   authorizePrograms('calendar.create', (req) => calendarCreateCodes([req.body || {}])),
   authorizeTeachingAssignment('calendar.teacher.manage'),
-  authorizeFields('calendar', (req) => normalizeCalendarFields(Object.keys(req.body || {}))),
+  authorizeFields('calendar', (req) => calendarCreateFields([req.body || {}])),
+  scheduleApprovalGate('create'),
   livestreamController.createSingle
 );
 router.post(
@@ -233,9 +245,8 @@ router.post(
   authorize(['calendar.create']),
   authorizePrograms('calendar.create', (req) => calendarCreateCodes(req.body?.calendars || [])),
   authorizeTeachingAssignment('calendar.teacher.manage'),
-  authorizeFields('calendar', (req) => normalizeCalendarFields(
-    (req.body?.calendars || []).flatMap((item: any) => Object.keys(item || {}))
-  )),
+  authorizeFields('calendar', (req) => calendarCreateFields(req.body?.calendars || [])),
+  scheduleApprovalGate('createBulk'),
   livestreamController.createBulk
 );
 router.post(
@@ -249,6 +260,7 @@ router.post(
   authorize(['calendar.create']),
   authorizeProgram('calendar.create', (req) => String(req.body?.program_code || req.body?.code || '')),
   authorizeTeachingAssignment('calendar.teacher.manage'),
+  scheduleApprovalGate('auto'),
   livestreamController.commitAutoSchedule
 );
 
@@ -263,6 +275,7 @@ router.put(
       ? req.body.update_data.flatMap((item: any) => Object.keys(item || {}))
       : Object.keys(req.body?.update_data || {})
   )),
+  scheduleApprovalGate('updateBulk'),
   livestreamController.updateBulk
 );
 // Đối soát enrollment nhân sự theo phân công và phạm vi chương trình.
@@ -322,18 +335,21 @@ router.put(
     req.body?.second_id,
   ])),
   authorizeFields('calendar', () => ['start_time', 'end_time']),
+  scheduleApprovalGate('swap'),
   livestreamController.swapSessionTimes
 );
 router.post(
   '/evg-stream/bulk',
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', (req) => calendarCodesByIds(req.body?.ids || [])),
+  requireOfficialOperation(['update']),
   livestreamController.provisionEvgStreamsBulk
 );
 router.post(
   '/:id/evg-stream',
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', calendarCodeById),
+  requireOfficialOperation(['update']),
   livestreamController.provisionEvgStream
 );
 router.post(
@@ -346,6 +362,7 @@ router.post(
   '/:id/classroom-assignment/apply',
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', calendarCodeById),
+  requireOfficialOperation(['update']),
   livestreamController.applyStudentClassroomAssignment
 );
 router.put(
@@ -356,6 +373,7 @@ router.put(
   authorizeFields('calendar', (req) => normalizeCalendarFields(
     Object.keys(req.body?.new_session || {})
   )),
+  scheduleApprovalGate('reschedule'),
   livestreamController.rescheduleSession
 );
 router.put(
@@ -370,6 +388,7 @@ router.put(
     ...Object.keys(req.body || {}),
     ...Object.keys(req.body?.new_session || {}),
   ])),
+  scheduleApprovalGate('update'),
   livestreamController.updateSchedule
 );
 router.put(
@@ -377,18 +396,21 @@ router.put(
   authorize(['calendar.update']),
   authorizePrograms('calendar.update', calendarCodeById),
   authorizeFields('calendar', () => ['lesson_status']),
+  scheduleApprovalGate('cancel'),
   livestreamController.cancelSession
 );
 router.post(
   '/:id/restore',
   authorize(['calendar.delete']),
   authorizePrograms('calendar.delete', calendarCodeById),
+  scheduleApprovalGate('restore'),
   livestreamController.restoreSession
 );
 router.delete(
   '/:id',
   authorize(['calendar.delete']),
   authorizePrograms('calendar.delete', calendarCodeById),
+  scheduleApprovalGate('delete'),
   livestreamController.deleteSession
 );
 

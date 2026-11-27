@@ -33,7 +33,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.writeCalendarWorkbookToSheet = exports.replacementSheetRequests = exports.validateSheetExport = exports.readSheetMetadata = exports.splitSheetRequests = exports.calendarSheetFormatting = exports.calendarSessionEnded = exports.workbookRequests = exports.normalizeSheetPrivateKey = exports.spreadsheetIdFromUrl = exports.DEFAULT_TOPUNI_SHEET_URL = exports.DEFAULT_CALENDAR_SHEET_URL = void 0;
+exports.writeCalendarWorkbookToSheet = exports.replacementSheetRequests = exports.validateSheetExport = exports.readSheetMetadata = exports.splitSheetRequests = exports.calendarSheetFormatting = exports.workbookRequests = exports.normalizeSheetPrivateKey = exports.spreadsheetIdFromUrl = exports.DEFAULT_TOPUNI_SHEET_URL = exports.DEFAULT_CALENDAR_SHEET_URL = exports.calendarSessionEnded = void 0;
+const calendar_file_time_1 = require("../modules/livestream/calendar-file-time");
+var calendar_file_time_2 = require("../modules/livestream/calendar-file-time");
+Object.defineProperty(exports, "calendarSessionEnded", { enumerable: true, get: function () { return calendar_file_time_2.calendarSessionEnded; } });
 const node_crypto_1 = require("node:crypto");
 const googleapis_1 = require("googleapis");
 const XLSX = __importStar(require("xlsx"));
@@ -104,24 +107,6 @@ exports.workbookRequests = workbookRequests;
 const MAX_BATCH_BYTES = 500_000;
 const READ_TIMEOUT_MS = 60_000;
 const WRITE_TIMEOUT_MS = 210_000;
-const calendarSessionEnded = (date, timeRange, now) => {
-    const day = date.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-    const times = [...timeRange.matchAll(/(\d{2}):(\d{2})/g)];
-    if (!day || times.length !== 2)
-        return false;
-    const [, d, m, y] = day.map(Number);
-    const startMinutes = Number(times[0][1]) * 60 + Number(times[0][2]);
-    const endMinutes = Number(times[1][1]) * 60 + Number(times[1][2]);
-    if (times.some((time) => Number(time[1]) > 23 || Number(time[2]) > 59))
-        return false;
-    const midnight = Date.UTC(y, m - 1, d);
-    const check = new Date(midnight);
-    if (check.getUTCFullYear() !== y || check.getUTCMonth() !== m - 1 || check.getUTCDate() !== d)
-        return false;
-    const end = midnight - 7 * 3600_000 + endMinutes * 60_000 + (endMinutes < startMinutes ? 86400_000 : 0);
-    return end <= now.getTime();
-};
-exports.calendarSessionEnded = calendarSessionEnded;
 const calendarSheetFormatting = (requests, now = new Date()) => {
     const color = (hex) => ({ red: parseInt(hex.slice(0, 2), 16) / 255, green: parseInt(hex.slice(2, 4), 16) / 255, blue: parseInt(hex.slice(4, 6), 16) / 255 });
     const result = [];
@@ -135,7 +120,7 @@ const calendarSheetFormatting = (requests, now = new Date()) => {
         const range = { sheetId, startRowIndex: 0, endRowIndex: rows.length, startColumnIndex: 0, endColumnIndex: headers.length };
         result.push({ repeatCell: { range, cell: { userEnteredFormat: { backgroundColor: color('FFFFFF'), textFormat: { fontFamily: 'Arial', fontSize: 10, foregroundColor: color('000000') }, verticalAlignment: 'MIDDLE', wrapStrategy: 'CLIP' } }, fields: 'userEnteredFormat' } }, { repeatCell: { range: { ...range, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: color('0C343D'), textFormat: { bold: true, foregroundColor: color('FFFFFF') }, wrapStrategy: 'WRAP' } }, fields: 'userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.bold,userEnteredFormat.textFormat.foregroundColor,userEnteredFormat.wrapStrategy' } }, { updateBorders: { range, top: { style: 'SOLID', color: color('00B050') }, bottom: { style: 'SOLID', color: color('00B050') }, left: { style: 'SOLID', color: color('00B050') }, right: { style: 'SOLID', color: color('00B050') }, innerHorizontal: { style: 'SOLID', color: color('00B050') }, innerVertical: { style: 'SOLID', color: color('00B050') } } }, { updateDimensionProperties: { range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: 1 }, properties: { pixelSize: 36 }, fields: 'pixelSize' } }, { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 1, frozenColumnCount: Math.min(3, headers.length) } }, fields: 'gridProperties.frozenRowCount,gridProperties.frozenColumnCount' } });
         headers.forEach((header, index) => {
-            const width = header === 'Tên bài giảng' ? 330 : ['Tên GV', 'Trợ giảng'].includes(header) ? 150 : header === 'Môn' ? 80 : header === 'Thứ' ? 55 : header.includes('Tài liệu') || header === 'Nhiệm vụ học tập' ? 120 : 110;
+            const width = header.startsWith('Trạng thái buổi học') ? 180 : header === 'Tên bài giảng' ? 330 : ['Tên GV', 'Trợ giảng'].includes(header) ? 150 : header === 'Môn' ? 80 : header === 'Thứ' ? 55 : header.includes('Tài liệu') || header === 'Nhiệm vụ học tập' ? 120 : 110;
             result.push({ updateDimensionProperties: { range: { sheetId, dimension: 'COLUMNS', startIndex: index, endIndex: index + 1 }, properties: { pixelSize: width }, fields: 'pixelSize' } });
             if (header.startsWith('Tài liệu live') || header === 'Nhiệm vụ học tập')
                 result.push({ repeatCell: { range: { ...range, endRowIndex: 1, startColumnIndex: index, endColumnIndex: index + 1 }, cell: { userEnteredFormat: { backgroundColor: color('741B47') } }, fields: 'userEnteredFormat.backgroundColor' } });
@@ -143,6 +128,7 @@ const calendarSheetFormatting = (requests, now = new Date()) => {
         const dateColumn = headers.indexOf('Ngày live');
         const timeColumn = headers.indexOf('Khung giờ');
         const subjectColumn = headers.indexOf('Môn');
+        const statusColumn = headers.findIndex(header => header.startsWith('Trạng thái buổi học'));
         let runStart = -1;
         const flush = (endRowIndex) => {
             if (runStart < 0)
@@ -152,7 +138,7 @@ const calendarSheetFormatting = (requests, now = new Date()) => {
         };
         for (let i = 1; i < rows.length; i++) {
             const values = rows[i].values || [];
-            const ended = dateColumn >= 0 && timeColumn >= 0 && (0, exports.calendarSessionEnded)(String(values[dateColumn]?.userEnteredValue?.stringValue || ''), String(values[timeColumn]?.userEnteredValue?.stringValue || ''), now);
+            const ended = dateColumn >= 0 && timeColumn >= 0 && (0, calendar_file_time_1.calendarSessionEnded)(String(values[dateColumn]?.userEnteredValue?.stringValue || ''), String(values[timeColumn]?.userEnteredValue?.stringValue || ''), now);
             if (ended && runStart < 0)
                 runStart = i;
             if (!ended)
@@ -168,7 +154,10 @@ const calendarSheetFormatting = (requests, now = new Date()) => {
             canceledStart = -1;
         };
         for (let i = 1; i < rows.length; i++) {
-            const canceled = subjectColumn >= 0 && rows[i].values?.[subjectColumn]?.userEnteredValue?.stringValue === 'Nghỉ';
+            const status = statusColumn >= 0 ? rows[i].values?.[statusColumn]?.userEnteredValue : undefined;
+            const canceled = statusColumn >= 0
+                ? String(status?.numberValue ?? status?.stringValue ?? '') === '0'
+                : subjectColumn >= 0 && rows[i].values?.[subjectColumn]?.userEnteredValue?.stringValue === 'Nghỉ';
             if (canceled && canceledStart < 0)
                 canceledStart = i;
             if (!canceled)

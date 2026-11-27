@@ -4,6 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const prisma_1 = __importDefault(require("../../lib/prisma"));
+const authorization_service_1 = require("../../services/authorization.service");
+const approval_policy_service_1 = require("../approval-policy/approval-policy.service");
 const ApiError_1 = __importDefault(require("../../utils/ApiError"));
 const field_permission_service_1 = __importDefault(require("./field-permission.service"));
 const dateTime_1 = require("../../utils/dateTime");
@@ -16,6 +18,11 @@ const ACTION_LABELS = {
     import: 'Nhập file',
     export: 'Xuất file',
     approve: 'Duyệt',
+    reject: 'Từ chối duyệt lịch',
+    submit_approval: 'Gửi duyệt lịch',
+    'approval.view': 'Xem yêu cầu duyệt lịch',
+    'history.view': 'Xem lịch sử duyệt lịch',
+    'workflow.manage': 'Cấu hình duyệt lịch',
     grade: 'Chấm điểm',
     reset_password: 'Đặt lại mật khẩu',
     status: 'Đổi trạng thái',
@@ -64,6 +71,7 @@ const RoleService = {
                 name: role.name,
                 description: role.description,
                 isActive: role.isActive,
+                approvalPolicy: (0, approval_policy_service_1.normalizeModulePolicies)(role.approval_policy),
                 fieldPolicy: role.fieldPolicy, // <-- thêm dòng này
                 permissions: role.rolePermissions.map(rp => ({
                     key: rp.permission.code,
@@ -81,6 +89,8 @@ const RoleService = {
     async createRoleWithPermissions(roleData) {
         try {
             return await prisma_1.default.$transaction(async (tx) => {
+                if (roleData.approvalPolicy !== undefined)
+                    await tx.$queryRaw `SELECT id FROM calendar_approval_mutex WHERE id=1 FOR UPDATE`;
                 // 1. Check if code or name exists
                 const code = roleData.code || roleData.role_name.toLowerCase().replace(/\s+/g, '_');
                 const name = roleData.role_name || roleData.name;
@@ -119,6 +129,7 @@ const RoleService = {
                         code: code,
                         name: name,
                         description: roleData.description || null,
+                        approval_policy: roleData.approvalPolicy !== undefined ? (0, approval_policy_service_1.validateModulePolicies)(roleData.approvalPolicy) : {},
                         fieldPolicy,
                         createdAt: (0, dateTime_1.getVietnamWallClockDate)(),
                         updatedAt: (0, dateTime_1.getVietnamWallClockDate)(),
@@ -144,6 +155,7 @@ const RoleService = {
                         code: newRole.code,
                         name: newRole.name,
                         fieldPolicy: newRole.fieldPolicy,
+                        approvalPolicy: (0, approval_policy_service_1.normalizeModulePolicies)(newRole.approval_policy),
                         permissions: newRole.rolePermissions.map(rp => rp.permission.code)
                     }
                 };
@@ -158,7 +170,9 @@ const RoleService = {
     async updateRoleWithPermissions(roleId, roleData) {
         try {
             const id = BigInt(roleId);
-            return await prisma_1.default.$transaction(async (tx) => {
+            const result = await prisma_1.default.$transaction(async (tx) => {
+                if (roleData.approvalPolicy !== undefined)
+                    await tx.$queryRaw `SELECT id FROM calendar_approval_mutex WHERE id=1 FOR UPDATE`;
                 // 1. Check existing role
                 const existingRole = await tx.roles.findUnique({
                     where: { id }
@@ -171,6 +185,8 @@ const RoleService = {
                 updateData.updatedAt = (0, dateTime_1.getVietnamWallClockDate)();
                 if (name)
                     updateData.name = name;
+                if (roleData.approvalPolicy !== undefined)
+                    updateData.approval_policy = { ...(0, approval_policy_service_1.normalizeModulePolicies)(existingRole.approval_policy), ...(0, approval_policy_service_1.validateModulePolicies)(roleData.approvalPolicy) };
                 if (roleData.description !== undefined)
                     updateData.description = roleData.description;
                 if (roleData.fieldPolicy !== undefined) {
@@ -218,6 +234,7 @@ const RoleService = {
                         name: updatedRole.name,
                         description: updatedRole.description,
                         fieldPolicy: updatedRole.fieldPolicy,
+                        approvalPolicy: (0, approval_policy_service_1.normalizeModulePolicies)(updatedRole.approval_policy),
                         permissions: updatedRole.rolePermissions.map(rp => ({
                             key: rp.permission.code,
                             name: rp.permission.name
@@ -225,6 +242,8 @@ const RoleService = {
                     }
                 };
             });
+            (0, authorization_service_1.invalidateUserAccessCache)();
+            return result;
         }
         catch (error) {
             if (error instanceof ApiError_1.default)
